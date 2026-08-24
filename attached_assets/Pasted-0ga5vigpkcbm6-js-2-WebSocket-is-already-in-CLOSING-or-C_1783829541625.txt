@@ -1,0 +1,57 @@
+0ga5vigpkcbm6.js:2 WebSocket is already in CLOSING or CLOSED state.
+send @ 0ga5vigpkcbm6.js:2
+0s2z07sxx383g.js:21 Haven't heard from the server in a while, resetting connection...
+(anonymous) @ 0s2z07sxx383g.js:21
+injected.js:37 [Backup PaidFBR] error: Error: Text length must not exceed 32767 characters
+    at write_ws_xml_cell (xlsx.js?v=d9344628:16695:40)
+    at write_ws_xml_data (xlsx.js?v=d9344628:16959:19)
+    at write_ws_xml (xlsx.js?v=d9344628:17031:13)
+    at write_zip_xlsx (xlsx.js?v=d9344628:30834:30)
+    at write_zip (xlsx.js?v=d9344628:30642:10)
+    at write_zip_type (xlsx.js?v=d9344628:31101:11)
+    at writeSync (xlsx.js?v=d9344628:31300:14)
+    at Module.writeSync (xlsx.js?v=d9344628:31237:15)
+    at downloadWb (page.tsx:1156:26)
+    at handleBackupPaidFbr (page.tsx:1189:7)
+(anonymous) @ injected.js:37
+0ga5vigpkcbm6.js:2 WebSocket is already in CLOSING or CLOSED state.
+send @ 0ga5vigpkcbm6.js:2
+0s2z07sxx383g.js:21 Haven't heard from the server in a while, resetting connection...
+(anonymous) @ 0s2z07sxx383g.js:21
+injected.js:37 [Backup PaidFBR] error: Error: Text length must not exceed 32767 characters
+    at write_ws_xml_cell (xlsx.js?v=d9344628:16695:40)
+    at write_ws_xml_data (xlsx.js?v=d9344628:16959:19)
+    at write_ws_xml (xlsx.js?v=d9344628:17031:13)
+    at write_zip_xlsx (xlsx.js?v=d9344628:30834:30)
+    at write_zip (xlsx.js?v=d9344628:30642:10)
+    at write_zip_type (xlsx.js?v=d9344628:31101:11)
+    at writeSync (xlsx.js?v=d9344628:31300:14)
+    at Module.writeSync (xlsx.js?v=d9344628:31237:15)
+    at downloadWb (page.tsx:1156:26)
+    at handleBackupPaidFbr (page.tsx:1189:7)
+(anonymous) @ injected.js:37
+0ga5vigpkcbm6.js:2 WebSocket is already in CLOSING or CLOSED state.
+send @ 0ga5vigpkcbm6.js:2
+0ga5vigpkcbm6.js:2 WebSocket is already in CLOSING or CLOSED state.
+send @ 0ga5vigpkcbm6.js:2
+0ga5vigpkcbm6.js:2 WebSocket is already in CLOSING or CLOSED state.
+send @ 0ga5vigpkcbm6.js:2
+0ga5vigpkcbm6.js:2 WebSocket is already in CLOSING or CLOSED state.
+send @ 0ga5vigpkcbm6.js:2
+0ga5vigpkcbm6.js:2 WebSocket is already in CLOSING or CLOSED state.
+send @ 0ga5vigpkcbm6.js:2
+0s2z07sxx383g.js:21 Haven't heard from the server in a while, resetting connection...
+(anonymous) @ 0s2z07sxx383g.js:21
+stallwart.build.js:1 stallwart: failed ping 1
+stallwart.build.js:1 stallwart: failed ping 2
+injected.js:37 [Backup PaidFBR] error: Error: Text length must not exceed 32767 characters
+    at write_ws_xml_cell (xlsx.js?v=d9344628:16695:40)
+    at write_ws_xml_data (xlsx.js?v=d9344628:16959:19)
+    at write_ws_xml (xlsx.js?v=d9344628:17031:13)
+    at write_zip_xlsx (xlsx.js?v=d9344628:30834:30)
+    at write_zip (xlsx.js?v=d9344628:30642:10)
+    at write_zip_type (xlsx.js?v=d9344628:31101:11)
+    at writeSync (xlsx.js?v=d9344628:31300:14)
+    at Module.writeSync (xlsx.js?v=d9344628:31237:15)
+    at downloadWb (page.tsx:1156:26)
+    at handleBackupPaidFbr (page.tsx:1189:7)

@@ -1,0 +1,10 @@
+{
+  "name": "Driver Hub Icon",
+  "description": "VitraTrack driver hub icon application for managing driver bills, collections, and reports.",
+  "requestFramePermissions": [
+    "microphone"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

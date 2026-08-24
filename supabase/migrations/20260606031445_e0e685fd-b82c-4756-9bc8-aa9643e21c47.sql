@@ -1,0 +1,1 @@
+ALTER TABLE public.bills ADD COLUMN IF NOT EXISTS payment_method text;

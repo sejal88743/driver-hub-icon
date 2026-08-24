@@ -1,0 +1,20 @@
+uploads = []
+generated = []
+
+[[outputs]]
+id = "hsieOHuH52Y_ONrt6OeH8"
+uri = "file://VITRATRACK_FULL_PROMPT.txt"
+type = "text"
+title = "VitraTrack — Complete Feature Reference Prompt"
+
+[[outputs]]
+id = "Y9SVArMVNN9G4-PCyMzZ5"
+uri = "file://VITRATRACK_ULTRA_DETAILED_PROMPT.txt"
+type = "text"
+title = "VitraTrack — Ultra Detailed Complete Prompt (Page-wise)"
+
+[[outputs]]
+id = "UGLUDIaEH5f9OsZ5zq5bk"
+uri = "file://attached_assets/shortfall_bills_review.csv"
+type = "table"
+title = "Shortfall bills review (165 bills)"

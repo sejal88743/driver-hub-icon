@@ -1,0 +1,71 @@
+PROJECT AUDIT REQUIRED
+
+App me data save nahi ho raha. Browser console me baar-baar ye error aa raha hai:
+
+HEAD https://sgtjihrzpngktwnpihmx.supabase.co/rest/v1/ 401 (Unauthorized)
+
+Task:
+
+1. Pure project ka audit karo.
+
+2. Koi bhi code change karne se pehle root cause identify karo.
+
+3. Check karo:
+
+   * Supabase URL
+   * Supabase Anon Key
+   * Environment Variables
+   * client.ts configuration
+   * Authentication flow
+   * Session handling
+   * Row Level Security (RLS)
+   * Database policies
+   * Insert, Update, Upsert functions
+   * Save buttons
+   * API requests
+   * Network failures
+   * Supabase connection health
+
+4. Sabhi files scan karo jahan:
+
+   * createClient()
+   * supabase.from()
+   * insert()
+   * update()
+   * upsert()
+   * auth.getSession()
+   * auth.signIn()
+   * auth.signUp()
+     use hua hai.
+
+5. Har failed save operation ke liye exact reason identify karo.
+
+6. Agar problem environment variable ki hai to correct configuration batao.
+
+7. Agar problem Supabase key ki hai to exact file aur line number batao.
+
+8. Agar problem RLS ki hai to required SQL policies generate karo.
+
+9. Agar problem auth/session ki hai to permanent fix implement karo.
+
+10. Save operation test karo aur verify karo:
+
+    * New entry save hoti hai.
+    * Page refresh ke baad data persist rehta hai.
+    * Insert, Update aur Delete sab kaam karte hain.
+
+11. Agar old Supabase project delete hua tha aur new project connect kiya gaya hai to purane project references, URLs, keys, migrations aur stale configurations dhundo aur remove karo.
+
+12. Build errors, runtime errors aur console errors ka full report do.
+
+Expected Output:
+
+* Root cause summary
+* Affected files list
+* Required fixes
+* Applied fixes
+* SQL scripts (if needed)
+* Final verification report
+
+IMPORTANT:
+Jab tak exact root cause identify na ho, tab tak random code changes mat karo. Pehle diagnose karo, fir fix implement karo, fir test karke final report do.
