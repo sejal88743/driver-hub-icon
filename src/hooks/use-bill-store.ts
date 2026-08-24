@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
-import { getBills, getDrivers, getBanks, getSummaries, setServerData, Bill, Driver, Bank, DriverDailySummary } from '@/lib/billStore';
-import { apiFetchAllData, flushPendingWrites } from '@/lib/apiSync';
+import { getBills, getDrivers, getBanks, getSummaries, getPartyContacts, getSalespersonContacts, setServerData, applyRealtimeBillChange, applyRealtimeTableChange, Bill, Driver, Bank, DriverDailySummary } from '@/lib/billStore';
+import { apiFetchAllData, flushPendingWrites, mapBillFromSupabase } from '@/lib/apiSync';
 import { supabase } from '@/lib/supabase';
 import { isWriteInProgress, getLastWriteAt } from '@/lib/syncState';
 import { applyDirtyPatches, isDirtyPending, flushDirtyQueue } from '@/lib/localQueue';
@@ -20,9 +20,18 @@ type StoreState = {
   syncing: boolean;
 };
 
+const initialBills = typeof window !== 'undefined' ? getBills() : [];
+const initialDrivers = typeof window !== 'undefined' ? getDrivers() : [];
+const initialBanks = typeof window !== 'undefined' ? getBanks() : [];
+const initialSummaries = typeof window !== 'undefined' ? getSummaries() : [];
+
 let g: StoreState = {
-  bills: [], drivers: [], banks: [], summaries: [],
-  loading: true, syncing: false,
+  bills: initialBills,
+  drivers: initialDrivers,
+  banks: initialBanks,
+  summaries: initialSummaries,
+  loading: initialBills.length === 0,
+  syncing: false,
 };
 
 let serverVersion = 0;
@@ -30,6 +39,7 @@ const subs = new Set<() => void>();
 let pollingTimer: ReturnType<typeof setInterval> | null = null;
 let syncInFlight = false;
 let initialized = false;
+let fullSyncDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 
 function notify() { subs.forEach(fn => fn()); }
 
@@ -48,10 +58,17 @@ function readLocal() {
   });
 }
 
+function scheduleDebouncedFullSync(delayMs = 1500) {
+  if (fullSyncDebounceTimer) clearTimeout(fullSyncDebounceTimer);
+  fullSyncDebounceTimer = setTimeout(() => {
+    doFullSync();
+  }, delayMs);
+}
+
 async function doFullSync() {
   if (syncInFlight) return;
-  // If a local write operation is currently in-flight or occurred in the last 5s, skip full refresh
-  if (isWriteInProgress() || (Date.now() - getLastWriteAt() < 5000)) {
+  // If a local write operation is currently in-flight or occurred in the last 2.5s, skip full refresh
+  if (isWriteInProgress() || (Date.now() - getLastWriteAt() < 2500)) {
     return;
   }
   syncInFlight = true;
@@ -156,32 +173,91 @@ async function doFullSync() {
   }
 }
 
-// Removed pollVersion as there is no custom server-side version API.
-// doFullSync() handles the direct Supabase fetch cleanly when needed.
-
 // ─── Direct Supabase Realtime Subscription ──────────────────────────────────
 let realtimeChannel: ReturnType<typeof supabase.channel> | null = null;
+let realtimeReconnectTimer: ReturnType<typeof setTimeout> | null = null;
 
 function initSupabaseRealtime() {
-  if (!supabase || realtimeChannel) return;
+  if (!supabase) return;
+  if (realtimeChannel) {
+    try { supabase.removeChannel(realtimeChannel); } catch {}
+    realtimeChannel = null;
+  }
+
   try {
     realtimeChannel = supabase
-      .channel('public_db_changes')
+      .channel('vitratrack_realtime_all')
       .on(
         'postgres_changes',
-        { event: '*', schema: 'public' },
+        { event: '*', schema: 'public', table: 'bills' },
         (payload) => {
-          serverVersion = 0;
-          doFullSync();
+          const eventType = payload.eventType as 'INSERT' | 'UPDATE' | 'DELETE';
+          const newRow = payload.new as Record<string, unknown> | null;
+          const oldRow = payload.old as Record<string, unknown> | null;
+
+          if (eventType === 'DELETE') {
+            const oldId = String(oldRow?.id || '');
+            const oldBillNo = String(oldRow?.bill_no || oldRow?.billNo || '');
+            applyRealtimeBillChange('DELETE', undefined, oldId, oldBillNo);
+          } else if (newRow && typeof newRow === 'object') {
+            const mapped = mapBillFromSupabase(newRow);
+            applyRealtimeBillChange(eventType, mapped);
+          }
+
+          readLocal();
+          window.dispatchEvent(new CustomEvent('sync-status', { detail: 'ok' }));
+          // In background, ensure consistency with debounced full sync
+          scheduleDebouncedFullSync(3000);
         }
       )
-      .subscribe((status) => {
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'drivers' },
+        (payload) => {
+          applyRealtimeTableChange('drivers', payload.eventType as any, payload.new, payload.old);
+          readLocal();
+        }
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'banks' },
+        (payload) => {
+          applyRealtimeTableChange('banks', payload.eventType as any, payload.new, payload.old);
+          readLocal();
+        }
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'contacts' },
+        (payload) => {
+          applyRealtimeTableChange('contacts', payload.eventType as any, payload.new, payload.old);
+          readLocal();
+        }
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'settings' },
+        (payload) => {
+          applyRealtimeTableChange('settings', payload.eventType as any, payload.new, payload.old);
+          readLocal();
+        }
+      )
+      .subscribe((status, err) => {
         if (status === 'SUBSCRIBED') {
-          // Connected to Supabase Realtime live stream
+          console.log('[Supabase Realtime] Connected and listening live across all devices.');
+          window.dispatchEvent(new CustomEvent('sync-status', { detail: 'ok' }));
+        } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') {
+          console.warn('[Supabase Realtime] Channel status:', status, err);
+          if (navigator.onLine) {
+            if (realtimeReconnectTimer) clearTimeout(realtimeReconnectTimer);
+            realtimeReconnectTimer = setTimeout(() => {
+              initSupabaseRealtime();
+            }, 3000);
+          }
         }
       });
   } catch (err) {
-    // Silent catch
+    console.warn('[Supabase Realtime] Setup error:', err);
   }
 }
 
@@ -195,12 +271,10 @@ if (syncChannel) {
     if (event.data === 'data-updated') {
       readLocal();
       serverVersion = 0;
-      doFullSync();
+      scheduleDebouncedFullSync(500);
     }
   };
 }
-
-// Removed EventSource/SSE helper since this is a static client-side SPA.
 
 function initGlobalSync() {
   if (initialized) return;
@@ -217,12 +291,18 @@ function initGlobalSync() {
   });
 
   document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'visible') { doFullSync(); }
+    if (document.visibilityState === 'visible') {
+      doFullSync();
+      initSupabaseRealtime();
+    }
   });
-  window.addEventListener('focus', () => { doFullSync(); });
+  window.addEventListener('focus', () => {
+    doFullSync();
+  });
   window.addEventListener('online', () => {
     import('@/lib/localQueue').then(m => m.flushDirtyQueue());
     doFullSync();
+    initSupabaseRealtime();
   });
 
   // Emergency local persistence & dirty queue flush on unload/close
@@ -235,10 +315,10 @@ function initGlobalSync() {
     import('@/lib/localQueue').then(m => m.flushDirtyQueue());
   });
 
-  // Background dirty queue flush every 15 seconds
+  // Background dirty queue flush every 10 seconds
   setInterval(() => {
     import('@/lib/localQueue').then(m => m.flushDirtyQueue());
-  }, 15000);
+  }, 10000);
 
   // Initial full load from Supabase
   doFullSync();
@@ -268,3 +348,4 @@ export function useBillStore() {
     syncFromApi: () => { serverVersion = 0; doFullSync(); },
   };
 }
+

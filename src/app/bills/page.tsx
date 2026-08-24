@@ -1,5 +1,5 @@
 import { useState, useMemo, useEffect, useCallback } from 'react';
-import { Search, Filter, Loader2, X, ChevronUp, ChevronDown, MessageCircle, Clock, XCircle, RotateCcw } from 'lucide-react';
+import { Search, Filter, Loader2, X, ChevronUp, ChevronDown, MessageCircle, Clock, XCircle, RotateCcw, RefreshCw } from 'lucide-react';
 import { useBillStore } from '@/hooks/use-bill-store';
 import BillDetailModal from '@/components/BillDetailModal';
 import TopNav from '@/components/TopNav';
@@ -44,7 +44,7 @@ function getBillStatusWeight(b: Bill): number {
 }
 
 export default function BillsPage() {
-  const { bills, loading } = useBillStore();
+  const { bills, loading, syncing, syncFromApi } = useBillStore();
   
   const [search, setSearch] = useState('');
   const [sortField, setSortField] = useState<keyof Bill | 'status' | 'lineCut' | ''>('billNo');
@@ -94,15 +94,22 @@ export default function BillsPage() {
   }, [bills]);
 
   const filtered = useMemo(() => {
-    let result = [...bills];
-    if (filterSP) result = result.filter(b => b.salespersonName === filterSP);
-    if (filterParty) result = result.filter(b => b.partyName === filterParty);
+    let result = bills;
+    if (filterSP) {
+      const spClean = filterSP.trim().toLowerCase();
+      result = result.filter(b => (b.salespersonName || '').trim().toLowerCase() === spClean);
+    }
+    if (filterParty) {
+      const partyClean = filterParty.trim().toLowerCase();
+      result = result.filter(b => (b.partyName || '').trim().toLowerCase() === partyClean);
+    }
     if (search) {
       const q = search.toLowerCase().trim();
       result = result.filter(b =>
-        b.billNo?.toLowerCase().includes(q) ||
-        b.partyName?.toLowerCase().includes(q) ||
-        b.salespersonName?.toLowerCase().includes(q) ||
+        (b.billNo && b.billNo.toLowerCase().includes(q)) ||
+        (b.partyName && b.partyName.toLowerCase().includes(q)) ||
+        (b.salespersonName && b.salespersonName.toLowerCase().includes(q)) ||
+        (b.driverName && b.driverName.toLowerCase().includes(q)) ||
         String(b.billNetAmt || '').includes(q) ||
         String(b.collectedAmount || '').includes(q)
       );
@@ -110,7 +117,8 @@ export default function BillsPage() {
 
     if (sortField) {
       const mult = sortDir === 'asc' ? 1 : -1;
-      result.sort((a, b) => {
+      const sorted = [...result];
+      sorted.sort((a, b) => {
         let cmp = 0;
         if (sortField === 'billNo') {
           cmp = (a.billNo || '').localeCompare(b.billNo || '', undefined, { numeric: true });
@@ -140,16 +148,19 @@ export default function BillsPage() {
         // Tie breaker by billNo ascending
         return (a.billNo || '').localeCompare(b.billNo || '', undefined, { numeric: true });
       });
+      result = sorted;
     }
 
     if (search) {
       const q = search.toLowerCase();
-      result.sort((a, b) => {
+      const sorted = [...result];
+      sorted.sort((a, b) => {
         const aExact = (a.billNo || '').toLowerCase() === q;
         const bExact = (b.billNo || '').toLowerCase() === q;
         if (aExact !== bExact) return aExact ? -1 : 1;
         return 0;
       });
+      result = sorted;
     }
 
     return result;
@@ -240,7 +251,6 @@ export default function BillsPage() {
 
     // Cheque amount = sum of chequeAmount across related bills
     const totalChequeAmt = relatedBills.reduce((s, b) => {
-      // chequeAmount field first, else collectedAmount if paymentMethod is Cheque
       const chqAmt = Number(b.chequeAmount) || 0;
       const collected = (b.paymentMethod === 'Cheque' && !chqAmt) ? (Number(b.collectedAmount) || 0) : chqAmt;
       return s + collected;
@@ -287,34 +297,63 @@ export default function BillsPage() {
     setWaPopup({ bill, target: 'sales' });
   }
 
+  const isTrulyEmptyAndLoading = loading && bills.length === 0;
+
   return (
     <div className="min-h-screen bg-background pb-6 pt-10 w-full">
       <TopNav />
       <div className="bg-primary px-3 pt-2 pb-2 rounded-b-xl shadow-md w-full flex items-center justify-between">
         <div>
-          <h1 className="text-sm font-black text-primary-foreground uppercase tracking-widest max-w-full mx-auto">Bill Registry</h1>
-          <p className="text-[10px] font-black text-primary-foreground/60 uppercase tracking-tighter max-w-full mx-auto">{loading ? '...' : `${filtered.length} RECORDS · PAGE ${page}/${totalPages}`}</p>
+          <h1 className="text-sm font-black text-primary-foreground uppercase tracking-widest max-w-full mx-auto flex items-center gap-2">
+            Bill Registry
+            {syncing && (
+              <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[8px] font-black bg-white/20 text-white animate-pulse">
+                <RefreshCw className="w-2.5 h-2.5 animate-spin" /> SYNCING...
+              </span>
+            )}
+          </h1>
+          <p className="text-[10px] font-black text-primary-foreground/60 uppercase tracking-tighter max-w-full mx-auto">
+            {isTrulyEmptyAndLoading ? 'LOADING FROM DATABASE...' : `${filtered.length} RECORDS · PAGE ${page}/${totalPages}`}
+          </p>
         </div>
-        <button
-          onClick={() => setShowAutoDispatch(true)}
-          className="px-3 py-1.5 bg-emerald-500 hover:bg-emerald-600 active:scale-95 text-slate-950 font-black rounded-lg text-[10px] uppercase tracking-tight flex items-center gap-1.5 shadow"
-        >
-          <MessageCircle className="w-3.5 h-3.5 fill-slate-950" />
-          ⚡ 50 Salesperson Auto Dispatch
-        </button>
+        <div className="flex items-center gap-1.5">
+          <button
+            onClick={() => syncFromApi()}
+            disabled={syncing}
+            title="Refresh bills from Supabase"
+            className="p-1.5 bg-primary-foreground/10 hover:bg-primary-foreground/20 text-primary-foreground rounded-lg transition-all active:scale-95 disabled:opacity-50"
+          >
+            <RefreshCw className={cn("w-3.5 h-3.5", syncing && "animate-spin")} />
+          </button>
+          <button
+            onClick={() => setShowAutoDispatch(true)}
+            className="px-3 py-1.5 bg-emerald-500 hover:bg-emerald-600 active:scale-95 text-slate-950 font-black rounded-lg text-[10px] uppercase tracking-tight flex items-center gap-1.5 shadow"
+          >
+            <MessageCircle className="w-3.5 h-3.5 fill-slate-950" />
+            ⚡ 50 Salesperson Auto Dispatch
+          </button>
+        </div>
       </div>
 
       <div className="max-w-full mx-auto px-3 mt-2 space-y-1">
         <div className="bg-card rounded-xl border border-border shadow-sm flex items-center px-3 h-11 gap-2">
-          <Search className="w-4 h-4 text-muted-foreground" />
+          <Search className="w-4 h-4 text-muted-foreground shrink-0" />
           <input
             type="text"
             inputMode="numeric"
-            placeholder="SEARCH BILLS..."
+            placeholder="SEARCH BILL NO, PARTY, SALESPERSON, AMOUNT..."
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             className="flex-1 bg-transparent border-0 text-[11px] font-black focus:outline-none uppercase placeholder:text-muted-foreground/30"
           />
+          {search && (
+            <button
+              onClick={() => setSearch('')}
+              className="p-1 rounded-full text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          )}
           <button onClick={() => setShowFilters(!showFilters)} className={cn("p-1.5 rounded-lg transition-colors", showFilters ? "bg-primary/10 text-primary" : "text-muted-foreground")}>
             <Filter className="w-4 h-4" />
           </button>
@@ -339,15 +378,29 @@ export default function BillsPage() {
           </div>
         )}
 
-        {!loading && search && filtered.length === 0 && (
+        {!isTrulyEmptyAndLoading && search && filtered.length === 0 && (
           <div className="bg-destructive/10 border-2 border-destructive/30 rounded-2xl px-4 py-4 text-center animate-in fade-in duration-200">
             <p className="text-[13px] font-black text-destructive uppercase tracking-widest">⚠ NOT FOUND</p>
             <p className="text-[10px] font-bold text-muted-foreground mt-1 uppercase">"{search}" — No matching bill</p>
           </div>
         )}
 
-        {loading ? (
-          <div className="flex justify-center py-20"><Loader2 className="animate-spin text-primary" /></div>
+        {isTrulyEmptyAndLoading ? (
+          <div className="bg-card border border-border/60 rounded-xl shadow-sm overflow-hidden p-6 space-y-4">
+            <div className="flex items-center justify-center gap-3 py-6 text-primary">
+              <Loader2 className="w-6 h-6 animate-spin" />
+              <div className="text-left">
+                <p className="text-xs font-black uppercase tracking-wider">Loading Bills from Database...</p>
+                <p className="text-[10px] font-bold text-muted-foreground uppercase">Please wait a moment while records are synced</p>
+              </div>
+            </div>
+            {/* Skeleton rows */}
+            <div className="space-y-2">
+              {Array.from({ length: 8 }).map((_, idx) => (
+                <div key={idx} className="h-8 bg-muted/60 rounded-lg animate-pulse" />
+              ))}
+            </div>
+          </div>
         ) : (
           <div className="bg-card border border-border/60 rounded-xl shadow-sm overflow-hidden w-full">
             <div className="overflow-x-auto no-scrollbar w-full">
@@ -478,7 +531,7 @@ export default function BillsPage() {
           </div>
         )}
 
-        {!loading && totalPages > 1 && (
+        {!isTrulyEmptyAndLoading && totalPages > 1 && (
           <div className="flex items-center justify-center gap-2 pt-3 pb-2">
             <button
               onClick={() => goToPage(1)}

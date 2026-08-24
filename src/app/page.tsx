@@ -1658,8 +1658,8 @@ export default function Dashboard() {
     }
 
     const savedBill = getBills().find(b => b.billNo === selectedBillNo);
-    const finalPayDate = savedBill?.paymentDate || recDateOverride || isoToDisplay(dashDate) || dashDate;
-    const finalPayTime = savedBill?.paymentTime || getLoggedInName() || selectedDriver;
+    const finalPayDate = totalCollected > 0 ? (savedBill?.paymentDate || recDateOverride || isoToDisplay(dashDate) || dashDate) : '';
+    const finalPayTime = totalCollected > 0 ? (savedBill?.paymentTime || getLoggedInName() || selectedDriver) : '';
     if (savedBill?.id) {
       const { apiPatchBill } = await import('@/lib/apiSync');
       await apiPatchBill(savedBill.id, {
@@ -2297,12 +2297,12 @@ ${effectiveRec ? `🗓️ *Rec Date:* ${effectiveRec}\n` : ''}💰 *Bill Net Amt
       return cRaw === rawLower || (cleanLower && cClean === cleanLower);
     });
 
-    const stableId = `sp_${(cleanLower || rawLower).replace(/[^a-z0-9]/g, '_').slice(0, 44)}`;
+    const stableId = `sp_${cleanLower.replace(/[^a-z0-9]/g, '_').slice(0, 44)}`;
 
     if (idx >= 0) {
-      contacts[idx] = { ...contacts[idx], id: contacts[idx].id || stableId, mobile: cleanDigits };
+      contacts[idx] = { ...contacts[idx], id: contacts[idx].id || stableId, name: cleanName, mobile: cleanDigits };
     } else {
-      contacts.push({ id: stableId, name: rawName, mobile: cleanDigits });
+      contacts.push({ id: stableId, name: cleanName, mobile: cleanDigits });
     }
     await saveSalespersonContacts(contacts);
     setShowSalespersonPhoneModal(false);
@@ -2319,7 +2319,7 @@ ${effectiveRec ? `🗓️ *Rec Date:* ${effectiveRec}\n` : ''}💰 *Bill Net Amt
     const msg = 
 `*🔔 VitraTrack - Pending Bill Payment Reminder*
 ━━━━━━━━━━━━━━━━━━━━
-👤 *Salesperson:* ${rawName || 'N/A'}
+👤 *Salesperson:* ${cleanName || rawName || 'N/A'}
 🏢 *Party:* ${spPendingBill.partyName || '-'}
 📄 *Bill No:* ${spPendingBill.billNo || '-'}
 📅 *Bill Date:* ${billDate}

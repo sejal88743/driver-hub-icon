@@ -283,7 +283,10 @@ async function withRetry<T>(fn: () => Promise<T>, label = 'op'): Promise<T> {
 // ─── Pending-write queue: any failed patch is persisted to localStorage and ──
 // replayed on next page load and every reconnect, so nothing is ever "lost".
 const PENDING_KEY = 'vt_pending_writes_v1';
+const PENDING_SETTINGS_KEY = 'vt_pending_settings_v1';
 type PendingPatch = { id: string; billNo?: string; patch: Partial<Bill>; ts: number };
+type PendingSetting = { key: string; value: string; ts: number };
+
 function readPending(): PendingPatch[] {
   try { return JSON.parse(localStorage.getItem(PENDING_KEY) || '[]'); } catch { return []; }
 }
@@ -298,10 +301,43 @@ function enqueuePending(p: PendingPatch) {
     window.dispatchEvent(new CustomEvent('pending-writes', { detail: list.length }));
   }
 }
+
+function readPendingSettings(): PendingSetting[] {
+  try { return JSON.parse(localStorage.getItem(PENDING_SETTINGS_KEY) || '[]'); } catch { return []; }
+}
+function writePendingSettings(list: PendingSetting[]) {
+  try { localStorage.setItem(PENDING_SETTINGS_KEY, JSON.stringify(list.slice(-200))); } catch { /* quota */ }
+}
+function enqueuePendingSetting(item: { key: string; value: string }) {
+  const list = readPendingSettings().filter(s => s.key !== item.key);
+  list.push({ ...item, ts: Date.now() });
+  writePendingSettings(list);
+}
+
+export async function flushPendingSettings(): Promise<{ flushed: number; remaining: number }> {
+  if (!supabase) return { flushed: 0, remaining: 0 };
+  const list = readPendingSettings();
+  if (list.length === 0) return { flushed: 0, remaining: 0 };
+  const remain: PendingSetting[] = [];
+  let flushed = 0;
+  for (const s of list) {
+    try {
+      const { error } = await supabase.from('settings').upsert({ key: s.key, value: s.value }, { onConflict: 'key' });
+      if (!error) flushed++;
+      else remain.push(s);
+    } catch {
+      remain.push(s);
+    }
+  }
+  writePendingSettings(remain);
+  return { flushed, remaining: remain.length };
+}
+
 export function getPendingWriteCount(): number {
   return readPending().length;
 }
 export async function flushPendingWrites(): Promise<{ flushed: number; remaining: number }> {
+  void flushPendingSettings();
   const list = readPending();
   if (list.length === 0) return { flushed: 0, remaining: 0 };
   const remain: PendingPatch[] = [];
@@ -1061,13 +1097,22 @@ export async function apiCleanSalespersonNames(): Promise<{ billsUpdated: number
 }
 
 export async function apiPushSetting(key: string, value: string) {
+  if (!supabase) {
+    enqueuePendingSetting({ key, value });
+    return { ok: false, queued: true };
+  }
   try {
-    const { error } = await supabase!.from('settings').upsert({ key, value }, { onConflict: 'key' });
-    if (error) throw error;
+    await withRetry(async () => {
+      const { error } = await supabase!.from('settings').upsert({ key, value }, { onConflict: 'key' });
+      if (error) throw error;
+    }, `apiPushSetting(${key})`);
+    dispatchSyncStatus('ok');
     return { ok: true };
-  } catch (err) {
-    console.error('[apiSync] apiPushSetting error:', err);
-    return { ok: false };
+  } catch (err: any) {
+    console.warn(`[apiSync] apiPushSetting error for key "${key}":`, err?.message || err);
+    enqueuePendingSetting({ key, value });
+    dispatchSyncStatus('error');
+    return { ok: false, queued: true };
   }
 }
 

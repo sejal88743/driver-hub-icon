@@ -349,19 +349,28 @@ export default function SettingsPage() {
           .map(c => ({ ...c, name: cleanSalespersonName(c.name) }));
         if (incoming.length > 0) {
           const existing = getSalespersonContacts();
-          const merged = new Map<string, Contact>(existing.map(c => [c.name.toLowerCase(), c]));
+          const merged = new Map<string, Contact>(existing.map(c => [cleanSalespersonName(c.name || '').trim().toLowerCase(), c]));
           let added = 0, updated = 0;
           for (const c of incoming) {
-            const key = c.name.toLowerCase();
-            if (merged.has(key)) {
-              // Do NOT change the stored name — only update mobile (preserve id)
-              const prev = merged.get(key)!;
-              if (prev.mobile !== c.mobile) {
-                merged.set(key, { ...prev, mobile: c.mobile });
+            const clean = cleanSalespersonName(c.name || '').trim();
+            if (!clean) continue;
+            let matchKey = '';
+            for (const [key, prev] of merged) {
+              if (key === clean.toLowerCase() || areSalespersonNamesEquivalent(prev.name, clean)) {
+                matchKey = key;
+                break;
+              }
+            }
+            if (matchKey) {
+              const prev = merged.get(matchKey)!;
+              const cleanDigits = String(c.mobile || '').replace(/\D/g, '').slice(-10);
+              if (cleanDigits && prev.mobile !== cleanDigits) {
+                merged.set(matchKey, { ...prev, name: cleanSalespersonName(prev.name || clean), mobile: cleanDigits });
                 updated++;
               }
             } else {
-              merged.set(key, c);
+              const cleanDigits = String(c.mobile || '').replace(/\D/g, '').slice(-10);
+              merged.set(clean.toLowerCase(), { ...c, name: clean, mobile: cleanDigits });
               added++;
             }
           }
@@ -1659,15 +1668,17 @@ export default function SettingsPage() {
             }
 
             // Merge with existing — update mobile if name already exists,
-            // or if 60%+ similar name found use that canonical name instead of adding a new entry.
+            // or if equivalent / 60%+ similar name found use that canonical name instead of adding a new entry.
             const existing = getSalespersonContacts();
-            const existingNames = existing.map(c => c.name).filter(Boolean);
-            const mergedMap = new Map<string, Contact>(existing.map(c => [c.name.toLowerCase(), c]));
+            const existingNames = existing.map(c => cleanSalespersonName(c.name || '').trim()).filter(Boolean);
+            const mergedMap = new Map<string, Contact>(existing.map(c => [cleanSalespersonName(c.name || '').trim().toLowerCase(), c]));
             let added = 0, updated = 0;
             for (const c of incoming) {
-              // Resolve against existing names at 60% similarity threshold
-              const canonical = findCanonicalName(c.name, existingNames, cleanSalespersonName, 0.60);
-              const resolvedContact: Contact = { ...c, name: canonical };
+              const cleanedIncomingName = cleanSalespersonName(c.name || '').trim();
+              if (!cleanedIncomingName) continue;
+              // Resolve against existing names at 60% similarity threshold & token equivalence
+              const canonical = findCanonicalName(cleanedIncomingName, existingNames, cleanSalespersonName, 0.60) || cleanedIncomingName;
+              const resolvedContact: Contact = { ...c, name: canonical, mobile: c.mobile.replace(/\D/g, '').slice(-10) };
               const key = canonical.toLowerCase();
               if (mergedMap.has(key)) { updated++; } else { added++; }
               mergedMap.set(key, resolvedContact);
@@ -2303,29 +2314,31 @@ export default function SettingsPage() {
                           return;
                         }
                         const current = getSalespersonContacts();
-                        const targetClean = cleanSalespersonName(salesEditName).trim().toLowerCase();
+                        const targetClean = cleanSalespersonName(salesEditName).trim();
+                        const targetCleanLower = targetClean.toLowerCase();
                         const targetRaw = salesEditName.trim().toLowerCase();
                         const idx = current.findIndex(c => {
                           const cRaw = (c.name || '').trim().toLowerCase();
                           const cClean = cleanSalespersonName(c.name || '').trim().toLowerCase();
-                          return cRaw === targetRaw || (targetClean && cClean === targetClean);
+                          return cRaw === targetRaw || (targetCleanLower && cClean === targetCleanLower) || areSalespersonNamesEquivalent(c.name, targetClean);
                         });
                         let next: Contact[];
-                        const stableId = `sp_${(targetClean || targetRaw).replace(/[^a-z0-9]/g, '_').slice(0, 44)}`;
+                        const stableId = `sp_${targetCleanLower.replace(/[^a-z0-9]/g, '_').slice(0, 44)}`;
+                        const cleanDigits = salesEditMobile.replace(/\D/g, '').slice(-10);
                         if (idx >= 0) {
                           next = current.slice();
                           const existing = next[idx];
                           next[idx] = {
                             ...existing,
                             id: existing.id || stableId,
-                            name: salesEditName.trim(),
-                            mobile: salesEditMobile.trim(),
+                            name: cleanSalespersonName(existing.name || targetClean),
+                            mobile: cleanDigits,
                           };
                         } else {
                           next = [...current, {
                             id: stableId,
-                            name: salesEditName.trim(),
-                            mobile: salesEditMobile.trim(),
+                            name: targetClean,
+                            mobile: cleanDigits,
                           }];
                         }
                         await saveSalespersonContacts(next);

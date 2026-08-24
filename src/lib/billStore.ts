@@ -1,5 +1,5 @@
 import { markWriteStart, markWriteEnd } from './syncState';
-import { cleanSalespersonName, cleanPartyName, standardizeBills, calculateSimilarity, isSimilar, findCanonicalName, buildCanonicalMap } from './nameStandardizer';
+import { cleanSalespersonName, cleanPartyName, standardizeBills, calculateSimilarity, isSimilar, findCanonicalName, buildCanonicalMap, areSalespersonNamesEquivalent } from './nameStandardizer';
 import { getRole } from './auth';
 import { getGreenPartyNameByCode, loadGreenPartiesFromSettings, getGreenParties } from './greenParties';
 import { excelSerialToDate, isoToDisplay, displayToIso } from './dateUtils';
@@ -9,7 +9,7 @@ function getTodayISO() {
   return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
 }
 
-export { cleanSalespersonName, cleanPartyName, standardizeBills, calculateSimilarity, isSimilar, findCanonicalName, buildCanonicalMap };
+export { cleanSalespersonName, cleanPartyName, standardizeBills, calculateSimilarity, isSimilar, findCanonicalName, buildCanonicalMap, areSalespersonNamesEquivalent };
 
 /** One immutable audit line for a bill — who did what, when. Never overwritten. */
 export type BillEditEntry = {
@@ -374,19 +374,20 @@ export function setServerData(data: {
   }
 
   if (data.bills !== undefined) {
-    // Keep the sync path cheap: fuzzy name matching is O(uniqueNames²) and used
-    // to run on every refresh, freezing the UI while thousands of bills loaded.
-    // Imports/settings still call consolidateSimilarPartyAndSalespersons explicitly.
-    // Exact cleanup is deterministic and fast enough to apply on each payload.
+    // Keep the sync path cheap: exact cleanup is deterministic and fast.
     const seen = new Map<string, Bill>();
     for (const b of data.bills) {
       const mode = (b.paymentMode || '').toLowerCase();
       const hasMoney = (Number(b.cashAmount) || 0) > 0 || (Number(b.upiAmount) || 0) > 0 || (Number(b.chequeAmount) || 0) > 0 || (Number(b.collectedAmount) || 0) > 0;
       const isCredit = mode === 'credit';
+      const isDelPend = mode === 'del pending' || mode === 'pending';
+      const isUnpaid = mode === 'unpaid';
+      const isFBR = mode === 'fbr' || mode === 'cancel';
       const isPaid = mode === 'paid' || mode === 'cash' || mode === 'upi' || mode === 'cheque' || mode === 'split';
-      // Keep paymentDate/paymentTime if real money was received, FBR, Credit, Paid, or if already saved in Supabase
-      const cleanedPaymentDate = (hasMoney || isFBR || isCredit || isPaid || !!b.paymentDate) ? (b.paymentDate || '') : '';
-      const cleanedPaymentTime = (hasMoney || isFBR || isCredit || isPaid || !!b.paymentTime) ? (b.paymentTime || '') : '';
+      // Credit / Del Pending / Unpaid without money received should not have paymentDate
+      const shouldHaveDate = hasMoney || isFBR || isPaid || (!isCredit && !isDelPend && !isUnpaid && !!b.paymentDate);
+      const cleanedPaymentDate = shouldHaveDate ? (b.paymentDate || '') : '';
+      const cleanedPaymentTime = shouldHaveDate ? (b.paymentTime || '') : '';
       const greenName = getGreenPartyNameByCode(b.partyCode);
       const cleaned = {
         ...b,
@@ -490,6 +491,169 @@ export function setServerData(data: {
   }
 }
 
+// ─── Direct Realtime incremental mutators ──────────────────────────────────
+export function applyRealtimeBillChange(
+  eventType: 'INSERT' | 'UPDATE' | 'DELETE',
+  newBill?: Bill,
+  oldBillId?: string,
+  oldBillNo?: string
+) {
+  if (eventType === 'DELETE') {
+    const targetId = oldBillId || newBill?.id;
+    const targetBillNo = oldBillNo || newBill?.billNo;
+    if (!targetId && !targetBillNo) return;
+    const normBn = (targetBillNo || '').trim().toUpperCase();
+    _bills = _bills.filter(b => {
+      if (targetId && b.id === targetId) return false;
+      if (normBn && (b.billNo || '').trim().toUpperCase() === normBn) return false;
+      return true;
+    });
+    dispatchUpdate();
+    persistLocalState();
+    return;
+  }
+
+  if (!newBill) return;
+
+  const mode = (newBill.paymentMode || '').toLowerCase();
+  const hasMoney = (Number(newBill.cashAmount) || 0) > 0 || (Number(newBill.upiAmount) || 0) > 0 || (Number(newBill.chequeAmount) || 0) > 0 || (Number(newBill.collectedAmount) || 0) > 0;
+  const isCredit = mode === 'credit';
+  const isDelPend = mode === 'del pending' || mode === 'pending';
+  const isUnpaid = mode === 'unpaid';
+  const isFBR = mode === 'fbr' || mode === 'cancel';
+  const isPaid = mode === 'paid' || mode === 'cash' || mode === 'upi' || mode === 'cheque' || mode === 'split';
+  const shouldHaveDate = hasMoney || isFBR || isPaid || (!isCredit && !isDelPend && !isUnpaid && !!newBill.paymentDate);
+  const greenName = getGreenPartyNameByCode(newBill.partyCode);
+  const cleaned: Bill = {
+    ...newBill,
+    paymentDate: shouldHaveDate ? (newBill.paymentDate || '') : '',
+    paymentTime: shouldHaveDate ? (newBill.paymentTime || '') : '',
+    partyName: greenName || cleanPartyName(newBill.partyName),
+    salespersonName: cleanSalespersonName(newBill.salespersonName),
+  };
+
+  const normBn = (cleaned.billNo || '').trim().toUpperCase();
+  const isMoc = normBn.startsWith('MOC') || cleaned.collectionCode === 'MOC' || cleaned.salespersonName === 'MOC' || (cleaned.id && cleaned.id.startsWith('moc_'));
+
+  const idx = _bills.findIndex(b => {
+    if (cleaned.id && b.id === cleaned.id) return true;
+    if (!isMoc && normBn && (b.billNo || '').trim().toUpperCase() === normBn) return true;
+    return false;
+  });
+
+  if (idx >= 0) {
+    _bills[idx] = { ..._bills[idx], ...cleaned };
+  } else {
+    _bills.unshift(cleaned);
+  }
+
+  dispatchUpdate();
+  persistLocalState();
+}
+
+export function applyRealtimeTableChange(
+  table: string,
+  eventType: 'INSERT' | 'UPDATE' | 'DELETE',
+  record: any,
+  oldRecord: any
+) {
+  if (table === 'bills') {
+    return; // Handled by applyRealtimeBillChange
+  }
+
+  if (table === 'drivers') {
+    const id = record?.id || oldRecord?.id;
+    if (eventType === 'DELETE') {
+      _drivers = _drivers.filter(d => d.id !== id);
+    } else if (record) {
+      const driver: Driver = {
+        id: record.id,
+        name: record.name,
+        role: record.id?.startsWith('own_') ? 'owner' : record.id?.startsWith('usr_') ? 'user' : 'driver',
+      };
+      const idx = _drivers.findIndex(d => d.id === driver.id || d.name.trim().toLowerCase() === driver.name.trim().toLowerCase());
+      if (idx >= 0) _drivers[idx] = driver;
+      else _drivers.push(driver);
+    }
+    dispatchUpdate();
+    persistLocalState();
+    return;
+  }
+
+  if (table === 'banks') {
+    const id = record?.id || oldRecord?.id;
+    const name = String(record?.name || oldRecord?.name || '').trim().toUpperCase();
+    if (eventType === 'DELETE') {
+      _banks = _banks.filter(b => b.id !== id && b.name.toUpperCase() !== name);
+    } else if (record && name) {
+      const bank: Bank = { id: record.id || `bn_${Math.random().toString(36).slice(2, 9)}`, name };
+      const idx = _banks.findIndex(b => b.id === bank.id || b.name.toUpperCase() === name);
+      if (idx >= 0) _banks[idx] = bank;
+      else _banks.push(bank);
+    }
+    dispatchUpdate();
+    persistLocalState();
+    return;
+  }
+
+  if (table === 'contacts') {
+    const id = record?.id || oldRecord?.id;
+    const isParty = record?.type === 'party' || oldRecord?.type === 'party';
+    const isSales = record?.type === 'salesperson' || oldRecord?.type === 'salesperson';
+
+    if (eventType === 'DELETE') {
+      if (isParty || !isSales) _partyContacts = _partyContacts.filter(c => c.id !== id);
+      if (isSales || !isParty) _salespersonContacts = _salespersonContacts.filter(c => c.id !== id);
+    } else if (record) {
+      const contact: Contact = { id: record.id, name: record.name, mobile: record.mobile };
+      if (record.type === 'party') {
+        const idx = _partyContacts.findIndex(c => c.id === contact.id || (c.name || '').trim().toLowerCase() === (contact.name || '').trim().toLowerCase());
+        if (idx >= 0) _partyContacts[idx] = contact;
+        else _partyContacts.push(contact);
+      } else if (record.type === 'salesperson') {
+        const cleanSp = cleanSalespersonName(contact.name);
+        const idx = _salespersonContacts.findIndex(c => c.id === contact.id || cleanSalespersonName(c.name || '').trim().toLowerCase() === cleanSp.trim().toLowerCase());
+        if (idx >= 0) _salespersonContacts[idx] = contact;
+        else _salespersonContacts.push(contact);
+      }
+    }
+    dispatchUpdate();
+    persistLocalState();
+    return;
+  }
+
+  if (table === 'settings') {
+    if (record && record.key) {
+      const key = record.key;
+      const value = record.value;
+      if (key === 'pw_suffix') {
+        _pwSuffix = value;
+        localStorage.setItem(LS_PW_SUFFIX, _pwSuffix);
+      } else if (key === 'wa_templates') {
+        try { _waTemplates = JSON.parse(value); } catch {}
+      } else if (key === 'user_perms') {
+        try {
+          _userPerms = JSON.parse(value);
+          localStorage.setItem(LS_USER_PERMS, JSON.stringify(_userPerms));
+        } catch {}
+      } else if (key === 'user_passwords') {
+        try {
+          _userPasswords = JSON.parse(value);
+          localStorage.setItem(LS_USER_PASSWORDS, JSON.stringify(_userPasswords));
+        } catch {}
+      } else if (key === 'bill_search_reset_sec') {
+        const sec = Number(value);
+        if (!isNaN(sec)) {
+          _billSearchAutoResetSec = sec;
+          localStorage.setItem(LS_SEARCH_RESET_SEC, String(sec));
+        }
+      }
+      dispatchUpdate();
+    }
+    return;
+  }
+}
+
 // ─── Read functions ─────────────────────────────────────────────────────────
 export function getBills(): Bill[] { return _bills; }
 export function getDrivers(): Driver[] {
@@ -506,22 +670,31 @@ export function getSalespersonContacts(): Contact[] { return _salespersonContact
 
 /**
  * Robust lookup helper for salesperson contact:
- * Handles exact match, clean names (e.g. without "- SMN00017" suffix), ID match, and case-insensitive matching.
+ * Handles exact match, clean names (without (ME), TL, (TL), (FL) suffix or prefix codes),
+ * token reordering (surname front/back), ID match, and case-insensitive matching.
  */
 export function findSalespersonContact(spName: string): Contact | undefined {
   if (!spName) return undefined;
-  const raw = spName.trim();
+  const raw = String(spName).trim();
   if (!raw) return undefined;
   const rawLower = raw.toLowerCase();
   const clean = cleanSalespersonName(raw).trim();
   const cleanLower = clean.toLowerCase();
-  const contacts = _salespersonContacts;
+
+  let contacts = _salespersonContacts;
+  if ((!contacts || contacts.length === 0) && typeof window !== 'undefined') {
+    try {
+      const cached = localStorage.getItem(LS_SALESPERSON_CONTACTS_KEY);
+      if (cached) contacts = JSON.parse(cached);
+    } catch {}
+  }
+  if (!contacts || contacts.length === 0) return undefined;
 
   // 1. Exact name match
   let found = contacts.find(c => (c.name || '').trim().toLowerCase() === rawLower);
   if (found) return found;
 
-  // 2. Clean name match (e.g. without code prefix/suffix)
+  // 2. Clean name match (e.g. without code prefix/suffix or (ME)/(TL)/(FL))
   if (cleanLower) {
     found = contacts.find(c => {
       const cClean = cleanSalespersonName(c.name || '').trim().toLowerCase();
@@ -531,18 +704,38 @@ export function findSalespersonContact(spName: string): Contact | undefined {
     if (found) return found;
   }
 
-  // 3. Match by ID
+  // 3. Match equivalent salesperson name (handles surname front vs back e.g. "SHARMA RAHUL" vs "RAHUL SHARMA")
+  found = contacts.find(c => areSalespersonNamesEquivalent(c.name || '', raw) || areSalespersonNamesEquivalent(c.name || '', clean));
+  if (found) return found;
+
+  // 4. Match by ID
   const spId = `sp_${cleanLower.replace(/[^a-z0-9]/g, '_').slice(0, 44)}`;
   found = contacts.find(c => (c.id && (c.id.toLowerCase() === rawLower || c.id.toLowerCase() === spId)));
   if (found) return found;
 
-  // 4. Match if names contain each other (for minor code suffix differences)
+  // 5. Match if names contain each other (for minor differences)
   if (cleanLower.length >= 3) {
     found = contacts.find(c => {
       const cClean = cleanSalespersonName(c.name || '').trim().toLowerCase();
       return (cClean.length >= 3 && (cleanLower.includes(cClean) || cClean.includes(cleanLower)));
     });
     if (found) return found;
+  }
+
+  // 6. Fuzzy similarity match (>= 70%)
+  if (cleanLower.length >= 3) {
+    let bestMatch: Contact | undefined;
+    let highest = 0;
+    for (const c of contacts) {
+      const cClean = cleanSalespersonName(c.name || '').trim().toLowerCase();
+      if (!cClean) continue;
+      const score = calculateSimilarity(cleanLower, cClean);
+      if (score >= 0.70 && score > highest) {
+        highest = score;
+        bestMatch = c;
+      }
+    }
+    if (bestMatch) return bestMatch;
   }
 
   return undefined;
@@ -876,19 +1069,41 @@ export async function savePartyContacts(contacts: Contact[]): Promise<boolean> {
 }
 
 export async function saveSalespersonContacts(contacts: Contact[]): Promise<boolean> {
-  // Ensure every contact has a stable id and cleaned mobile digits
-  const normalizedContacts = contacts.map(c => {
-    const cleanName = cleanSalespersonName(c.name || '').trim() || (c.name || '').trim();
-    const cleanMobile = (c.mobile || '').replace(/\D/g, '').slice(0, 15);
+  // Ensure every contact has a stable id, cleaned salesperson name without (ME)/(TL)/(FL), and valid mobile digits
+  const mergedMap = new Map<string, Contact>();
+  for (const c of contacts) {
+    const cleanName = cleanSalespersonName(c.name || '').trim();
+    if (!cleanName) continue;
+    const digits = (c.mobile || '').replace(/\D/g, '');
+    const cleanMobile = digits.length >= 10 ? digits.slice(-10) : digits;
     const stableId = c.id || `sp_${cleanName.toLowerCase().replace(/[^a-z0-9]/g, '_').slice(0, 44)}`;
-    return {
-      ...c,
-      id: stableId,
-      name: (c.name || '').trim(),
-      mobile: cleanMobile,
-    };
-  });
 
+    // Check if equivalent contact already exists in map (handles surname front vs back)
+    let existingKey = '';
+    for (const [key, existing] of mergedMap) {
+      if (areSalespersonNamesEquivalent(existing.name, cleanName)) {
+        existingKey = key;
+        break;
+      }
+    }
+
+    if (existingKey) {
+      const existing = mergedMap.get(existingKey)!;
+      mergedMap.set(existingKey, {
+        ...existing,
+        mobile: cleanMobile || existing.mobile,
+      });
+    } else {
+      const key = cleanName.toLowerCase();
+      mergedMap.set(key, {
+        id: stableId,
+        name: cleanName,
+        mobile: cleanMobile,
+      });
+    }
+  }
+
+  const normalizedContacts = Array.from(mergedMap.values());
   _salespersonContacts = normalizedContacts;
   dispatchUpdate();
   persistLocalState();
@@ -1039,16 +1254,16 @@ export async function mergeTwoSalespersons(
   fromName: string,
   toName: string
 ): Promise<{ billsUpdated: number; ok: boolean; error?: string }> {
-  const fromClean = fromName.trim();
-  const toClean = toName.trim();
+  const fromClean = cleanSalespersonName(fromName).trim() || fromName.trim();
+  const toClean = cleanSalespersonName(toName).trim() || toName.trim();
   const fromLower = fromClean.toLowerCase();
   const toLower = toClean.toLowerCase();
   if (!fromClean || !toClean || fromLower === toLower) {
     return { billsUpdated: 0, ok: false, error: 'Invalid salesperson names' };
   }
 
-  const fromBaseClean = cleanSalespersonName(fromClean).trim().toLowerCase();
-  const toBaseClean = cleanSalespersonName(toClean).trim();
+  const fromBaseClean = fromClean.toLowerCase();
+  const toBaseClean = toClean;
 
   // 1. Update in-memory bills immediately across ALL bills so UI updates instantly
   let changed = 0;
@@ -1057,10 +1272,10 @@ export async function mergeTwoSalespersons(
     const spRaw = (b.salespersonName || '').trim();
     const spLower = spRaw.toLowerCase();
     const spClean = cleanSalespersonName(spRaw).trim().toLowerCase();
-    if (spLower === fromLower || (fromBaseClean && spClean === fromBaseClean)) {
+    if (spLower === fromLower || (fromBaseClean && spClean === fromBaseClean) || areSalespersonNamesEquivalent(spRaw, fromClean)) {
       changed++;
-      modifiedPatches.push({ id: b.id, billNo: b.billNo, patch: { salespersonName: toClean } });
-      return { ...b, salespersonName: toClean };
+      modifiedPatches.push({ id: b.id, billNo: b.billNo, patch: { salespersonName: toBaseClean } });
+      return { ...b, salespersonName: toBaseClean };
     }
     return b;
   });
@@ -1076,30 +1291,30 @@ export async function mergeTwoSalespersons(
   const remaining = _salespersonContacts.filter((c) => {
     const cLower = (c.name || '').trim().toLowerCase();
     const cClean = cleanSalespersonName(c.name || '').trim().toLowerCase();
-    return cLower !== fromLower && (!fromBaseClean || cClean !== fromBaseClean);
+    return cLower !== fromLower && (!fromBaseClean || cClean !== fromBaseClean) && !areSalespersonNamesEquivalent(c.name || '', fromClean);
   });
 
   // Update or insert toName contact with preserved mobile number
   const toIdx = remaining.findIndex((c) => {
     const cLower = (c.name || '').trim().toLowerCase();
     const cClean = cleanSalespersonName(c.name || '').trim().toLowerCase();
-    return cLower === toLower || (toBaseClean && cClean === toBaseClean.toLowerCase());
+    return cLower === toLower || (toBaseClean && cClean === toBaseClean.toLowerCase()) || areSalespersonNamesEquivalent(c.name || '', toClean);
   });
 
-  const stableToId = toContact?.id || `sp_${(toBaseClean || toClean).toLowerCase().replace(/[^a-z0-9]/g, '_').slice(0, 44)}`;
+  const stableToId = toContact?.id || `sp_${toBaseClean.toLowerCase().replace(/[^a-z0-9]/g, '_').slice(0, 44)}`;
 
   if (toIdx >= 0) {
     remaining[toIdx] = {
       ...remaining[toIdx],
       id: remaining[toIdx].id || stableToId,
-      name: toClean,
+      name: toBaseClean,
       mobile: inheritedMobile || remaining[toIdx].mobile || '',
     };
   } else {
     // toName was not in contacts yet - create it so the number is NEVER lost!
     remaining.push({
       id: stableToId,
-      name: toClean,
+      name: toBaseClean,
       mobile: inheritedMobile,
     });
   }
@@ -1802,8 +2017,9 @@ export async function savePayment(
   // OR when memory was cleared, OR when creating a brand new MOC entry.
   if (index === -1) {
     console.warn(`[savePayment] Bill ${billNo} (id=${billId || ''}) not in memory (${_bills.length} bills loaded). Saving directly to Supabase.`);
+    const isNoPaymentDateMode = (isCredit && !hasCollection) || (isDelPend && !hasCollection) || isUnpaid;
     const fallbackRawRecDate = (forceRecDate && forceRecDate.trim() !== '') ? forceRecDate : paymentDate;
-    const fallbackPaymentDate = (hasCollection || isFBR || isCredit || finalStatus === 'Paid')
+    const fallbackPaymentDate = (!isNoPaymentDateMode && (hasCollection || isFBR || finalStatus === 'Paid'))
       ? excelSerialToDate(fallbackRawRecDate)
       : '';
     const fallbackPatch: Partial<Bill> = {
@@ -1812,7 +2028,7 @@ export async function savePayment(
       cancelLine: cancelLine || '',
       driverName: driverName || '',
       paymentDate: fallbackPaymentDate,
-      paymentTime: (hasCollection || isFBR || isCredit || finalStatus === 'Paid') ? paymentTime : '',
+      paymentTime: (!isNoPaymentDateMode && (hasCollection || isFBR || finalStatus === 'Paid')) ? paymentTime : '',
       chequeNo: chequeNo || '',
       bankName: bankName || '',
       nextBillNo: nextBillNo || '',
@@ -1926,13 +2142,16 @@ export async function savePayment(
   const existingDriver = _bills[index].driverName?.trim();
   const finalDriverName = existingDriver ? existingDriver : driverName;
 
-  // PaymentDate & PaymentTime are preserved or set whenever money is collected, or for FBR/Credit/Paid status, or when forceRecDate is given.
+  // PaymentDate & PaymentTime:
+  // User explicitly requested: when Credit, Del Pending, or Unpaid is selected without collected money, NO paid/rec date should be added!
+  const isNoPaymentDateMode = (isCredit && !hasCollection) || (isDelPend && !hasCollection) || isUnpaid;
+
   const existingPaymentDate = _bills[index].paymentDate?.trim() || '';
   const rawRecDate = (forceRecDate && forceRecDate.trim() !== '')
     ? forceRecDate
     : (existingPaymentDate || (customDate ? excelSerialToDate(customDate) : paymentDate));
   const normalizedPaymentDate = rawRecDate ? excelSerialToDate(rawRecDate) : '';
-  const shouldSetPaymentDate = hasCollection || isFBR || isCredit || finalPaymentMode === 'Paid' || (!!forceRecDate && forceRecDate.trim() !== '') || !!existingPaymentDate;
+  const shouldSetPaymentDate = !isNoPaymentDateMode && (hasCollection || isFBR || finalPaymentMode === 'Paid' || (!!forceRecDate && forceRecDate.trim() !== '' && !isCredit && !isDelPend && !isUnpaid));
   const finalPaymentDate = shouldSetPaymentDate
     ? normalizedPaymentDate
     : '';
