@@ -256,13 +256,13 @@ function initSupabaseRealtime() {
         if (status === 'SUBSCRIBED') {
           console.log('[Supabase Realtime] Connected and listening live across all devices.');
           window.dispatchEvent(new CustomEvent('sync-status', { detail: 'ok' }));
-        } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') {
+        } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
           console.warn('[Supabase Realtime] Channel status:', status, err);
-          if (navigator.onLine) {
-            if (realtimeReconnectTimer) clearTimeout(realtimeReconnectTimer);
+          if (navigator.onLine && !realtimeReconnectTimer) {
             realtimeReconnectTimer = setTimeout(() => {
+              realtimeReconnectTimer = null;
               initSupabaseRealtime();
-            }, 3000);
+            }, 10000);
           }
         }
       });
