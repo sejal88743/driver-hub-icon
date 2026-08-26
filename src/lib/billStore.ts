@@ -227,8 +227,25 @@ export async function idbGet<T>(key: string): Promise<T | null> {
   });
 }
 
-export function persistLocalState() {
+let persistTimer: ReturnType<typeof setTimeout> | null = null;
+
+export function persistLocalState(immediate = false) {
   if (typeof window === 'undefined') return;
+  if (persistTimer) {
+    clearTimeout(persistTimer);
+    persistTimer = null;
+  }
+  if (immediate) {
+    doPersistLocalState();
+    return;
+  }
+  persistTimer = setTimeout(() => {
+    persistTimer = null;
+    doPersistLocalState();
+  }, 250);
+}
+
+function doPersistLocalState() {
   try {
     if (_bills.length > 0) {
       localStorage.setItem(LS_BILLS_KEY, JSON.stringify(_bills.slice(0, 3000)));
@@ -1589,20 +1606,29 @@ export async function patchBillInMemory(billNo: string, patch: Partial<Bill>): P
   markWriteStart();
   let confirmed = false;
   try {
-    const { enqueueDirty, flushDirtyQueue, isDirtyPending } = await import('@/lib/localQueue');
+    const { apiPatchBill } = await import('@/lib/apiSync');
+    const res = await apiPatchBill(bill.id, patch, bill.billNo);
+    confirmed = !!res?.ok;
+    if (confirmed) {
+      const { removeDirtyEntry } = await import('@/lib/localQueue');
+      removeDirtyEntry(bill.id, bill.billNo);
+    } else {
+      const { enqueueDirty } = await import('@/lib/localQueue');
+      enqueueDirty(bill.id, patch, bill.billNo);
+    }
+  } catch {
+    confirmed = false;
+    const { enqueueDirty } = await import('@/lib/localQueue');
     enqueueDirty(bill.id, patch, bill.billNo);
-    await flushDirtyQueue();
-    confirmed = !isDirtyPending(bill.id, bill.billNo);
-  } catch { confirmed = false; }
-  finally {
+  } finally {
     markWriteEnd();
   }
   return confirmed;
 }
 
-// ─── Batch patch — local update + immediate Supabase sync ─────────────────
+// ─── Batch patch — local update + immediate parallel Supabase sync ───────────
 export async function patchBillsInMemory(patches: Array<{ billNo: string; patch: Partial<Bill> }>): Promise<boolean> {
-  const toQueue: Array<{ id: string; patch: Partial<Bill>; billNo: string }> = [];
+  const toSync: Array<{ id: string; patch: Partial<Bill>; billNo: string }> = [];
   for (const { billNo, patch } of patches) {
     const idx = _bills.findIndex(b => b.billNo === billNo);
     if (idx === -1) continue;
@@ -1617,23 +1643,40 @@ export async function patchBillsInMemory(patches: Array<{ billNo: string; patch:
       editDate: `${nowDMY()} ${nowHM()}`,
     };
     _bills[idx] = { ..._bills[idx], ...withHist };
-    toQueue.push({ id: _bills[idx].id, patch: withHist, billNo });
+    toSync.push({ id: _bills[idx].id, patch: withHist, billNo });
   }
-  if (toQueue.length === 0) return false;
+  if (toSync.length === 0) return false;
   dispatchUpdate();
   persistLocalState();
   markWriteStart();
-  let confirmed = false;
+  let allSuccess = true;
   try {
-    const { enqueueDirtyBatch, flushDirtyQueue, isDirtyPending } = await import('@/lib/localQueue');
-    enqueueDirtyBatch(toQueue);
-    await flushDirtyQueue();
-    confirmed = toQueue.every(e => !isDirtyPending(e.id, e.billNo));
-  } catch { confirmed = false; }
-  finally {
+    const { apiPatchBill } = await import('@/lib/apiSync');
+    const { removeDirtyEntry, enqueueDirty } = await import('@/lib/localQueue');
+    const results = await Promise.all(
+      toSync.map(async (item) => {
+        try {
+          const res = await apiPatchBill(item.id, item.patch, item.billNo);
+          if (res?.ok) {
+            removeDirtyEntry(item.id, item.billNo);
+            return true;
+          } else {
+            enqueueDirty(item.id, item.patch, item.billNo);
+            return false;
+          }
+        } catch {
+          enqueueDirty(item.id, item.patch, item.billNo);
+          return false;
+        }
+      })
+    );
+    allSuccess = results.every(Boolean);
+  } catch {
+    allSuccess = false;
+  } finally {
     markWriteEnd();
   }
-  return confirmed;
+  return allSuccess;
 }
 
 
@@ -1917,11 +1960,6 @@ export async function patchBillDirect(billNo: string, patch: Partial<Bill>): Pro
   dispatchUpdate();
   persistLocalState();
   const bill = _bills[idx];
-  
-  // Non-blocking background save to Supabase + dirty queue
-  import('@/lib/localQueue').then(({ enqueueDirty }) => {
-    enqueueDirty(bill.id, patch, bill.billNo);
-  }).catch(() => {});
 
   markWriteStart();
   (async () => {
@@ -1929,12 +1967,15 @@ export async function patchBillDirect(billNo: string, patch: Partial<Bill>): Pro
       const m = await import('@/lib/apiSync');
       const r = await m.apiPatchBill(bill.id, patch, bill.billNo);
       if (r.ok) {
-        const { readDirtyQueue, DIRTY_KEY } = await import('@/lib/localQueue');
-        const queue = readDirtyQueue().filter(e => !(e.id === bill.id || (bill.billNo && e.billNo === bill.billNo)));
-        try { localStorage.setItem(DIRTY_KEY, JSON.stringify(queue)); } catch {}
+        const { removeDirtyEntry } = await import('@/lib/localQueue');
+        removeDirtyEntry(bill.id, bill.billNo);
+      } else {
+        const { enqueueDirty } = await import('@/lib/localQueue');
+        enqueueDirty(bill.id, patch, bill.billNo);
       }
     } catch {
-      // Retained in dirty queue for automatic retry
+      const { enqueueDirty } = await import('@/lib/localQueue');
+      enqueueDirty(bill.id, patch, bill.billNo);
     } finally {
       markWriteEnd();
     }
@@ -2213,25 +2254,25 @@ export async function savePayment(
   dispatchUpdate();
   persistLocalState();
 
-  // Enqueue into offline dirty queue immediately to guarantee persistence
   const targetBillId = _bills[index].id;
-  import('@/lib/localQueue').then(({ enqueueDirty }) => {
-    enqueueDirty(targetBillId, patch, billNo);
-  }).catch(() => {});
 
-  // Save to Supabase in background without blocking the UI
+  // Save to Supabase in background immediately without blocking the UI
   markWriteStart();
   (async () => {
     try {
       const { apiPatchBill } = await import('@/lib/apiSync');
       const directRes = await apiPatchBill(targetBillId, patch, billNo);
       if (directRes.ok) {
-        const { readDirtyQueue, DIRTY_KEY } = await import('@/lib/localQueue');
-        const queue = readDirtyQueue().filter(e => !(e.id === targetBillId || (billNo && e.billNo === billNo)));
-        try { localStorage.setItem(DIRTY_KEY, JSON.stringify(queue)); } catch {}
+        const { removeDirtyEntry } = await import('@/lib/localQueue');
+        removeDirtyEntry(targetBillId, billNo);
+      } else {
+        const { enqueueDirty } = await import('@/lib/localQueue');
+        enqueueDirty(targetBillId, patch, billNo);
       }
     } catch (err) {
       console.warn(`[savePayment] Background sync for ${billNo} queued:`, err);
+      const { enqueueDirty } = await import('@/lib/localQueue');
+      enqueueDirty(targetBillId, patch, billNo);
     } finally {
       markWriteEnd();
     }

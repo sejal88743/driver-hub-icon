@@ -259,9 +259,9 @@ function dispatchSyncStatus(status: 'ok' | 'error') {
 }
 
 // ─── Retry wrapper: guarantees Supabase writes complete or throw ──────────────
-// 3 attempts with 300ms → 1000ms backoff for fast responsive retries without blocking.
+// Fast responsive retries: immediate retry on column mismatch, 150ms/400ms on network delays.
 async function withRetry<T>(fn: () => Promise<T>, label = 'op'): Promise<T> {
-  const delays = [300, 1000];
+  const delays = [150, 400];
   let lastErr: unknown;
   for (let attempt = 0; attempt <= delays.length; attempt++) {
     try {
@@ -271,6 +271,8 @@ async function withRetry<T>(fn: () => Promise<T>, label = 'op'): Promise<T> {
       const missing = extractMissingColumnFromError(err);
       if (missing) {
         markColumnUnsupported(missing);
+        // Column mismatch corrected: retry immediately without waiting
+        continue;
       }
       if (attempt === delays.length) break;
       console.warn(`[apiSync] ${label} attempt ${attempt + 1} failed, retrying…`, err);
@@ -342,15 +344,27 @@ export async function flushPendingWrites(): Promise<{ flushed: number; remaining
   if (list.length === 0) return { flushed: 0, remaining: 0 };
   const remain: PendingPatch[] = [];
   let flushed = 0;
-  for (const p of list) {
-    try {
-      const res = await apiPatchBill(p.id, p.patch, p.billNo);
-      if (res.ok) flushed++;
-      else remain.push(p);
-    } catch {
-      remain.push(p);
+
+  const BATCH_SIZE = 5;
+  for (let i = 0; i < list.length; i += BATCH_SIZE) {
+    const batch = list.slice(i, i + BATCH_SIZE);
+    const results = await Promise.all(
+      batch.map(async (p) => {
+        try {
+          const res = await apiPatchBill(p.id, p.patch, p.billNo);
+          return { p, ok: !!res.ok };
+        } catch {
+          return { p, ok: false };
+        }
+      })
+    );
+
+    for (const r of results) {
+      if (r.ok) flushed++;
+      else remain.push(r.p);
     }
   }
+
   writePending(remain);
   if (typeof window !== 'undefined') {
     window.dispatchEvent(new CustomEvent('pending-writes', { detail: remain.length }));
