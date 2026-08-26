@@ -109,13 +109,13 @@ function parseRegister(data: ArrayBuffer, XLSX: any): {
   if (rows.length === 0) throw new Error(`No data rows found after header row ${headerRow + 1}.`);
 
   const keys = Object.keys(rows[0]);
-  const billNoKey = findKey(keys, /billrefno/i, /bill\s*ref\s*no/i, /^bill\s*no$/i);
-  const billValueKey = findKey(keys, /billvalue/i, /bill\s*value/i);
-  const beatKey = findKey(keys, /^beat$/i, /beat\s*name/i);
-  const partyCodeKey = findKey(keys, /^party\s*code$/i, /party\s*code/i);
-  const partyNameKey = findKey(keys, /party\s*name/i);
-  const salespersonKey = findKey(keys, /salesperson/i);
-  const billDateKey = findKey(keys, /billdate/i, /bill\s*date/i, /sales\s*return\s*date/i);
+  const billNoKey = findKey(keys, /billrefno/i, /bill\s*ref\s*no/i, /bill\s*no/i, /^bill\s*#/i, /invoice\s*no/i, /doc\s*no/i, /document\s*no/i);
+  const billValueKey = findKey(keys, /billvalue/i, /bill\s*value/i, /bill\s*amount/i, /bill\s*amt/i, /net\s*amount/i, /net\s*amt/i, /^amount$/i, /inv\s*amt/i, /invoice\s*amount/i);
+  const beatKey = findKey(keys, /^beat$/i, /beat\s*name/i, /^route$/i, /route\s*name/i, /beat_name/i);
+  const partyCodeKey = findKey(keys, /^party\s*code$/i, /party\s*code/i, /customer\s*code/i, /party\s*id/i, /retailer\s*code/i, /account\s*code/i);
+  const partyNameKey = findKey(keys, /party\s*name/i, /customer\s*name/i, /retailer\s*name/i, /^party$/i, /^customer$/i);
+  const salespersonKey = findKey(keys, /salesperson/i, /sales\s*person/i, /salesman/i, /salesman\s*name/i, /executive/i, /sp\s*name/i);
+  const billDateKey = findKey(keys, /billdate/i, /bill\s*date/i, /sales\s*return\s*date/i, /^date$/i, /invoice\s*date/i, /doc\s*date/i, /document\s*date/i);
 
   if (!billNoKey || !billValueKey) {
     throw new Error(`Required columns not found (BillRefNo, BillValue). Found: ${keys.slice(0, 14).join(', ')}`);
@@ -154,9 +154,15 @@ function parseRegister(data: ArrayBuffer, XLSX: any): {
     }
 
     if (billValue < 0) {
-      // Deliberately do not read metadata from negative rows.
+      // Sum negative rows for lineCutAmt
       group.negativeBillValue += Math.abs(billValue);
       negativeRows++;
+      // If metadata is present in negative row and group doesn't have it yet, capture it
+      if (beatKey && !group.beatName) group.beatName = text(row[beatKey]);
+      if (partyCodeKey && !group.partyCode) group.partyCode = text(row[partyCodeKey]);
+      if (partyNameKey && !group.partyName) group.partyName = cleanRegisterPartyName(row[partyNameKey]);
+      if (salespersonKey && !group.salespersonName) group.salespersonName = cleanRegisterSalespersonName(row[salespersonKey]);
+      if (billDateKey && !group.billDate) group.billDate = excelSerialToDate(row[billDateKey]);
       continue;
     }
 
@@ -216,41 +222,73 @@ function buildUpdates(groups: Map<string, BillGroup>, existingBills: Bill[]): {
     }
 
     const patch: Partial<Bill> = {};
-    // Any non-negative row (including 0-value) is a source for identity fields.
-    if (group.hasNonNegativeRow) {
+
+    // 1. Bill Date update
+    if (group.billDate) {
+      patch.date = group.billDate;
+    }
+
+    // 2. Party Name, Party Code, Beat Name, Salesperson Name updates
+    if (group.hasNonNegativeRow || group.beatName) {
       if (group.beatName) patch.beatName = group.beatName;
       if (group.partyCode) patch.partyCode = group.partyCode;
       if (group.partyName) patch.partyName = group.partyName;
       if (group.salespersonName) patch.salespersonName = group.salespersonName;
     }
-    // Negative rows add to any existing line-cut total.
+
+    // 3. Positive Bill Value (+ amount -> billNetAmt)
+    if (group.positiveBillValue > 0) {
+      patch.billNetAmt = group.positiveBillValue;
+    }
+
+    // 4. Negative Bill Value (- amount -> lineCutAmt)
     if (group.negativeBillValue > 0) {
-      // The register is a bill-wise snapshot. Set the summed negative amount
-      // so uploading the same report twice is idempotent.
       patch.lineCutAmt = group.negativeBillValue;
     }
 
-    // Check if line-cut amt equals bill amount (net = 0) and rec amount is 0
-    const effectiveBillAmt = (group.hasNonNegativeRow && group.positiveBillValue > 0)
-      ? group.positiveBillValue
+    // 5. Calculate effective net bill amount & effective line cut amount
+    const effectiveBillAmt = (patch.billNetAmt !== undefined)
+      ? patch.billNetAmt
       : (Number(existing.billNetAmt) || 0);
 
     const effectiveLineCutAmt = (patch.lineCutAmt !== undefined)
       ? (patch.lineCutAmt || 0)
       : (Number(existing.lineCutAmt) || 0);
 
-    const recAmt = (Number(existing.collectedAmount) || 0) +
-                   (Number(existing.cashAmount) || 0) +
-                   (Number(existing.upiAmount) || 0) +
-                   (Number(existing.chequeAmount) || 0);
+    const cash = Number(existing.cashAmount) || 0;
+    const upi = Number(existing.upiAmount) || 0;
+    const cheque = Number(existing.chequeAmount) || 0;
+    const recAmt = (Number(existing.collectedAmount) || 0) + cash + upi + cheque;
 
-    // If rec amount is 0 and line cut amt >= bill amount (net balance = 0), auto set FBR
-    if (recAmt === 0 && effectiveBillAmt > 0 && (effectiveBillAmt - effectiveLineCutAmt <= 0 || Math.abs(effectiveBillAmt - effectiveLineCutAmt) <= 1)) {
-      patch.paymentMode = 'FBR';
-      patch.outstandingAmount = 0;
-    } else if (patch.lineCutAmt !== undefined && recAmt === 0) {
-      // If line cut was updated and bill is not FBR, update outstanding amount
-      patch.outstandingAmount = Math.max(0, effectiveBillAmt - effectiveLineCutAmt);
+    const curMode = (existing.paymentMode || '').toLowerCase();
+    const isLockedPayment = cash > 0 || upi > 0 || cheque > 0 || (recAmt > 0 && curMode === 'paid');
+
+    if (recAmt === 0 && !isLockedPayment) {
+      // If rec amount is 0 and line cut amt >= bill amount (net balance = 0), auto set FBR
+      if (effectiveBillAmt > 0 && (effectiveBillAmt - effectiveLineCutAmt <= 0 || Math.abs(effectiveBillAmt - effectiveLineCutAmt) <= 1)) {
+        patch.paymentMode = 'FBR';
+        patch.paymentMethod = 'FBR';
+        patch.outstandingAmount = 0;
+      } else {
+        if (curMode === 'fbr' || curMode === 'cancel') {
+          patch.paymentMode = 'Unpaid';
+          patch.paymentMethod = undefined;
+        }
+        patch.outstandingAmount = Math.max(0, effectiveBillAmt - effectiveLineCutAmt);
+      }
+    } else {
+      // Money has been received on this bill
+      patch.outstandingAmount = Math.max(0, effectiveBillAmt - effectiveLineCutAmt - recAmt);
+    }
+
+    // Calculate ageing from new or existing date
+    const targetDateStr = patch.date || existing.date;
+    if (targetDateStr) {
+      const today = new Date();
+      let parsedTs = today.getTime();
+      const [dd, mm, yyyy] = targetDateStr.split('/').map(Number);
+      if (dd && mm && yyyy) parsedTs = new Date(yyyy, mm - 1, dd).getTime();
+      patch.billAgeing = Math.max(0, Math.floor((today.getTime() - parsedTs) / 86400000));
     }
 
     if (Object.keys(patch).length > 0) {

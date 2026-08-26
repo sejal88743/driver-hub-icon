@@ -2135,13 +2135,13 @@ export default function SettingsPage() {
         <div id="bills-report-update" className="bg-card rounded-xl p-3 border border-amber-200 shadow-sm">
           <div className="flex items-center justify-between mb-1">
             <h2 className="text-[11px] font-black uppercase flex items-center gap-2 text-amber-600"><FileSpreadsheet className="w-4 h-4" /> Bills Report Update</h2>
-            <span className="text-[8px] font-black bg-amber-100 text-amber-700 px-2 py-0.5 rounded-full uppercase tracking-wider">Bill Wise Patch</span>
+            <span className="text-[8px] font-black bg-amber-100 text-amber-700 px-2 py-0.5 rounded-full uppercase tracking-wider">Bill Wise Sync</span>
           </div>
           <p className="text-[8px] font-bold text-muted-foreground uppercase mb-1 leading-tight">
-            Sales Register file. Required: <span className="text-amber-700">BillRefNo · BillValue · Beat · Party Code · Party Name · Salesperson Name</span>
+            Sales Register file (Excel/XLS). Columns: <span className="text-amber-700">BillRefNo · BillDate · Party Name · Party Code · Beat Name · BillValue</span>
           </p>
           <p className="text-[8px] font-bold text-muted-foreground uppercase mb-2 leading-tight">
-            Positive rows update identity fields. &nbsp;·&nbsp; Negative BillValue updates only <span className="text-red-600">Line Cut Amt</span>. &nbsp;·&nbsp; Existing bills only; no new bills inserted.
+            Bill No wise Bill Date, Party Name, Party Code, Beat Name, Bill Value Supabase me Add/Update hoga. Duplicate Bill No me (-) negative value <span className="text-red-600 font-black">Line Cut Amt</span> me aur (+) positive value <span className="text-emerald-600 font-black">Bill Net Amt</span> me update hogi.
           </p>
           <div onClick={() => billsReportFileRef.current?.click()} className="border-2 border-dashed rounded-xl p-3 flex items-center gap-3 cursor-pointer hover:bg-amber-50 transition-all border-amber-300">
             {billsReportResult?.status === 'loading' ? <Loader2 className="w-5 h-5 animate-spin text-amber-600 shrink-0" /> : <FileSpreadsheet className="w-5 h-5 text-amber-600 shrink-0" />}

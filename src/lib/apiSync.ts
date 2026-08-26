@@ -108,10 +108,7 @@ export function cleanRowForSupabase(row: Record<string, unknown>): Record<string
   return cleaned;
 }
 
-/** Immutable fields that must never be overwritten on an UPDATE, regardless of caller. */
-const IMMUTABLE_ON_UPDATE = ['date'] as const;
-
-/** Fields drivers are NOT allowed to modify. Owners bypass this restriction. */
+/** Fields drivers are NOT allowed to modify. Owners and automated updates bypass this restriction. */
 const DRIVER_LOCKED_FIELDS = [
   'date', 'billNo', 'partyCode', 'partyName', 'partyHulCode', 'salespersonName',
   'beatName', 'billNetAmt', 'srNo', 'collectionCode',
@@ -120,7 +117,6 @@ const DRIVER_LOCKED_FIELDS = [
 function stripPatchForUpdate<T extends Partial<Bill>>(patch: T): T {
   const isDriver = (() => { try { return getRole() === 'driver'; } catch { return false; } })();
   const out: Record<string, unknown> = { ...patch };
-  for (const k of IMMUTABLE_ON_UPDATE) delete out[k];
   if (isDriver) {
     for (const k of DRIVER_LOCKED_FIELDS) delete out[k];
   }
