@@ -114,7 +114,7 @@ export default function DriverDayTable({ bills, selectedDriver, displayDate, onS
     const map = new Map<string, Bill[]>();
     for (const b of bills) {
       if (b.deliveryDate !== displayDate || !b.driverName) continue;
-      const name = b.driverName.trim();
+      const name = (b.driverName || '').trim();
       if (!name) continue;
       if (!map.has(name)) map.set(name, []);
       map.get(name)!.push(b);
@@ -144,7 +144,7 @@ export default function DriverDayTable({ bills, selectedDriver, displayDate, onS
       result = bills.filter(b => {
         if (!b.billNo) return false;
         const isMoc = (b.billNo || '').toUpperCase().startsWith('MOC') || b.collectionCode === 'MOC' || b.salespersonName === 'MOC';
-        const normNo = isMoc ? (b.id || b.billNo) : b.billNo.trim().toUpperCase();
+        const normNo = isMoc ? (b.id || b.billNo || '') : (b.billNo || '').trim().toUpperCase();
         if (seenOwnerBills.has(normNo)) return false;
 
         const eff = getEffectiveAmounts(b);
@@ -216,7 +216,7 @@ export default function DriverDayTable({ bills, selectedDriver, displayDate, onS
       result = bills.filter(b => {
         if (!b.billNo) return false;
         const isMoc = (b.billNo || '').toUpperCase().startsWith('MOC') || b.collectionCode === 'MOC' || b.salespersonName === 'MOC';
-        const normNo = isMoc ? (b.id || b.billNo) : b.billNo.trim().toUpperCase();
+        const normNo = isMoc ? (b.id || b.billNo || '') : (b.billNo || '').trim().toUpperCase();
         if (seenUserBills.has(normNo)) return false;
 
         const eff = getEffectiveAmounts(b);
@@ -267,11 +267,11 @@ export default function DriverDayTable({ bills, selectedDriver, displayDate, onS
       result = bills.filter(b => {
         if (!b.billNo) return false;
         const isMoc = (b.billNo || '').toUpperCase().startsWith('MOC') || b.collectionCode === 'MOC' || b.salespersonName === 'MOC';
-        const normNo = isMoc ? (b.id || b.billNo) : b.billNo.trim().toUpperCase();
+        const normNo = isMoc ? (b.id || b.billNo || '') : (b.billNo || '').trim().toUpperCase();
         if (seenDriverBills.has(normNo)) return false;
 
-        const isMatch = (b.driverName?.trim().toUpperCase() === selUpper && (b.deliveryDate === displayDate || (!b.deliveryDate && b.date === displayDate))) ||
-          snapshotBillNos.has(b.billNo);
+        const isMatch = ((b.driverName || '').trim().toUpperCase() === selUpper && (b.deliveryDate === displayDate || (!b.deliveryDate && b.date === displayDate))) ||
+          (b.billNo && snapshotBillNos.has(b.billNo));
 
         if (isMatch) {
           seenDriverBills.add(normNo);

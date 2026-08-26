@@ -335,7 +335,7 @@ if (typeof window !== 'undefined') {
   idbGet<Contact[]>('cached_salesperson_contacts').then((cached) => {
     if (cached && Array.isArray(cached) && cached.length > 0) {
       // Merge with in-memory contacts
-      const localMap = new Map(_salespersonContacts.map(c => [c.name.trim().toLowerCase(), c]));
+      const localMap = new Map(_salespersonContacts.map(c => [(c.name || '').trim().toLowerCase(), c]));
       let changed = false;
       for (const c of cached) {
         const k = (c.name || '').trim().toLowerCase();
@@ -588,7 +588,8 @@ export function applyRealtimeTableChange(
         name: record.name,
         role: record.id?.startsWith('own_') ? 'owner' : record.id?.startsWith('usr_') ? 'user' : 'driver',
       };
-      const idx = _drivers.findIndex(d => d.id === driver.id || d.name.trim().toLowerCase() === driver.name.trim().toLowerCase());
+      const dName = (driver.name || '').trim().toLowerCase();
+      const idx = _drivers.findIndex(d => d.id === driver.id || (dName && (d.name || '').trim().toLowerCase() === dName));
       if (idx >= 0) _drivers[idx] = driver;
       else _drivers.push(driver);
     }
@@ -789,7 +790,10 @@ export async function saveBills(bills: Bill[]): Promise<boolean> {
 
 export async function saveDrivers(drivers: Driver[]): Promise<boolean> {
   const seen = new Map<string, Driver>();
-  for (const d of drivers) seen.set(d.name.trim().toLowerCase(), d);
+  for (const d of drivers) {
+    const k = (d.name || '').trim().toLowerCase();
+    if (k) seen.set(k, d);
+  }
   const deduped = Array.from(seen.values());
   _drivers = deduped;
   dispatchUpdate();
@@ -856,18 +860,18 @@ export async function saveBanks(banks: Bank[]): Promise<boolean> {
 export function getAllUniqueBankNames(): string[] {
   const set = new Set<string>();
   for (const b of _banks) {
-    const n = String(b.name || '').trim().toUpperCase();
+    const n = String(b?.name || '').trim().toUpperCase();
     if (n) set.add(n);
   }
   for (const bill of _bills) {
-    if (bill.bankName) {
-      const n = bill.bankName.trim().toUpperCase();
+    if (bill?.bankName) {
+      const n = String(bill.bankName || '').trim().toUpperCase();
       if (n) set.add(n);
     }
-    if (bill.partPayments && Array.isArray(bill.partPayments)) {
+    if (bill?.partPayments && Array.isArray(bill.partPayments)) {
       for (const p of bill.partPayments) {
-        if (p.bankName) {
-          const n = p.bankName.trim().toUpperCase();
+        if (p?.bankName) {
+          const n = String(p.bankName || '').trim().toUpperCase();
           if (n) set.add(n);
         }
       }
@@ -877,9 +881,11 @@ export function getAllUniqueBankNames(): string[] {
 }
 
 export async function deleteBank(id: string, name?: string): Promise<boolean> {
-  const bank = _banks.find(b => b.id === id || (name && b.name.trim().toUpperCase() === name.trim().toUpperCase()));
+  const normSearch = (name || '').trim().toUpperCase();
+  const bank = _banks.find(b => b.id === id || (normSearch && (b.name || '').trim().toUpperCase() === normSearch));
   const bankName = bank?.name || name;
-  _banks = _banks.filter(b => b.id !== id && (!bankName || b.name.trim().toUpperCase() !== bankName.trim().toUpperCase()));
+  const normBankName = (bankName || '').trim().toUpperCase();
+  _banks = _banks.filter(b => b.id !== id && (!normBankName || (b.name || '').trim().toUpperCase() !== normBankName));
   dispatchUpdate();
   persistLocalState();
   try {
@@ -931,8 +937,8 @@ export async function mergeTwoBanks(fromName: string, toName: string): Promise<{
 
   // 2. Update banks directory in memory
   const currentBanks = getBanks();
-  const keptBanks = currentBanks.filter(b => b.name.trim().toUpperCase() !== fromClean);
-  if (!keptBanks.some(b => b.name.trim().toUpperCase() === toClean)) {
+  const keptBanks = currentBanks.filter(b => (b?.name || '').trim().toUpperCase() !== fromClean);
+  if (!keptBanks.some(b => (b?.name || '').trim().toUpperCase() === toClean)) {
     keptBanks.push({ id: `bn_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`, name: toClean });
   }
   _banks = keptBanks;
@@ -944,13 +950,13 @@ export async function mergeTwoBanks(fromName: string, toName: string): Promise<{
     const updatedQ = q.map(entry => {
       let qChanged = false;
       const p = { ...entry.patch };
-      if (p.bankName && p.bankName.trim().toUpperCase() === fromClean) {
+      if (p.bankName && (p.bankName || '').trim().toUpperCase() === fromClean) {
         p.bankName = toClean;
         qChanged = true;
       }
       if (Array.isArray(p.partPayments)) {
         p.partPayments = p.partPayments.map(item => {
-          if (item.bankName && item.bankName.trim().toUpperCase() === fromClean) {
+          if (item?.bankName && (item.bankName || '').trim().toUpperCase() === fromClean) {
             qChanged = true;
             return { ...item, bankName: toClean };
           }
@@ -993,7 +999,7 @@ export async function deduplicateBanks(): Promise<{ removed: number; mergedList:
   const removedNames: string[] = [];
   let removed = 0;
   for (const b of currentBanks) {
-    const key = b.name.trim().toUpperCase();
+    const key = (b?.name || '').trim().toUpperCase();
     if (!key) continue;
     if (seen.has(key)) {
       removed++;
@@ -1011,7 +1017,7 @@ export async function deduplicateBanks(): Promise<{ removed: number; mergedList:
     let changed = false;
     let newBank = b.bankName;
     if (b.bankName) {
-      const cleanUpper = b.bankName.trim().toUpperCase();
+      const cleanUpper = (b.bankName || '').trim().toUpperCase();
       if (b.bankName !== cleanUpper) {
         newBank = cleanUpper;
         changed = true;
@@ -1020,8 +1026,8 @@ export async function deduplicateBanks(): Promise<{ removed: number; mergedList:
     let newParts = b.partPayments;
     if (b.partPayments && b.partPayments.length > 0) {
       const mappedParts = b.partPayments.map(p => {
-        if (p.bankName) {
-          const cleanUpper = p.bankName.trim().toUpperCase();
+        if (p?.bankName) {
+          const cleanUpper = (p.bankName || '').trim().toUpperCase();
           if (p.bankName !== cleanUpper) {
             changed = true;
             return { ...p, bankName: cleanUpper };
@@ -1584,8 +1590,8 @@ export async function consolidateSimilarPartyAndSalespersons(customBills?: Bill[
   return { updatedCount: changed, mergedParties: mergedPartiesCount, mergedSPs: mergedSPCount };
 }
 export async function patchBillInMemory(billNo: string, patch: Partial<Bill>): Promise<boolean> {
-  const norm = billNo.trim().toLowerCase();
-  const idx = _bills.findIndex(b => b.billNo.trim().toLowerCase() === norm);
+  const norm = (billNo || '').trim().toLowerCase();
+  const idx = _bills.findIndex(b => (b.billNo || '').trim().toLowerCase() === norm || b.id === billNo);
   if (idx === -1) return false;
   if (!('editHistory' in patch)) {
     patch = {

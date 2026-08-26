@@ -1,6 +1,6 @@
-import { useState, useEffect } from 'react';
+import { useEffect, useSyncExternalStore } from 'react';
 import { getBills, getDrivers, getBanks, getSummaries, getPartyContacts, getSalespersonContacts, setServerData, applyRealtimeBillChange, applyRealtimeTableChange, Bill, Driver, Bank, DriverDailySummary } from '@/lib/billStore';
-import { apiFetchAllData, flushPendingWrites, mapBillFromSupabase } from '@/lib/apiSync';
+import { apiFetchAllData, mapBillFromSupabase } from '@/lib/apiSync';
 import { supabase } from '@/lib/supabase';
 import { isWriteInProgress, getLastWriteAt } from '@/lib/syncState';
 import { applyDirtyPatches, isDirtyPending, flushDirtyQueue } from '@/lib/localQueue';
@@ -11,7 +11,7 @@ import { applyDirtyPatches, isDirtyPending, flushDirtyQueue } from '@/lib/localQ
 
 const POLL_INTERVAL_MS = 60_000;
 
-type StoreState = {
+export type StoreSnapshot = {
   bills: Bill[];
   drivers: Driver[];
   banks: Bank[];
@@ -25,7 +25,7 @@ const initialDrivers = typeof window !== 'undefined' ? getDrivers() : [];
 const initialBanks = typeof window !== 'undefined' ? getBanks() : [];
 const initialSummaries = typeof window !== 'undefined' ? getSummaries() : [];
 
-let g: StoreState = {
+let currentSnapshot: StoreSnapshot = {
   bills: initialBills,
   drivers: initialDrivers,
   banks: initialBanks,
@@ -40,11 +40,21 @@ let pollingTimer: ReturnType<typeof setInterval> | null = null;
 let syncInFlight = false;
 let initialized = false;
 let fullSyncDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+let notifyScheduled = false;
 
-function notify() { subs.forEach(fn => fn()); }
+function notify() {
+  if (notifyScheduled) return;
+  notifyScheduled = true;
+  queueMicrotask(() => {
+    notifyScheduled = false;
+    subs.forEach(fn => {
+      try { fn(); } catch (err) { console.warn('[useBillStore] subscriber error:', err); }
+    });
+  });
+}
 
-function patch(delta: Partial<StoreState>) {
-  g = { ...g, ...delta };
+function patch(delta: Partial<StoreSnapshot>) {
+  currentSnapshot = { ...currentSnapshot, ...delta };
   notify();
 }
 
@@ -76,7 +86,7 @@ async function doFullSync() {
   try {
     const data = await apiFetchAllData();
     // 1. Merge any un-flushed local dirty patches on top of bills fetched from Supabase
-    const patchedBills = applyDirtyPatches(data.bills);
+    const patchedBills = applyDirtyPatches(data?.bills || []);
 
     // 2. Preserve local bills & field values that are newer or not yet in Supabase
     const currentLocalBills = getBills();
@@ -134,21 +144,21 @@ async function doFullSync() {
 
     // 3. Preserve any recently created local drivers not yet in Supabase
     const currentLocalDrivers = getDrivers();
-    const fetchedDriverNames = new Set(data.drivers.map(d => d.name.toLowerCase().trim()));
-    const pendingNewDrivers = currentLocalDrivers.filter(d => !fetchedDriverNames.has(d.name.toLowerCase().trim()));
-    const mergedDrivers = [...data.drivers, ...pendingNewDrivers];
+    const fetchedDriverNames = new Set((data?.drivers || []).map(d => (d?.name || '').toLowerCase().trim()).filter(Boolean));
+    const pendingNewDrivers = currentLocalDrivers.filter(d => (d?.name || '').trim() && !fetchedDriverNames.has((d.name || '').toLowerCase().trim()));
+    const mergedDrivers = [...(data?.drivers || []), ...pendingNewDrivers];
 
     // 4. Preserve any recently created local banks not yet in Supabase
     const currentLocalBanks = getBanks();
-    const fetchedBankNames = new Set(data.banks.map(b => b.name.toLowerCase().trim()));
-    const pendingNewBanks = currentLocalBanks.filter(b => !fetchedBankNames.has(b.name.toLowerCase().trim()));
-    const mergedBanks = [...data.banks, ...pendingNewBanks];
+    const fetchedBankNames = new Set((data?.banks || []).map(b => (b?.name || '').toLowerCase().trim()).filter(Boolean));
+    const pendingNewBanks = currentLocalBanks.filter(b => (b?.name || '').trim() && !fetchedBankNames.has((b.name || '').toLowerCase().trim()));
+    const mergedBanks = [...(data?.banks || []), ...pendingNewBanks];
 
     // 5. Preserve any local summaries not yet in Supabase
     const currentLocalSummaries = getSummaries();
-    const fetchedSummaryIds = new Set(data.summaries.map(s => s.id));
-    const pendingNewSummaries = currentLocalSummaries.filter(s => !fetchedSummaryIds.has(s.id));
-    const mergedSummaries = [...data.summaries, ...pendingNewSummaries];
+    const fetchedSummaryIds = new Set((data?.summaries || []).map(s => s?.id).filter(Boolean));
+    const pendingNewSummaries = currentLocalSummaries.filter(s => s?.id && !fetchedSummaryIds.has(s.id));
+    const mergedSummaries = [...(data?.summaries || []), ...pendingNewSummaries];
 
     // 6. Preserve any local party & salesperson contacts with mobile numbers
     const currentLocalParty = getPartyContacts();
@@ -159,9 +169,9 @@ async function doFullSync() {
       drivers: mergedDrivers,
       banks: mergedBanks,
       summaries: mergedSummaries,
-      partyContacts: data.partyContacts || currentLocalParty,
-      salespersonContacts: data.salespersonContacts || currentLocalSales,
-      settings: data.settings,
+      partyContacts: data?.partyContacts || currentLocalParty,
+      salespersonContacts: data?.salespersonContacts || currentLocalSales,
+      settings: data?.settings,
     });
     window.dispatchEvent(new CustomEvent('sync-status', { detail: 'ok' }));
     readLocal();
@@ -300,7 +310,7 @@ function initGlobalSync() {
     doFullSync();
   });
   window.addEventListener('online', () => {
-    import('@/lib/localQueue').then(m => m.flushDirtyQueue());
+    flushDirtyQueue();
     doFullSync();
     initSupabaseRealtime();
   });
@@ -308,16 +318,16 @@ function initGlobalSync() {
   // Emergency local persistence & dirty queue flush on unload/close
   window.addEventListener('beforeunload', () => {
     import('@/lib/billStore').then(m => m.persistLocalState());
-    import('@/lib/localQueue').then(m => m.flushDirtyQueue());
+    flushDirtyQueue();
   });
   window.addEventListener('pagehide', () => {
     import('@/lib/billStore').then(m => m.persistLocalState());
-    import('@/lib/localQueue').then(m => m.flushDirtyQueue());
+    flushDirtyQueue();
   });
 
   // Background dirty queue flush every 10 seconds
   setInterval(() => {
-    import('@/lib/localQueue').then(m => m.flushDirtyQueue());
+    flushDirtyQueue();
   }, 10000);
 
   // Initial full load from Supabase
@@ -326,26 +336,37 @@ function initGlobalSync() {
   initSupabaseRealtime();
 }
 
-// ─── React hook ───────────────────────────────────────────────────────────
-export function useBillStore() {
-  const [, tick] = useState(0);
-
-  useEffect(() => {
-    initGlobalSync();
-    const cb = () => tick(n => n + 1);
-    subs.add(cb);
-    return () => { subs.delete(cb); };
-  }, []);
-
-  return {
-    bills:      g.bills,
-    drivers:    g.drivers,
-    banks:      g.banks,
-    summaries:  g.summaries,
-    loading:    g.loading,
-    syncing:    g.syncing,
-    refresh:    readLocal,
-    syncFromApi: () => { serverVersion = 0; doFullSync(); },
+function subscribe(callback: () => void) {
+  subs.add(callback);
+  return () => {
+    subs.delete(callback);
   };
 }
 
+function getSnapshot(): StoreSnapshot {
+  return currentSnapshot;
+}
+
+function getServerSnapshot(): StoreSnapshot {
+  return currentSnapshot;
+}
+
+// ─── React hook ───────────────────────────────────────────────────────────
+export function useBillStore() {
+  useEffect(() => {
+    initGlobalSync();
+  }, []);
+
+  const snapshot = useSyncExternalStore(subscribe, getSnapshot, getServerSnapshot);
+
+  return {
+    bills: snapshot.bills,
+    drivers: snapshot.drivers,
+    banks: snapshot.banks,
+    summaries: snapshot.summaries,
+    loading: snapshot.loading,
+    syncing: snapshot.syncing,
+    refresh: readLocal,
+    syncFromApi: () => { serverVersion = 0; doFullSync(); },
+  };
+}
