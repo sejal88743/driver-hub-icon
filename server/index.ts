@@ -559,6 +559,87 @@ app.post('/api/admin/ai-agent', async (req, res) => {
       ? clientApiKey.trim()
       : (req.headers['x-gemini-api-key'] as string) || process.env.GEMINI_API_KEY;
 
+    // Helper date formatting (DD/MM/YYYY)
+    const now = new Date();
+    const todayDMY = `${String(now.getDate()).padStart(2, '0')}/${String(now.getMonth() + 1).padStart(2, '0')}/${now.getFullYear()}`;
+
+    // 0. PARSE INTENT ONLY (LIGHTWEIGHT GEMINI CALL)
+    if (action === 'parse-intent') {
+      const userPrompt = typeof prompt === 'string' ? prompt.trim() : '';
+      if (!userPrompt) {
+        return res.json({ ok: false, error: 'Prompt is required.' });
+      }
+
+      let parsedResult: any = null;
+      if (apiKey) {
+        try {
+          const ai = new GoogleGenAI({
+            apiKey,
+            httpOptions: { headers: { 'User-Agent': 'aistudio-build' } },
+          });
+
+          const promptContext = `You are the VitraTrack Billing AI Administrator.
+Analyze this admin request for a billing database.
+User Command/Prompt: "${userPrompt}"
+Today's Date: "${todayDMY}"
+
+Understand user's intent in Hindi, Hinglish, Gujarati, or English:
+1. Target Payment Mode:
+   - "Paid" (when user asks to mark bills as Paid, Jama, Cash me paid karo, UPI me paid karo, etc.)
+   - "FBR" (when user asks to mark as FBR, Return, Cancel, Goods return, etc.)
+   - "Credit" or "Del Pending" (when user asks for credit, delivery pending, etc.)
+   - "Unpaid" (reset / unpaid)
+   - "" (if only searching/filtering without updating)
+2. Target Payment Method:
+   - "Cash" (when user mentions cash, nakad, rokad)
+   - "UPI" (when user mentions UPI, GPay, PhonePe, Paytm, online)
+   - "Cheque" (when user mentions cheque, bank)
+   - "Split" (when split payment is specified)
+   - "" (none)
+3. Target Date:
+   - If user mentions specific date (e.g. "25/08/2026" or "25-08-2026"), convert to DD/MM/YYYY.
+   - If user asks for today / aaj ki date / default, use "${todayDMY}".
+4. Discrepancy Reason (if FBR or discrepancy):
+   - e.g. "Damage", "Rate Difference", "Party Closed", "Order Cancelled", "Excess Stock", "Goods Return"
+5. Is this a Write/Edit/Update intent? (boolean: true if user wants to change/update/set/mark/paid/fbr/credit bills, false if just viewing)
+6. Target Amount Mode: "NET_AMOUNT" (full collection equal to net - lineCut) | "ZERO" (for FBR/Credit) | "CUSTOM"
+
+Respond ONLY in valid JSON matching schema:
+{
+  "explanation": "Clear Hinglish/English summary of what will be done",
+  "isWriteIntent": boolean,
+  "targetPaymentMode": "Paid" | "FBR" | "Credit" | "Del Pending" | "Unpaid" | "",
+  "targetPaymentMethod": "Cash" | "UPI" | "Cheque" | "Split" | "",
+  "targetDate": string,
+  "targetAmountMode": "NET_AMOUNT" | "ZERO" | "CUSTOM",
+  "discrepancyReason": string,
+  "searchKeyword": string
+}`;
+
+          const geminiRes = await ai.models.generateContent({
+            model: 'gemini-2.5-flash',
+            contents: promptContext,
+            config: {
+              responseMimeType: 'application/json',
+            },
+          });
+
+          if (geminiRes.text) {
+            try {
+              parsedResult = JSON.parse(geminiRes.text.trim());
+            } catch {}
+          }
+        } catch (gemErr) {
+          console.warn('[Gemini Parse-Intent Warning]', gemErr);
+        }
+      }
+
+      return res.json({
+        ok: true,
+        parsed: parsedResult,
+      });
+    }
+
     // 1. EXECUTE ACTION (WRITE / EDIT TO DATABASE)
     if (action === 'execute') {
       if (!Array.isArray(inputPatches) || inputPatches.length === 0) {
@@ -631,10 +712,6 @@ app.post('/api/admin/ai-agent', async (req, res) => {
     if (allBills.length === 0 && Array.isArray(clientBills) && clientBills.length > 0) {
       allBills = clientBills;
     }
-
-    // Helper date formatting (DD/MM/YYYY)
-    const now = new Date();
-    const todayDMY = `${String(now.getDate()).padStart(2, '0')}/${String(now.getMonth() + 1).padStart(2, '0')}/${now.getFullYear()}`;
 
     // Gemini Intent Analysis
     let aiExplanation = '';
