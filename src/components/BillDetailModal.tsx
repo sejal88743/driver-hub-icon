@@ -1,7 +1,7 @@
 
 import { useState } from 'react';
-import { X, RotateCcw, AlertTriangle, Loader2, Lock } from 'lucide-react';
-import { Bill, resetBill, getOwnerPassword } from '@/lib/billStore';
+import { X, RotateCcw, AlertTriangle, Loader2, Lock, Trash2 } from 'lucide-react';
+import { Bill, resetBill, deleteBill, getOwnerPassword } from '@/lib/billStore';
 import { cn } from '@/lib/utils';
 
 type Props = {
@@ -10,8 +10,8 @@ type Props = {
 };
 
 export default function BillDetailModal({ bill, onClose }: Props) {
-  const [confirmReset, setConfirmReset] = useState(false);
-  const [resetting, setResetting] = useState(false);
+  const [actionType, setActionType] = useState<'none' | 'reset' | 'delete'>('none');
+  const [processing, setProcessing] = useState(false);
   const [ownerPwInput, setOwnerPwInput] = useState('');
   const [pwError, setPwError] = useState(false);
 
@@ -38,16 +38,20 @@ export default function BillDetailModal({ bill, onClose }: Props) {
     { label: 'Bank',              value: bill.bankName || '—' },
   ];
 
-  async function handleReset() {
+  async function handleConfirmAction() {
     const ownerPw = (getOwnerPassword() || '').trim();
     if (ownerPwInput.trim() !== ownerPw) {
       setPwError(true);
       return;
     }
-    setResetting(true);
-    await resetBill(bill.billNo);
-    setResetting(false);
-    setConfirmReset(false);
+    setProcessing(true);
+    if (actionType === 'reset') {
+      await resetBill(bill.billNo);
+    } else if (actionType === 'delete') {
+      await deleteBill(bill.billNo, bill.id);
+    }
+    setProcessing(false);
+    setActionType('none');
     onClose();
   }
 
@@ -73,21 +77,33 @@ export default function BillDetailModal({ bill, onClose }: Props) {
           ))}
         </div>
 
-        {/* Reset section */}
-        <div className="px-4 pb-6 pt-2">
-          {!confirmReset ? (
-            <button
-              onClick={() => { setConfirmReset(true); setOwnerPwInput(''); setPwError(false); }}
-              className="w-full h-10 rounded-xl border-2 border-destructive/40 text-destructive font-black uppercase text-[10px] tracking-widest flex items-center justify-center gap-2 hover:bg-destructive/5 transition-colors"
-            >
-              <RotateCcw className="w-4 h-4" /> Reset Bill Payment
-            </button>
+        {/* Actions section */}
+        <div className="px-4 pb-6 pt-2 space-y-2">
+          {actionType === 'none' ? (
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={() => { setActionType('reset'); setOwnerPwInput(''); setPwError(false); }}
+                className="flex-1 h-10 rounded-xl border border-amber-500/40 text-amber-600 dark:text-amber-400 font-black uppercase text-[10px] tracking-wider flex items-center justify-center gap-1.5 hover:bg-amber-500/10 transition-colors"
+              >
+                <RotateCcw className="w-3.5 h-3.5" /> Reset Payment
+              </button>
+              <button
+                type="button"
+                onClick={() => { setActionType('delete'); setOwnerPwInput(''); setPwError(false); }}
+                className="flex-1 h-10 rounded-xl border-2 border-destructive/60 bg-destructive/5 text-destructive font-black uppercase text-[10px] tracking-wider flex items-center justify-center gap-1.5 hover:bg-destructive/15 transition-colors"
+              >
+                <Trash2 className="w-3.5 h-3.5" /> Delete Bill
+              </button>
+            </div>
           ) : (
             <div className="bg-destructive/10 border border-destructive/40 rounded-xl p-3 space-y-2.5 animate-in fade-in">
               <div className="flex items-center gap-2 text-destructive">
                 <AlertTriangle className="w-4 h-4 shrink-0" />
                 <p className="text-[10px] font-black uppercase leading-tight">
-                  Rec Amount, Linecut, Reason, Payment Mode — sab clear ho jaayega. Bill Amount same rahega.
+                  {actionType === 'reset' 
+                    ? 'Rec Amount, Linecut, Reason, Payment Mode — sab clear ho jaayega. Bill Amount same rahega.'
+                    : `Yeh bill (${bill.billNo || 'ID: ' + bill.id}) Supabase Database aur Local Store se permanently delete ho jaayega.`}
                 </p>
               </div>
               <div className="relative">
@@ -101,7 +117,7 @@ export default function BillDetailModal({ bill, onClose }: Props) {
                   onKeyDown={e => {
                     if (e.key === 'Enter') {
                       e.preventDefault();
-                      handleReset();
+                      handleConfirmAction();
                     }
                   }}
                   className={cn(
@@ -115,21 +131,31 @@ export default function BillDetailModal({ bill, onClose }: Props) {
               )}
               <div className="flex gap-2">
                 <button
-                  onClick={() => { setConfirmReset(false); setOwnerPwInput(''); setPwError(false); }}
+                  type="button"
+                  onClick={() => { setActionType('none'); setOwnerPwInput(''); setPwError(false); }}
                   className="flex-1 h-9 rounded-lg border border-border font-black uppercase text-[10px] text-muted-foreground hover:bg-muted transition-colors"
                 >
                   Cancel
                 </button>
                 <button
-                  onClick={handleReset}
-                  disabled={resetting}
+                  type="button"
+                  onClick={handleConfirmAction}
+                  disabled={processing}
                   className={cn(
                     "flex-1 h-9 rounded-lg font-black uppercase text-[10px] text-white flex items-center justify-center gap-1.5 transition-colors",
-                    resetting ? "bg-destructive/60" : "bg-destructive hover:bg-destructive/90"
+                    processing ? "bg-destructive/60" : "bg-destructive hover:bg-destructive/90"
                   )}
                 >
-                  {resetting ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RotateCcw className="w-3.5 h-3.5" />}
-                  {resetting ? 'Resetting...' : 'Confirm Reset'}
+                  {processing ? (
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  ) : actionType === 'reset' ? (
+                    <RotateCcw className="w-3.5 h-3.5" />
+                  ) : (
+                    <Trash2 className="w-3.5 h-3.5" />
+                  )}
+                  {processing 
+                    ? (actionType === 'reset' ? 'Resetting...' : 'Deleting...') 
+                    : (actionType === 'reset' ? 'Confirm Reset' : 'Confirm Delete')}
                 </button>
               </div>
             </div>

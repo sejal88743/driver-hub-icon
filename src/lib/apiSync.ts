@@ -391,7 +391,7 @@ async function fetchAllBills(): Promise<Bill[]> {
     if (!countErr && typeof count === 'number' && count >= 0) {
       if (count === 0) return [];
       const totalPages = Math.ceil(count / CHUNK_SIZE);
-      const BATCH_SIZE = 6;
+      const BATCH_SIZE = 8;
       const allRows: Record<string, unknown>[] = [];
 
       for (let i = 0; i < totalPages; i += BATCH_SIZE) {
@@ -781,6 +781,30 @@ export async function apiSyncPaidStatus(
   onProgress?.(1, 1);
   dispatchSyncStatus('ok');
   return { updated: 0, errors: 0 };
+}
+
+export async function apiDeleteBill(id?: string, billNo?: string): Promise<boolean> {
+  if (!supabase) return false;
+  try {
+    auditLog('bills', 'DELETE', { id, billNo });
+    let deleted = false;
+    if (id) {
+      const { error } = await supabase.from('bills').delete().eq('id', id);
+      if (!error) deleted = true;
+    }
+    if (!deleted && billNo && billNo.trim()) {
+      const { error } = await supabase.from('bills').delete().eq('bill_no', billNo.trim());
+      if (!error) deleted = true;
+    }
+    if (deleted) {
+      dispatchSyncStatus('ok');
+      return true;
+    }
+    return false;
+  } catch (err) {
+    console.error('[apiSync] apiDeleteBill error:', err);
+    return false;
+  }
 }
 
 export async function apiDeleteDriver(id: string) {

@@ -241,14 +241,18 @@ export function persistLocalState(immediate = false) {
   }
   persistTimer = setTimeout(() => {
     persistTimer = null;
-    doPersistLocalState();
-  }, 250);
+    if (typeof window !== 'undefined' && 'requestIdleCallback' in window) {
+      window.requestIdleCallback(() => doPersistLocalState(), { timeout: 1500 });
+    } else {
+      doPersistLocalState();
+    }
+  }, 800);
 }
 
 function doPersistLocalState() {
   try {
     if (_bills.length > 0) {
-      localStorage.setItem(LS_BILLS_KEY, JSON.stringify(_bills.slice(0, 3000)));
+      localStorage.setItem(LS_BILLS_KEY, JSON.stringify(_bills.slice(0, 2000)));
       idbSet('cached_bills_full', _bills);
     }
     if (_drivers.length > 0) {
@@ -559,9 +563,11 @@ export function applyRealtimeBillChange(
   });
 
   if (idx >= 0) {
-    _bills[idx] = { ..._bills[idx], ...cleaned };
+    const nextBills = [..._bills];
+    nextBills[idx] = { ...nextBills[idx], ...cleaned };
+    _bills = nextBills;
   } else {
-    _bills.unshift(cleaned);
+    _bills = [cleaned, ..._bills];
   }
 
   dispatchUpdate();
@@ -1605,7 +1611,9 @@ export async function patchBillInMemory(billNo: string, patch: Partial<Bill>): P
       editDate: `${nowDMY()} ${nowHM()}`,
     };
   }
-  _bills[idx] = { ..._bills[idx], ...patch };
+  const nextBills = [..._bills];
+  nextBills[idx] = { ...nextBills[idx], ...patch };
+  _bills = nextBills;
   dispatchUpdate();
   persistLocalState();
   const bill = _bills[idx];
@@ -2333,6 +2341,45 @@ export async function resetBill(billNo: string) {
       markWriteEnd();
     }
   })();
+}
+
+// ─── deleteBill: permanently deletes a bill from store, local cache, and Supabase ──────────
+export async function deleteBill(billNo: string, id?: string): Promise<boolean> {
+  const normBillNo = (billNo || '').trim().toUpperCase();
+  const targetId = id;
+  const targetBill = _bills.find(b => (targetId && b.id === targetId) || (normBillNo && (b.billNo || '').trim().toUpperCase() === normBillNo));
+  const effectiveId = targetId || targetBill?.id || '';
+  const effectiveBillNo = targetBill?.billNo || billNo;
+
+  // 1. Remove from in-memory store
+  _bills = _bills.filter(b => {
+    if (effectiveId && b.id === effectiveId) return false;
+    if (normBillNo && (b.billNo || '').trim().toUpperCase() === normBillNo) return false;
+    return true;
+  });
+
+  // 2. Remove from dirty queue
+  try {
+    const { removeDirtyEntry } = await import('@/lib/localQueue');
+    removeDirtyEntry(effectiveId, effectiveBillNo);
+  } catch {}
+
+  // 3. Dispatch update and persist
+  dispatchUpdate();
+  persistLocalState(true);
+
+  // 4. Delete from Supabase
+  markWriteStart();
+  try {
+    const { apiDeleteBill } = await import('@/lib/apiSync');
+    const ok = await apiDeleteBill(effectiveId, effectiveBillNo);
+    return ok;
+  } catch (err) {
+    console.error('[deleteBill] Supabase deletion error:', err);
+    return false;
+  } finally {
+    markWriteEnd();
+  }
 }
 
 export async function applyGreenPartyUpdatesToBillsAndContacts(): Promise<{ billsUpdated: number; contactsUpdated: number }> {

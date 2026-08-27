@@ -17,9 +17,15 @@ export default function OutstandingPage() {
   }
 
   const totals = useMemo(() => {
-    const billAmt = bills.reduce((s, b) => s + (Number(b.billNetAmt || 0)), 0);
-    const collected = bills.reduce((s, b) => s + (Number(b.collectedAmount) || 0), 0);
-    const lineCutTotal = bills.reduce((s, b) => s + (b.lineCutAmt != null ? b.lineCutAmt : (Number(b.cancelLine) || 0)), 0);
+    let billAmt = 0;
+    let collected = 0;
+    let lineCutTotal = 0;
+    for (let i = 0; i < bills.length; i++) {
+      const b = bills[i];
+      billAmt += Number(b.billNetAmt || 0);
+      collected += Number(b.collectedAmount || 0);
+      lineCutTotal += b.lineCutAmt != null ? b.lineCutAmt : (Number(b.cancelLine) || 0);
+    }
     return { billAmt, collected, lineCutTotal, outstanding: billAmt - lineCutTotal - collected };
   }, [bills]);
 

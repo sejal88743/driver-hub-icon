@@ -54,16 +54,25 @@ function notify() {
 }
 
 function patch(delta: Partial<StoreSnapshot>) {
+  let hasChange = false;
+  for (const k in delta) {
+    const key = k as keyof StoreSnapshot;
+    if (currentSnapshot[key] !== delta[key]) {
+      hasChange = true;
+      break;
+    }
+  }
+  if (!hasChange) return;
   currentSnapshot = { ...currentSnapshot, ...delta };
   notify();
 }
 
 function readLocal() {
   patch({
-    bills: [...getBills()],
-    drivers: [...getDrivers()],
-    banks: [...getBanks()],
-    summaries: [...getSummaries()],
+    bills: getBills(),
+    drivers: getDrivers(),
+    banks: getBanks(),
+    summaries: getSummaries(),
     loading: false,
   });
 }
@@ -216,8 +225,6 @@ function initSupabaseRealtime() {
 
           readLocal();
           window.dispatchEvent(new CustomEvent('sync-status', { detail: 'ok' }));
-          // In background, ensure consistency with debounced full sync
-          scheduleDebouncedFullSync(3000);
         }
       )
       .on(
@@ -280,8 +287,6 @@ if (syncChannel) {
   syncChannel.onmessage = (event) => {
     if (event.data === 'data-updated') {
       readLocal();
-      serverVersion = 0;
-      scheduleDebouncedFullSync(500);
     }
   };
 }
