@@ -5,6 +5,40 @@ import { displayToIso, isoToDisplay, getTodayISO } from '@/lib/dateUtils';
 function stripGST(bn: string) {
   return (bn || '').replace(/^GST[-_]/i, '').trim();
 }
+
+function parseAmountExpression(value: string | number | undefined | null): number {
+  if (value === undefined || value === null) return 0;
+  if (typeof value === 'number') return Number.isFinite(value) ? value : 0;
+  const rawStr = String(value || '').trim();
+  if (!rawStr) return 0;
+
+  const cleaned = rawStr.replace(/,/g, '');
+
+  if (cleaned.includes('+')) {
+    const parts = cleaned.split('+');
+    let sum = 0;
+    let hasValid = false;
+    for (const part of parts) {
+      const numStr = part.replace(/[^\d.-]/g, '').trim();
+      if (numStr && numStr !== '-' && numStr !== '.') {
+        const n = parseFloat(numStr);
+        if (!isNaN(n) && Number.isFinite(n)) {
+          sum += n;
+          hasValid = true;
+        }
+      }
+    }
+    if (hasValid) return Math.round(sum * 100) / 100;
+  }
+
+  const sanitized = cleaned.replace(/[^\d.-]/g, '').trim();
+  if (sanitized && sanitized !== '-' && sanitized !== '.') {
+    const n = parseFloat(sanitized);
+    if (!isNaN(n) && Number.isFinite(n)) return Math.round(n * 100) / 100;
+  }
+
+  return 0;
+}
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 import type { Bill, Bank } from '@/lib/billStore';
@@ -404,17 +438,16 @@ export default function MultiBillEntryModal({ bills, banks, selectedDriver, disp
       showDropdown: false,
     } : r));
     setErrors(prev => { const n = { ...prev }; delete n[rowId]; return n; });
-    // After state settles, move to next row OR add a new one
+    // After state settles, find next empty row or add a new one and focus its bill input
     setTimeout(() => {
       const currentRows = rowsRef.current;
       const currentIdx = currentRows.findIndex(r => r.id === rowId);
       if (currentIdx === -1) return;
-      if (currentIdx < currentRows.length - 1) {
-        // Focus next row's bill input
-        const nextId = currentRows[currentIdx + 1].id;
-        billInputRefs.current[nextId]?.focus();
+      
+      const nextEmptyRow = currentRows.slice(currentIdx + 1).find(r => !r.billNo.trim());
+      if (nextEmptyRow) {
+        billInputRefs.current[nextEmptyRow.id]?.focus();
       } else {
-        // Last row — add new row (addRow sets focus internally)
         const newRow = makeRow();
         setRows(prev => [...prev, newRow]);
         setTimeout(() => billInputRefs.current[newRow.id]?.focus(), 40);
@@ -425,7 +458,7 @@ export default function MultiBillEntryModal({ bills, banks, selectedDriver, disp
   function handleRecChange(rowId: string, newRec: string) {
     const billForRow = billMap.get(rows.find(r => r.id === rowId)?.billNo || '');
     if (billForRow) {
-      const recVal = Number(newRec) || 0;
+      const recVal = parseAmountExpression(newRec);
       const newLc = Math.max(0, billForRow.billNetAmt - recVal);
       updateRow(rowId, {
         recAmt: newRec,
@@ -440,7 +473,7 @@ export default function MultiBillEntryModal({ bills, banks, selectedDriver, disp
   function handleLcChange(rowId: string, newLc: string) {
     const billForRow = billMap.get(rows.find(r => r.id === rowId)?.billNo || '');
     if (billForRow) {
-      const lcVal = Number(newLc) || 0;
+      const lcVal = parseAmountExpression(newLc);
       const fullAmt = Math.max(0, billForRow.billNetAmt - lcVal);
       updateRow(rowId, {
         lineCutAmt: newLc,
@@ -452,11 +485,12 @@ export default function MultiBillEntryModal({ bills, banks, selectedDriver, disp
   }
 
   function handleLcEnter(rowId: string) {
-    const currentIdx = rows.findIndex(r => r.id === rowId);
+    const currentRows = rowsRef.current;
+    const currentIdx = currentRows.findIndex(r => r.id === rowId);
     if (currentIdx === -1) return;
-    if (currentIdx < rows.length - 1) {
-      const nextId = rows[currentIdx + 1].id;
-      setTimeout(() => billInputRefs.current[nextId]?.focus(), 20);
+    const nextEmpty = currentRows.slice(currentIdx + 1).find(r => !r.billNo.trim());
+    if (nextEmpty) {
+      setTimeout(() => billInputRefs.current[nextEmpty.id]?.focus(), 20);
     } else {
       addRow();
     }
@@ -467,15 +501,15 @@ export default function MultiBillEntryModal({ bills, banks, selectedDriver, disp
   // A row is valid if it has a billNo AND either recAmt > 0 (payment) OR lineCutAmt covers the full bill (FBR)
   const validRows = useMemo(() => rows.filter(r => {
     if (!r.billNo.trim()) return false;
-    const rec = Number(r.recAmt) || 0;
-    const lc  = Number(r.lineCutAmt) || 0;
+    const rec = parseAmountExpression(r.recAmt);
+    const lc  = parseAmountExpression(r.lineCutAmt);
     const bill = billMap.get(r.billNo);
     const isFbr = lc > 0 && rec === 0 && bill && lc >= bill.billNetAmt - 1;
     return rec > 0 || isFbr;
   }), [rows, billMap]);
   const canSave = validRows.length > 0;
 
-  const totalRec = useMemo(() => validRows.reduce((s, r) => s + (Number(r.recAmt) || 0), 0), [validRows]);
+  const totalRec = useMemo(() => validRows.reduce((s, r) => s + parseAmountExpression(r.recAmt), 0), [validRows]);
 
   // Global Escape & '+' listener to close modal or disambiguation dialog
   useEffect(() => {
@@ -523,8 +557,8 @@ export default function MultiBillEntryModal({ bills, banks, selectedDriver, disp
       if (!billMap.has(r.billNo)) {
         newErrors[r.id] = 'Bill not found';
       } else {
-        const rec = Number(r.recAmt) || 0;
-        const lc  = Number(r.lineCutAmt) || 0;
+        const rec = parseAmountExpression(r.recAmt);
+        const lc  = parseAmountExpression(r.lineCutAmt);
         const bill = billMap.get(r.billNo)!;
         const isFbr = lc > 0 && rec === 0 && lc >= bill.billNetAmt - 1;
         if (!isFbr && rec <= 0) { newErrors[r.id] = 'Amount required'; }
@@ -545,8 +579,8 @@ export default function MultiBillEntryModal({ bills, banks, selectedDriver, disp
 
     for (const r of toSave) {
       if (newErrors[r.id]) continue;
-      const recAmt = Number(r.recAmt) || 0;
-      const lc = Number(r.lineCutAmt) || 0;
+      const recAmt = parseAmountExpression(r.recAmt);
+      const lc = parseAmountExpression(r.lineCutAmt);
       const bill = billMap.get(r.billNo);
       const isFbr = lc > 0 && recAmt === 0 && !!bill && lc >= bill.billNetAmt - 1;
 
@@ -873,23 +907,70 @@ export default function MultiBillEntryModal({ bills, banks, selectedDriver, disp
                     onFocus={() => updateRow(row.id, { showDropdown: !!row.billNo })}
                     onBlur={() => setTimeout(() => updateRow(row.id, { showDropdown: false }), 150)}
                     onKeyDown={e => {
-                      if (e.key === 'ArrowDown') { e.preventDefault(); updateRow(row.id, { dropdownIdx: Math.min(row.dropdownIdx + 1, filteredNos.length - 1), showDropdown: true }); }
-                      else if (e.key === 'ArrowUp') { e.preventDefault(); updateRow(row.id, { dropdownIdx: Math.max(row.dropdownIdx - 1, 0), showDropdown: true }); }
-                      else if (e.key === 'Enter') {
+                      if (e.key === 'ArrowDown') {
+                        e.preventDefault();
+                        updateRow(row.id, { dropdownIdx: Math.min(row.dropdownIdx + 1, filteredNos.length - 1), showDropdown: true });
+                      } else if (e.key === 'ArrowUp') {
+                        e.preventDefault();
+                        updateRow(row.id, { dropdownIdx: Math.max(row.dropdownIdx - 1, 0), showDropdown: true });
+                      } else if (e.key === 'Enter') {
                         e.preventDefault();
                         const typed = row.billNo.trim();
-                        // 1. Exact match in billMap → instant add
+                        if (!typed) {
+                          const currentRows = rowsRef.current;
+                          const currentIdx = currentRows.findIndex(r => r.id === row.id);
+                          const nextEmpty = currentRows.slice(currentIdx + 1).find(r => !r.billNo.trim());
+                          if (nextEmpty) {
+                            billInputRefs.current[nextEmpty.id]?.focus();
+                          } else {
+                            addRow();
+                          }
+                          return;
+                        }
+
+                        // 1. Exact match in billMap
                         if (billMap.has(typed)) {
                           selectBillNo(row.id, typed);
-                        // 2. Dropdown open with highlighted item → add that
-                        } else if (filteredNos.length > 0 && row.showDropdown) {
-                          selectBillNo(row.id, filteredNos[row.dropdownIdx]);
-                        // 3. Only one suggestion → auto-confirm
-                        } else if (filteredNos.length === 1) {
-                          selectBillNo(row.id, filteredNos[0]);
+                          return;
                         }
-                        // else: no match, do nothing (user keeps typing)
-                      } else if (e.key === 'Escape') { updateRow(row.id, { showDropdown: false }); }
+
+                        // 2. Dropdown open with highlighted item
+                        if (filteredNos.length > 0 && row.showDropdown && filteredNos[row.dropdownIdx]) {
+                          selectBillNo(row.id, filteredNos[row.dropdownIdx]);
+                          return;
+                        }
+
+                        // 3. First suggestion
+                        if (filteredNos.length > 0) {
+                          selectBillNo(row.id, filteredNos[0]);
+                          return;
+                        }
+
+                        // 4. Case-insensitive / prefix / suffix match
+                        const cleanT = typed.toUpperCase().replace(/[^A-Z0-9]/g, '');
+                        const stripT = cleanT.replace(/^GST/i, '').replace(/^MOC/i, '');
+                        const pool = driverBills.length > 0 ? driverBills : bills;
+
+                        const matchedBill = pool.find(b => {
+                          const cb = b.billNo.toUpperCase().replace(/[^A-Z0-9]/g, '');
+                          const sb = cb.replace(/^GST/i, '').replace(/^MOC/i, '');
+                          return cb === cleanT || sb === stripT || sb.endsWith(stripT) || cb.endsWith(cleanT);
+                        }) || bills.find(b => {
+                          const cb = b.billNo.toUpperCase().replace(/[^A-Z0-9]/g, '');
+                          const sb = cb.replace(/^GST/i, '').replace(/^MOC/i, '');
+                          return cb === cleanT || sb === stripT || sb.endsWith(stripT) || cb.endsWith(cleanT);
+                        });
+
+                        if (matchedBill) {
+                          selectBillNo(row.id, matchedBill.billNo);
+                        } else if (billMap.has(row.billNo)) {
+                          selectBillNo(row.id, row.billNo);
+                        } else {
+                          setErrors(p => ({ ...p, [row.id]: 'Bill nahi mila' }));
+                        }
+                      } else if (e.key === 'Escape') {
+                        updateRow(row.id, { showDropdown: false });
+                      }
                     }}
                     className={cn(
                       "w-full h-8 px-2 rounded-lg text-[10px] font-black uppercase outline-none border",
@@ -942,7 +1023,7 @@ export default function MultiBillEntryModal({ bills, banks, selectedDriver, disp
                 {/* Rec Amt */}
                 <input
                   ref={el => { recAmtRefs.current[row.id] = el; }}
-                  type="number" inputMode="numeric" placeholder="0"
+                  type="text" inputMode="decimal" placeholder="0"
                   value={row.recAmt}
                   onChange={e => handleRecChange(row.id, e.target.value)}
                   onKeyDown={e => {
@@ -957,7 +1038,7 @@ export default function MultiBillEntryModal({ bills, banks, selectedDriver, disp
                 {/* Line Cut */}
                 <input
                   ref={el => { lcRefs.current[row.id] = el; }}
-                  type="number" inputMode="numeric" placeholder="0"
+                  type="text" inputMode="decimal" placeholder="0"
                   value={row.lineCutAmt}
                   onChange={e => handleLcChange(row.id, e.target.value)}
                   onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); handleLcEnter(row.id); } }}

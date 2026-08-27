@@ -15,14 +15,41 @@ type Props = {
   initialLineCutValue?: number;
 };
 
-function parseAmountExpression(value: string) {
-  const cleaned = String(value || '').replace(/,/g, '').trim();
-  if (!cleaned) return 0;
-  const parts = cleaned.split('+').map(part => part.trim());
-  if (parts.every(part => part !== '' && Number.isFinite(Number(part)))) {
-    return parts.reduce((sum, part) => sum + Number(part), 0);
+export function parseAmountExpression(value: string | number | undefined | null): number {
+  if (value === undefined || value === null) return 0;
+  if (typeof value === 'number') return Number.isFinite(value) ? value : 0;
+  const rawStr = String(value || '').trim();
+  if (!rawStr) return 0;
+
+  const cleaned = rawStr.replace(/,/g, '');
+
+  // If there are '+' signs or multiple values to sum
+  if (cleaned.includes('+')) {
+    const parts = cleaned.split('+');
+    let sum = 0;
+    let hasValid = false;
+    for (const part of parts) {
+      // Remove any non-numeric characters (handles accidental typos like 'n', 'rs', spaces)
+      const numStr = part.replace(/[^\d.-]/g, '').trim();
+      if (numStr && numStr !== '-' && numStr !== '.') {
+        const n = parseFloat(numStr);
+        if (!isNaN(n) && Number.isFinite(n)) {
+          sum += n;
+          hasValid = true;
+        }
+      }
+    }
+    if (hasValid) return Math.round(sum * 100) / 100;
   }
-  return Number(cleaned) || 0;
+
+  // Single number or string with trailing chars like '500n'
+  const sanitized = cleaned.replace(/[^\d.-]/g, '').trim();
+  if (sanitized && sanitized !== '-' && sanitized !== '.') {
+    const n = parseFloat(sanitized);
+    if (!isNaN(n) && Number.isFinite(n)) return Math.round(n * 100) / 100;
+  }
+
+  return 0;
 }
 
 export default function LineCutPopup({ 

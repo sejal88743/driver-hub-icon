@@ -551,6 +551,28 @@ app.post('/api/admin/fix-bills', async (_req, res) => {
   }
 });
 
+// Helper function to call Gemini with multi-model fallback (handles 503/high-demand spikes gracefully)
+async function generateGeminiContentWithFallback(ai: GoogleGenAI, prompt: string): Promise<string | null> {
+  const candidateModels = ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-flash'];
+  for (const model of candidateModels) {
+    try {
+      const res = await ai.models.generateContent({
+        model,
+        contents: prompt,
+        config: {
+          responseMimeType: 'application/json',
+        },
+      });
+      if (res && res.text) {
+        return res.text.trim();
+      }
+    } catch (err: any) {
+      console.warn(`[Gemini Fallback] Model ${model} unavailable or busy (${err?.status || err?.code || err?.message}), trying next fallback...`);
+    }
+  }
+  return null;
+}
+
 // ─── Admin AI Agent endpoint (Gemini Powered DB Assistant & XLS Bulk Engine) ─
 app.post('/api/admin/ai-agent', async (req, res) => {
   try {
@@ -616,17 +638,10 @@ Respond ONLY in valid JSON matching schema:
   "searchKeyword": string
 }`;
 
-          const geminiRes = await ai.models.generateContent({
-            model: 'gemini-2.5-flash',
-            contents: promptContext,
-            config: {
-              responseMimeType: 'application/json',
-            },
-          });
-
-          if (geminiRes.text) {
+          const rawText = await generateGeminiContentWithFallback(ai, promptContext);
+          if (rawText) {
             try {
-              parsedResult = JSON.parse(geminiRes.text.trim());
+              parsedResult = JSON.parse(rawText);
             } catch {}
           }
         } catch (gemErr) {
@@ -770,17 +785,10 @@ Respond ONLY in valid JSON matching schema:
   "searchKeyword": string
 }`;
 
-        const geminiRes = await ai.models.generateContent({
-          model: 'gemini-2.5-flash',
-          contents: promptContext,
-          config: {
-            responseMimeType: 'application/json',
-          },
-        });
-
-        if (geminiRes.text) {
+        const rawText = await generateGeminiContentWithFallback(ai, promptContext);
+        if (rawText) {
           try {
-            const parsed = JSON.parse(geminiRes.text.trim());
+            const parsed = JSON.parse(rawText);
             aiExplanation = parsed.explanation || '';
             isWriteIntent = Boolean(parsed.isWriteIntent);
             targetPaymentMode = parsed.targetPaymentMode || '';

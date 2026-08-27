@@ -29,14 +29,38 @@ import { getTodayISO, getTodayDMY, isoToDisplay, displayToIso } from '@/lib/date
 // Line-cut amounts are sometimes entered as a quick sum, e.g. "100+128+335".
 // Keep this deliberately limited to numbers and plus signs; never evaluate input
 // as JavaScript.
-function parseAmountExpression(value: string) {
-  const cleaned = String(value || '').replace(/,/g, '').trim();
-  if (!cleaned) return 0;
-  const parts = cleaned.split('+').map(part => part.trim());
-  if (parts.every(part => part !== '' && Number.isFinite(Number(part)))) {
-    return parts.reduce((sum, part) => sum + Number(part), 0);
+function parseAmountExpression(value: string | number | undefined | null): number {
+  if (value === undefined || value === null) return 0;
+  if (typeof value === 'number') return Number.isFinite(value) ? value : 0;
+  const rawStr = String(value || '').trim();
+  if (!rawStr) return 0;
+
+  const cleaned = rawStr.replace(/,/g, '');
+
+  if (cleaned.includes('+')) {
+    const parts = cleaned.split('+');
+    let sum = 0;
+    let hasValid = false;
+    for (const part of parts) {
+      const numStr = part.replace(/[^\d.-]/g, '').trim();
+      if (numStr && numStr !== '-' && numStr !== '.') {
+        const n = parseFloat(numStr);
+        if (!isNaN(n) && Number.isFinite(n)) {
+          sum += n;
+          hasValid = true;
+        }
+      }
+    }
+    if (hasValid) return Math.round(sum * 100) / 100;
   }
-  return Number(cleaned) || 0;
+
+  const sanitized = cleaned.replace(/[^\d.-]/g, '').trim();
+  if (sanitized && sanitized !== '-' && sanitized !== '.') {
+    const n = parseFloat(sanitized);
+    if (!isNaN(n) && Number.isFinite(n)) return Math.round(n * 100) / 100;
+  }
+
+  return 0;
 }
 
 export default function Dashboard() {
@@ -3708,7 +3732,7 @@ ${effectiveRec ? `🗓️ *Rec Date:* ${effectiveRec}\n` : ''}💰 *Bill Net Amt
           doSaveAsOutstanding(enteredLineCut, discrepancyReason);
         }}
         initialLcAsOutstanding={lcAsOutstanding}
-        initialLineCutValue={Number(lcInputVal) || 0}
+        initialLineCutValue={parseAmountExpression(lcInputVal)}
       />
 
       <FbrReasonModal
