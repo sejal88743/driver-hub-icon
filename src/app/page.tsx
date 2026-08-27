@@ -13,7 +13,7 @@ import BankCombobox from '@/components/BankCombobox';
 import CashBreakdownModal from '@/components/CashBreakdownModal';
 import { parseVoiceCommand, hasWakeWord, stripWakeWord } from '@/lib/voiceNumber';
 import { isGreenParty } from '@/lib/greenParties';
-import { getCommissionMocs, CommissionMoc, isMocBill, formatMocBillNo, formatMocPartyName, getNextMocSrNo, getMocEntries, isBillMatchingMocCode } from '@/lib/commissionMoc';
+import { getCommissionMocs, CommissionMoc, isMocBill, formatMocBillNo, formatMocPartyName, getNextMocSrNo, getMocEntries, isBillMatchingMocCode, extractMocNumber, extractMocSrNumber, formatMocSerialBillNo, getDisplayBillNo } from '@/lib/commissionMoc';
 import { getDriverDownloadStatus } from '@/lib/driverDownloadStatus';
 
 // Modular Modals
@@ -306,6 +306,7 @@ export default function Dashboard() {
     }
     for (const moc of commissionMocs) {
       if (!m.has(moc.code)) {
+        const mocNum = extractMocNumber(moc.code) || '1';
         m.set(moc.code, {
           id: `moc_virtual_${moc.code.replace(/\s+/g, '_')}`,
           srNo: '1',
@@ -314,9 +315,9 @@ export default function Dashboard() {
           salespersonName: 'MOC',
           collectionCode: 'MOC',
           billNo: moc.code,
-          partyCode: moc.code.replace(/\s+/g, ''),
-          partyHulCode: moc.code,
-          partyName: `COMMISSION - ${moc.month} (${moc.code})`,
+          partyCode: `MOC${mocNum}`,
+          partyHulCode: `MOC${mocNum}`,
+          partyName: formatMocPartyName('', moc.code),
           beatName: 'COMMISSION',
           billNetAmt: 0,
           collectedAmount: 0,
@@ -454,6 +455,9 @@ export default function Dashboard() {
         if (b.driverName?.trim().toUpperCase() !== selectedDriver.trim().toUpperCase() || b.deliveryDate !== displayDate) continue;
       }
 
+      // DO NOT show old MOC serial bills in entry dropdown (each MOC entry must be a fresh new serial number)
+      if (isMocBill(b) || (b.billNo || '').toUpperCase().startsWith('MOC') || b.salespersonName === 'MOC' || b.collectionCode === 'MOC' || b.beatName === 'COMMISSION') continue;
+
       const bn = b.billNo;
       if (seen.has(bn)) continue;
 
@@ -488,15 +492,14 @@ export default function Dashboard() {
       }
     }
 
-    // Include Commission MOC matches (e.g. MAY, MOC 5, COMMISSION)
+    // Include Commission MOC matches (e.g. MOC 8, MOC8, COMMISSION)
     for (const moc of commissionMocs) {
       const code = moc.code;
-      const month = moc.month;
       const codeNoSpace = code.replace(/\s+/g, '').toLowerCase();
       const codeNum = code.replace(/\D/g, '');
 
-      const isExact = q === code.toLowerCase() || q === codeNoSpace || q === month.toLowerCase() || (qNoZeros !== '' && codeNum === qNoZeros && qStripped.startsWith('moc'));
-      const isPart = code.toLowerCase().includes(q) || codeNoSpace.includes(q) || month.toLowerCase().includes(q) || (q === 'commission' || q === 'moc' || q === 'comison' || q === 'com');
+      const isExact = q === code.toLowerCase() || q === codeNoSpace || (qNoZeros !== '' && codeNum === qNoZeros && qStripped.startsWith('moc'));
+      const isPart = code.toLowerCase().includes(q) || codeNoSpace.includes(q) || (q === 'commission' || q === 'moc' || q === 'comison' || q === 'com');
 
       if (isExact) {
         if (!seen.has(code)) {
@@ -862,39 +865,45 @@ export default function Dashboard() {
     handleReset();
   }
 
-  const isMocBill = useCallback((bn?: string, b?: Bill | null) => {
+  const isMocBillCb = useCallback((bn?: string, b?: Bill | null) => {
     if (!bn && !b) return false;
     const code = (bn || b?.billNo || '').toUpperCase().trim();
     if (code.startsWith('MOC') || code.includes('MOC')) return true;
     if (b?.collectionCode === 'MOC' || b?.salespersonName === 'MOC' || b?.beatName === 'COMMISSION') return true;
-    return commissionMocs.some(m => m.code.toUpperCase() === code || m.month.toUpperCase() === code);
+    return commissionMocs.some(m => (m?.code || '').toUpperCase() === code);
   }, [commissionMocs]);
 
   function handleBillSelect(bn: string) {
+    const cleanBn = (bn || '').trim();
+    if (!cleanBn) return;
+
+    // ── MOC COMMISSION SELECTION ──────────────────────────────────────────────
+    // When ANY MOC is selected or typed (e.g., 'MOC 8', 'MOC', 'moc 7', 'MOC8-SR1', etc.),
+    // ALWAYS generate a brand new fresh entry with the next auto-incremented Serial Number!
+    // Old MOC entries are NEVER loaded or edited on the entry page.
     const mocMatch = commissionMocs.find(m => 
-      m.code.toUpperCase() === bn.toUpperCase() || 
-      m.month.toUpperCase() === bn.toUpperCase() ||
-      m.label.toUpperCase() === bn.toUpperCase() ||
-      m.code.toUpperCase().replace(/\s+/g, '') === bn.toUpperCase().replace(/\s+/g, '')
+      (m?.code || '').toUpperCase() === cleanBn.toUpperCase() || 
+      (m?.code || '').toUpperCase().replace(/\s+/g, '') === cleanBn.toUpperCase().replace(/\s+/g, '')
     );
-    const isMocSelection = mocMatch || (bn.toUpperCase().startsWith('MOC') && !bn.startsWith('moc_'));
+    const isMocSelection = !!mocMatch || isMocBillCb(cleanBn) || isMocBill(cleanBn) || cleanBn.toUpperCase().startsWith('MOC');
 
     if (isMocSelection) {
-      const code = mocMatch ? mocMatch.code : (bn.toUpperCase().startsWith('MOC') ? bn.toUpperCase() : `MOC ${bn.toUpperCase()}`);
-      const month = mocMatch ? mocMatch.month : '';
-      const pName = formatMocPartyName(month, code);
+      const code = mocMatch ? (mocMatch.code || `MOC 1`) : (cleanBn.toUpperCase().startsWith('MOC') ? cleanBn.toUpperCase() : `MOC ${cleanBn.toUpperCase()}`);
+      const mocNum = extractMocNumber(code) || extractMocNumber(cleanBn) || '1';
+      const pName = formatMocPartyName('', `MOC ${mocNum}`);
       const allCurrentBills = getBills();
-      const nextSr = getNextMocSrNo(code, allCurrentBills);
+      const nextSr = getNextMocSrNo(mocNum, allCurrentBills);
+      const serialBillNo = formatMocSerialBillNo(mocNum, nextSr);
       const newMocBill: Bill = {
-        id: `moc_${code.replace(/\s+/g, '_')}_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+        id: `moc_${mocNum}_${nextSr}_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
         srNo: String(nextSr),
         date: displayDate,
         deliveryDate: displayDate,
         salespersonName: 'MOC',
         collectionCode: 'MOC',
-        billNo: code,
-        partyCode: code.replace(/\s+/g, ''),
-        partyHulCode: code,
+        billNo: serialBillNo,
+        partyCode: `MOC${mocNum}`,
+        partyHulCode: `MOC${mocNum}`,
         partyName: pName,
         beatName: 'COMMISSION',
         billNetAmt: 0,
@@ -906,7 +915,7 @@ export default function Dashboard() {
       };
       addBillsToMemoryOnly([newMocBill]);
       setSelectedBillNo(newMocBill.id);
-      setSearchQuery(code);
+      setSearchQuery(serialBillNo);
       setShowDropdown(false);
       setPaymentMode('');
       setRecDateInput(dashDate);
@@ -921,23 +930,44 @@ export default function Dashboard() {
       setChqDateDD('');
       setConfirmInput('');
       setLcInputVal('');
+      setTimeout(() => cashInputRef.current?.focus(), 120);
+      window.scrollTo({ top: 0, behavior: 'smooth' });
       return;
     }
 
-    let bill = bills.find(b => b.id === bn || b.billNo === bn);
-    if (!bill) return;
-    
+    // ── STANDARD REGULAR BILL SELECTION ───────────────────────────────────────
+    const existingBill = bills.find(b => b.id === cleanBn || b.billNo?.toUpperCase() === cleanBn.toUpperCase() || b.billNo === bn);
+    if (!existingBill) return;
+
+    const bill = existingBill;
+    setSelectedBillNo(bill.id || bill.billNo);
+    setSearchQuery(getDisplayBillNo(bill));
+    setShowDropdown(false);
+
     const _bMode = (bill.paymentMode || '').toLowerCase();
     const isPaid = (bill.collectedAmount || 0) > 0 || !!bill.paymentDate
       || _bMode === 'paid' || _bMode === 'fbr' || _bMode === 'cancel'
       || _bMode === 'cash' || _bMode === 'upi' || _bMode === 'cheque' || _bMode === 'split'
       || _bMode === 'unpaid' || _bMode === 'del pending' || _bMode === 'pending' || _bMode === 'credit';
-    
-    setSelectedBillNo(bn);
-    setSearchQuery(bn);
-    setShowDropdown(false);
-    setPaymentMode('');
-    // RecDate logic: show existing date from Supabase/store if saved, else default to current dashboard date
+
+    setEditLocked(isPaid);
+    const effMode = (bill.paymentMode || '').toLowerCase();
+    if (effMode === 'fbr' || effMode === 'cancel') {
+      setPaymentMode('FBR');
+    } else if (effMode === 'credit') {
+      setPaymentMode('Credit');
+    } else if (effMode === 'del pending') {
+      setPaymentMode('Del Pending');
+    } else if (effMode === 'unpaid') {
+      setPaymentMode('Unpaid');
+    } else if (bill.collectedAmount && bill.collectedAmount > 0) {
+      setPaymentMode('Paid');
+    } else {
+      setPaymentMode('');
+    }
+
+    setConfirmInput('');
+    setLcInputVal(bill.lineCutAmt != null && bill.lineCutAmt > 0 ? String(bill.lineCutAmt) : '');
     if (bill.paymentDate && bill.paymentDate.trim() !== '' && bill.paymentDate !== '—') {
       const savedIso = displayToIso(bill.paymentDate);
       const savedDisp = isoToDisplay(savedIso) || bill.paymentDate;
@@ -947,7 +977,7 @@ export default function Dashboard() {
       setRecDateInput(dashDate);
       setRecDateOverride(isoToDisplay(dashDate) || getTodayDMY());
     }
-    
+
     // User rule: Any bill with payment received (Cash, GPay, Cheque, collected) OR in FBR OR in Credit must be locked by default!
     const isMoc = isMocBill(bn, bill);
     const ca = Number(bill.cashAmount) || 0;
@@ -966,10 +996,6 @@ export default function Dashboard() {
     }
 
     if (isPaid && !(bill.partPayments && bill.partPayments.length > 0)) {
-      const ca = Number(bill.cashAmount) || 0;
-      const up = Number(bill.upiAmount) || 0;
-      const ch = Number(bill.chequeAmount) || 0;
-      const col = Number(bill.collectedAmount) || 0;
       if (ca === 0 && up === 0 && ch === 0 && col > 0) {
         const m = _bMode;
         if (m === 'upi') { setCashAmt(''); setUpiAmt(String(col)); setChqAmt(''); }
@@ -1002,9 +1028,8 @@ export default function Dashboard() {
       const _bLC = (bill.lineCutAmt || 0) || Number(bill.cancelLine) || 0;
       setLcInputVal(_bLC > 0 ? String(_bLC) : '');
     }
-    // Always move cursor to cash field in all conditions
-    setTimeout(() => cashInputRef.current?.focus(), 120);
 
+    setTimeout(() => cashInputRef.current?.focus(), 120);
     window.scrollTo({ top: 0, behavior: 'smooth' });
   }
 
@@ -2776,6 +2801,48 @@ ${effectiveRec ? `🗓️ *Rec Date:* ${effectiveRec}\n` : ''}💰 *Bill Net Amt
                 {filteredBillNos.map((bn, idx) => {
                   const b = billMap.get(bn);
                   const isHighlighted = dropdownIndex === idx;
+
+                  // ── Dedicated MOC Commission Row ──
+                  if (!b && ((bn || '').toUpperCase().startsWith('MOC') || commissionMocs.some(m => (m?.code || '').toUpperCase() === (bn || '').toUpperCase()))) {
+                    const mocNum = extractMocNumber(bn) || '1';
+                    const nextSrPreview = getNextMocSrNo(mocNum, getBills());
+                    return (
+                      <button
+                        key={bn}
+                        ref={isHighlighted ? highlightedItemRef : null}
+                        onClick={() => handleBillSelect(bn)}
+                        className={cn(
+                          "w-full text-left p-2.5 border-b border-border/30 last:border-0 transition-colors flex items-center justify-between gap-2.5",
+                          isHighlighted ? "bg-emerald-600 text-white" : "bg-emerald-50/50 hover:bg-emerald-100"
+                        )}
+                      >
+                        <div className="flex-1 min-w-0 flex flex-col gap-1">
+                          <div className="flex items-center gap-2 flex-wrap leading-tight text-[12px] font-bold">
+                            <span className={cn("text-[13px] font-black uppercase tracking-wide shrink-0", isHighlighted ? "text-white" : "text-emerald-800")}>
+                              ⭐ {bn}
+                            </span>
+                            <span className={cn("text-[12px] font-bold uppercase px-2 py-0.5 rounded-md border shrink-0", isHighlighted ? "bg-white/20 text-white border-white/30" : "bg-emerald-100 text-emerald-950 border-emerald-300")}>
+                              COMMISSION (MOC {mocNum})
+                            </span>
+                          </div>
+                          <div className="flex items-center gap-2 text-[12px] font-bold">
+                            <span className={cn("text-[11px] font-bold", isHighlighted ? "text-emerald-100" : "text-emerald-700")}>
+                              Create new serial entry: <strong className="underline">MOC{mocNum}-SR{nextSrPreview}</strong>
+                            </span>
+                          </div>
+                        </div>
+                        <div className="shrink-0 flex items-center justify-center self-stretch my-auto">
+                          <span className={cn(
+                            "text-[12px] font-black uppercase px-2.5 py-1.5 rounded-xl shadow-xs text-center flex items-center justify-center min-h-[36px] tracking-wide",
+                            isHighlighted ? "bg-white text-emerald-900 font-black" : "bg-emerald-600 text-white font-black"
+                          )}>
+                            NEW MOC
+                          </span>
+                        </div>
+                      </button>
+                    );
+                  }
+
                   const isFBR = b?.paymentMode === 'FBR' || b?.paymentMode === 'Cancel';
                   const isCredit = b?.paymentMode === 'Credit';
                   const isDelPend = b?.paymentMode === 'Del Pending';
@@ -3651,7 +3718,7 @@ ${effectiveRec ? `🗓️ *Rec Date:* ${effectiveRec}\n` : ''}💰 *Bill Net Amt
         saving={saving}
       />
 
-      {/* ── MOC Commission Month Picker Modal ── */}
+      {/* ── MOC Commission Code Picker Modal ── */}
       {showMocModal && (
         <div className="fixed inset-0 bg-black/60 z-[280] flex items-center justify-center p-4 backdrop-blur-xs">
           <div className="bg-card rounded-3xl p-5 w-full max-w-md shadow-2xl border-2 border-emerald-500/40 animate-in zoom-in-95 duration-150">
@@ -3659,10 +3726,10 @@ ${effectiveRec ? `🗓️ *Rec Date:* ${effectiveRec}\n` : ''}💰 *Bill Net Amt
               <div>
                 <h3 className="text-base font-black uppercase text-emerald-700 flex items-center gap-1.5">
                   <span className="w-6 h-6 rounded-lg bg-emerald-100 text-emerald-800 flex items-center justify-center text-xs font-black">₹</span>
-                  Commission Month (MOC)
+                  Commission (MOC)
                 </h3>
                 <p className="text-[10px] font-bold text-muted-foreground uppercase">
-                  Select month to enter cash commission
+                  Select MOC code to enter cash commission
                 </p>
               </div>
               <button
@@ -3681,16 +3748,15 @@ ${effectiveRec ? `🗓️ *Rec Date:* ${effectiveRec}\n` : ''}💰 *Bill Net Amt
                     setShowMocModal(false);
                     handleBillSelect(moc.code);
                   }}
-                  className="flex flex-col items-center justify-center p-3 rounded-2xl border-2 border-emerald-300 bg-emerald-50/50 hover:bg-emerald-500 hover:text-white hover:border-emerald-600 transition-all text-center group shadow-xs active:scale-95"
+                  className="flex flex-col items-center justify-center p-3.5 rounded-2xl border-2 border-emerald-300 bg-emerald-50/50 hover:bg-emerald-500 hover:text-white hover:border-emerald-600 transition-all text-center group shadow-xs active:scale-95"
                 >
-                  <span className="text-[11px] font-bold text-muted-foreground group-hover:text-white/80 uppercase">{moc.month}</span>
-                  <span className="text-sm font-black text-emerald-950 group-hover:text-white uppercase mt-0.5">{moc.code}</span>
+                  <span className="text-base font-black text-emerald-950 group-hover:text-white uppercase tracking-wide">{moc.code}</span>
                 </button>
               ))}
             </div>
 
             <div className="mt-4 pt-3 border-t border-border flex items-center justify-between text-[10px] font-bold text-muted-foreground uppercase">
-              <span>Admin settings me naye months add kar sakte hain</span>
+              <span>Admin settings me naye MOC add kar sakte hain</span>
               <Button
                 variant="outline"
                 size="sm"

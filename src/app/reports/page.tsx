@@ -12,7 +12,7 @@ import BillEditModal from '@/components/BillEditModal';
 import SalespersonAutoDispatchModal from '@/components/SalespersonAutoDispatchModal';
 import { cleanPartyName, cleanSalespersonName, buildCanonicalMap } from '@/lib/nameStandardizer';
 import { isGreenParty } from '@/lib/greenParties';
-import { getCommissionMocs, CommissionMoc, isMocBill as checkIsMocBill } from '@/lib/commissionMoc';
+import { getCommissionMocs, CommissionMoc, isMocBill as checkIsMocBill, extractMocNumber, getDisplayBillNo, isBillMatchingMocCode } from '@/lib/commissionMoc';
 
 type SortConfig = {
   key: keyof Bill | 'diff';
@@ -186,19 +186,26 @@ export default function ReportsPage() {
         if (spQuery === 'moc' || spQuery === 'commission') {
           const isMoc = sp === 'moc' || sp.includes('moc') || bn.startsWith('moc') || bn.includes('moc') || pt.includes('commission') || pt.includes('moc') || cc === 'moc' || bt === 'commission';
           if (!isMoc) return false;
+        } else if (spQuery.startsWith('moc') || spQuery.includes('moc')) {
+          const queryMocNum = extractMocNumber(spQuery);
+          if (queryMocNum) {
+            const billMocNum = extractMocNumber(bn) || extractMocNumber(pt) || extractMocNumber(b.partyCode) || extractMocNumber(sp);
+            const isMatch = billMocNum === queryMocNum || isBillMatchingMocCode(b, `MOC ${queryMocNum}`) || isBillMatchingMocCode(b, `MOC${queryMocNum}`);
+            if (!isMatch) return false;
+          } else {
+            const isMoc = sp === 'moc' || sp.includes('moc') || bn.startsWith('moc') || bn.includes('moc') || pt.includes('commission') || pt.includes('moc') || cc === 'moc' || bt === 'commission';
+            if (!isMoc) return false;
+          }
         } else {
-          // Check if spQuery matches a configured MOC month or code (e.g. "MOC 5" or "MAY")
+          // Check if spQuery matches a configured MOC code (e.g. "MOC 8")
           const mocMatch = commissionMocs.find(m => 
             m.code.toLowerCase() === spQuery || 
-            m.month.toLowerCase() === spQuery || 
-            m.label.toLowerCase() === spQuery ||
             m.code.toLowerCase().replace(/\s+/g, '') === spQuery.replace(/\s+/g, '')
           );
           if (mocMatch) {
-            const mMonth = mocMatch.month.toLowerCase();
-            const mCode = mocMatch.code.toLowerCase();
-            const mCodeNoSpace = mCode.replace(/\s+/g, '');
-            const isMatch = bn === mCode || bn.replace(/\s+/g, '') === mCodeNoSpace || bn === mMonth || pt.includes(mMonth) || pt.includes(mCode) || cc.includes(mCode);
+            const mocNum = extractMocNumber(mocMatch.code);
+            const billMocNum = extractMocNumber(bn) || extractMocNumber(pt) || extractMocNumber(b.partyCode) || extractMocNumber(sp);
+            const isMatch = billMocNum === mocNum || isBillMatchingMocCode(b, mocMatch.code);
             if (!isMatch) return false;
           } else {
             if (!sp.includes(spQuery) && !pt.includes(spQuery) && !bn.includes(spQuery)) return false;
@@ -304,10 +311,18 @@ export default function ReportsPage() {
     set.add('MOC');
     for (const m of commissionMocs) {
       set.add(m.code);
-      set.add(m.month);
     }
     for (const b of bills) {
-      if (b.salespersonName?.trim()) set.add(b.salespersonName.trim());
+      if (b.salespersonName?.trim()) {
+        const sp = b.salespersonName.trim();
+        if (sp.toUpperCase() === 'MOC') {
+          set.add('MOC');
+        } else if (sp.toUpperCase().startsWith('MOC')) {
+          set.add(sp);
+        } else {
+          set.add(sp);
+        }
+      }
     }
     return Array.from(set).sort((a, b) => a.localeCompare(b, 'en', { sensitivity: 'base' }));
   }, [bills, nameListsReady, commissionMocs]);
@@ -562,7 +577,7 @@ export default function ReportsPage() {
         const label = isFBR ? 'FBR' : isCredit ? 'CREDIT' : isDelPend ? 'DEL PEND' : isPaid ? 'PAID' : isAsgnd ? 'ASGND' : 'UNPAID';
         const diffVal = isCredit ? 'CREDIT' : isDelPend ? 'NOT DEL' : diff;
         return [
-          rowNum, b.date || '-', stripGST(b.billNo),
+          rowNum, b.date || '-', stripGST(getDisplayBillNo(b)),
           b.partyName || '-', b.salespersonName || '', b.driverName || '-',
           b.billNetAmt, b.paymentDate || '-', b.deliveryDate || '-',
           cash, gpay, chq, lineCutAmt, diffVal, label, b.discrepancyReason || '',
@@ -962,7 +977,7 @@ export default function ReportsPage() {
         return [
           idx,
           b.date || '-',
-          stripGST(b.billNo),
+          stripGST(getDisplayBillNo(b)),
           b.partyName?.substring(0, 16) || '-',
           b.billNetAmt.toLocaleString('en-IN'),
           b.deliveryDate || '-',
@@ -1575,14 +1590,14 @@ export default function ReportsPage() {
                     onClick={() => setShowMocPicker(true)}
                     className={cn(
                       "text-[7px] font-black uppercase px-1.5 py-0.2 rounded border leading-none transition-colors",
-                      salesperson.toUpperCase().includes('MOC') || commissionMocs.some(m => m.month.toUpperCase() === salesperson.toUpperCase() || m.code.toUpperCase() === salesperson.toUpperCase())
+                      (salesperson || '').toUpperCase().includes('MOC') || commissionMocs.some(m => (m?.month || '').toUpperCase() === (salesperson || '').toUpperCase() || (m?.code || '').toUpperCase() === (salesperson || '').toUpperCase())
                         ? "bg-emerald-600 text-white border-emerald-600 shadow-xs"
                         : "bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100 dark:bg-emerald-950 dark:text-emerald-300"
                     )}
                     title="Select Commission Month (MOC Master)"
                   >
-                    {salesperson.toUpperCase().includes('MOC') || commissionMocs.some(m => m.month.toUpperCase() === salesperson.toUpperCase() || m.code.toUpperCase() === salesperson.toUpperCase())
-                      ? (salesperson.toUpperCase() || 'MOC')
+                    {(salesperson || '').toUpperCase().includes('MOC') || commissionMocs.some(m => (m?.month || '').toUpperCase() === (salesperson || '').toUpperCase() || (m?.code || '').toUpperCase() === (salesperson || '').toUpperCase())
+                      ? ((salesperson || '').toUpperCase() || 'MOC')
                       : 'MOC'}
                   </button>
                   {salesperson && (
@@ -1732,7 +1747,7 @@ export default function ReportsPage() {
                           <tr key={b.billNo} onClick={() => setEditBill(b)} className={cn("border-b border-border/20 hover:bg-indigo-50/40 cursor-pointer transition-colors", rowCls)}>
                             <td className="px-1.5 py-0.5 text-center text-muted-foreground">{i + 1}</td>
                             <td className="px-1.5 py-0.5">{b.date || '-'}</td>
-                            <td className={cn("px-1.5 py-0.5 font-black", isFBR && "text-red-700", isCredit && "text-green-800")}>{stripGST(b.billNo)}</td>
+                            <td className={cn("px-1.5 py-0.5 font-black", isFBR && "text-red-700", isCredit && "text-green-800")}>{stripGST(getDisplayBillNo(b))}</td>
                             <td className="px-1.5 py-0.5 font-black truncate">
                               <span className={cn(
                                 "truncate inline-block px-1 py-0.5 rounded font-black",
@@ -1931,7 +1946,7 @@ export default function ReportsPage() {
                       )}>
                         <TableCell className="text-[12px] px-1 py-0.5 h-auto truncate">{rowIdx}</TableCell>
                         <TableCell className="text-[12px] px-1 py-0.5 h-auto truncate">{b.date || '-'}</TableCell>
-                        <TableCell className={cn("text-[12px] px-1 py-0.5 h-auto truncate font-black", isCredit && "text-green-800", isFBR && "text-amber-700", isAsgnd && "text-red-600")}>{stripGST(b.billNo)}</TableCell>
+                        <TableCell className={cn("text-[12px] px-1 py-0.5 h-auto truncate font-black", isCredit && "text-green-800", isFBR && "text-amber-700", isAsgnd && "text-red-600")}>{stripGST(getDisplayBillNo(b))}</TableCell>
                         <TableCell className="text-[12px] px-1 py-0.5 h-auto truncate font-black">
                           <span className={cn(
                             "truncate inline-block px-1 py-0.5 rounded font-black",
@@ -2110,7 +2125,7 @@ export default function ReportsPage() {
       bills={bills}
     />
 
-    {/* ── MOC Commission Month Picker Modal for Reports ── */}
+    {/* ── MOC Commission Picker Modal for Reports ── */}
     {showMocPicker && (
       <div className="fixed inset-0 bg-black/60 z-[280] flex items-center justify-center p-4 backdrop-blur-xs">
         <div className="bg-card rounded-3xl p-5 w-full max-w-md shadow-2xl border-2 border-emerald-500/40 animate-in zoom-in-95 duration-150">
@@ -2118,10 +2133,10 @@ export default function ReportsPage() {
             <div>
               <h3 className="text-base font-black uppercase text-emerald-700 flex items-center gap-1.5">
                 <span className="w-6 h-6 rounded-lg bg-emerald-100 text-emerald-800 flex items-center justify-center text-xs font-black">₹</span>
-                Filter Commission Month (MOC)
+                Filter MOC Commission
               </h3>
               <p className="text-[10px] font-bold text-muted-foreground uppercase">
-                Select a month or ALL MOC to filter report
+                Select MOC code or ALL MOC to filter reports
               </p>
             </div>
             <button
@@ -2140,18 +2155,18 @@ export default function ReportsPage() {
               }}
               className={cn(
                 "w-full py-2.5 rounded-xl border-2 font-black text-xs uppercase transition-all shadow-xs",
-                salesperson.toUpperCase() === 'MOC'
+                (salesperson || '').toUpperCase() === 'MOC'
                   ? "bg-emerald-600 text-white border-emerald-700 shadow-md"
                   : "bg-emerald-100/60 border-emerald-300 text-emerald-950 hover:bg-emerald-500 hover:text-white"
               )}
             >
-              ★ ALL MOC COMMISSION ENTRIES
+              ★ ALL MOC ENTRIES
             </button>
           </div>
 
           <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5 max-h-[280px] overflow-y-auto pr-1">
             {commissionMocs.map(moc => {
-              const isSelected = salesperson.toUpperCase() === moc.code.toUpperCase() || salesperson.toUpperCase() === moc.month.toUpperCase();
+              const isSelected = (salesperson || '').toUpperCase() === (moc?.code || '').toUpperCase();
               return (
                 <button
                   key={moc.id}
@@ -2160,16 +2175,13 @@ export default function ReportsPage() {
                     setShowMocPicker(false);
                   }}
                   className={cn(
-                    "flex flex-col items-center justify-center p-3 rounded-2xl border-2 transition-all text-center group shadow-xs active:scale-95",
+                    "flex flex-col items-center justify-center py-3.5 px-2 rounded-2xl border-2 transition-all text-center group shadow-xs active:scale-95",
                     isSelected
                       ? "bg-emerald-600 text-white border-emerald-700 shadow-md"
                       : "border-emerald-300 bg-emerald-50/50 hover:bg-emerald-500 hover:text-white hover:border-emerald-600 text-emerald-950"
                   )}
                 >
-                  <span className={cn("text-[11px] font-bold uppercase", isSelected ? "text-white/80" : "text-muted-foreground group-hover:text-white/80")}>
-                    {moc.month}
-                  </span>
-                  <span className={cn("text-sm font-black uppercase mt-0.5", isSelected ? "text-white" : "text-emerald-950 group-hover:text-white")}>
+                  <span className={cn("text-base font-black uppercase", isSelected ? "text-white" : "text-emerald-950 group-hover:text-white")}>
                     {moc.code}
                   </span>
                 </button>
@@ -2178,7 +2190,7 @@ export default function ReportsPage() {
           </div>
 
           <div className="mt-4 pt-3 border-t border-border flex items-center justify-between text-[10px] font-bold text-muted-foreground uppercase">
-            <span>Admin settings se naye months add/manage karein</span>
+            <span>Admin settings se naye MOC add/manage karein</span>
             <Button
               variant="outline"
               size="sm"

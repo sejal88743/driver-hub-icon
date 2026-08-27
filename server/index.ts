@@ -551,15 +551,15 @@ app.post('/api/admin/fix-bills', async (_req, res) => {
   }
 });
 
-// ─── Admin AI Agent endpoint (Gemini Powered DB Assistant) ─────────────────
+// ─── Admin AI Agent endpoint (Gemini Powered DB Assistant & XLS Bulk Engine) ─
 app.post('/api/admin/ai-agent', async (req, res) => {
   try {
-    const { action, prompt, apiKey: clientApiKey, patches: inputPatches, bills: clientBills } = req.body ?? {};
+    const { action, prompt, apiKey: clientApiKey, patches: inputPatches, bills: clientBills, billNos: inputBillNos, fileRows } = req.body ?? {};
     const apiKey = (typeof clientApiKey === 'string' && clientApiKey.trim())
       ? clientApiKey.trim()
       : (req.headers['x-gemini-api-key'] as string) || process.env.GEMINI_API_KEY;
 
-    // 1. EXECUTE ACTION (WRITE / EDIT)
+    // 1. EXECUTE ACTION (WRITE / EDIT TO DATABASE)
     if (action === 'execute') {
       if (!Array.isArray(inputPatches) || inputPatches.length === 0) {
         return res.json({ ok: false, error: 'No patches provided for execution.' });
@@ -594,7 +594,7 @@ app.post('/api/admin/ai-agent', async (req, res) => {
           } else if (billNo) {
             values.push(billNo);
             const { rowCount } = await pool.query(
-              `UPDATE bills SET ${setClauses} WHERE bill_no = $${values.length}`,
+              `UPDATE bills SET ${setClauses} WHERE bill_no = $${values.length} OR TRIM(UPPER(bill_no)) = TRIM(UPPER($${values.length}))`,
               values
             );
             updatedCount += rowCount ?? 0;
@@ -607,13 +607,16 @@ app.post('/api/admin/ai-agent', async (req, res) => {
       return res.json({
         ok: true,
         updatedCount: updatedCount || inputPatches.length,
-        message: `Successfully processed ${updatedCount || inputPatches.length} bills update!`,
+        message: `Successfully processed ${updatedCount || inputPatches.length} bills update in PostgreSQL database!`,
       });
     }
 
     // 2. ANALYZE ACTION (READ / FIND / PROPOSE EDITS)
-    if (!prompt || typeof prompt !== 'string' || !prompt.trim()) {
-      return res.json({ ok: false, error: 'Prompt is required for analysis.' });
+    const userPrompt = typeof prompt === 'string' ? prompt.trim() : '';
+    const hasXlsBills = Array.isArray(inputBillNos) && inputBillNos.length > 0;
+
+    if (!userPrompt && !hasXlsBills) {
+      return res.json({ ok: false, error: 'Prompt or XLS Bill Numbers required for analysis.' });
     }
 
     let allBills: any[] = [];
@@ -624,17 +627,25 @@ app.post('/api/admin/ai-agent', async (req, res) => {
       console.warn('[AI Agent DB Query Warning]', dbErr);
     }
 
-    // Fallback to client-side memory store if DB returned no rows or DB wasn't connected
+    // Fallback to client-side memory store if DB returned no rows
     if (allBills.length === 0 && Array.isArray(clientBills) && clientBills.length > 0) {
       allBills = clientBills;
     }
 
-    // Call Gemini API if API Key is configured
+    // Helper date formatting (DD/MM/YYYY)
+    const now = new Date();
+    const todayDMY = `${String(now.getDate()).padStart(2, '0')}/${String(now.getMonth() + 1).padStart(2, '0')}/${now.getFullYear()}`;
+
+    // Gemini Intent Analysis
     let aiExplanation = '';
-    let filterRule = 'CUSTOM';
-    let targetStatus = '';
-    let searchKeyword = '';
+    let targetPaymentMode = '';
+    let targetPaymentMethod = '';
+    let targetDate = '';
+    let targetAmountMode = 'NET_AMOUNT'; // 'NET_AMOUNT' | 'ZERO' | 'CUSTOM'
+    let discrepancyReason = '';
     let isWriteIntent = false;
+    let searchKeyword = '';
+    let filterRule = hasXlsBills ? 'XLS_BILLS' : 'CUSTOM';
 
     if (apiKey) {
       try {
@@ -643,29 +654,48 @@ app.post('/api/admin/ai-agent', async (req, res) => {
           httpOptions: { headers: { 'User-Agent': 'aistudio-build' } },
         });
 
+        const promptContext = `You are the VitraTrack Billing AI Administrator.
+Analyze this admin request for a billing database of ${allBills.length} records.
+${hasXlsBills ? `User uploaded an XLS/Excel file with ${inputBillNos.length} Bill Numbers.` : ''}
+User Command/Prompt: "${userPrompt || (hasXlsBills ? 'Process uploaded XLS bill numbers' : '')}"
+Today's Date: "${todayDMY}"
+
+Understand user's intent in Hindi, Hinglish, Gujarati, or English:
+1. Target Payment Mode:
+   - "Paid" (when user asks to mark bills as Paid, Jama, Cash me paid karo, UPI me paid karo, etc.)
+   - "FBR" (when user asks to mark as FBR, Return, Cancel, Goods return, etc.)
+   - "Credit" or "Del Pending" (when user asks for credit, delivery pending, etc.)
+   - "Unpaid" (reset / unpaid)
+   - "" (if only searching/filtering without updating)
+2. Target Payment Method:
+   - "Cash" (when user mentions cash, nakad, rokad)
+   - "UPI" (when user mentions UPI, GPay, PhonePe, Paytm, online)
+   - "Cheque" (when user mentions cheque, bank)
+   - "Split" (when split payment is specified)
+   - "" (none)
+3. Target Date:
+   - If user mentions specific date (e.g. "25/08/2026" or "2026-08-25" or "yesterday"), convert to DD/MM/YYYY.
+   - If user asks for today / aaj ki date / default, use "${todayDMY}".
+4. Discrepancy Reason (if FBR or discrepancy):
+   - e.g. "Damage", "Rate Difference", "Party Closed", "Order Cancelled", "Excess Stock", "Goods Return"
+5. Is this a Write/Edit/Update intent? (boolean: true if user wants to change/update/set/mark/paid/fbr/credit bills, false if just viewing)
+6. Target Amount Mode: "NET_AMOUNT" (full collection equal to net - lineCut) | "ZERO" (for FBR/Credit) | "CUSTOM"
+
+Respond ONLY in valid JSON matching schema:
+{
+  "explanation": "Clear Hinglish/English summary of what will be done",
+  "isWriteIntent": boolean,
+  "targetPaymentMode": "Paid" | "FBR" | "Credit" | "Del Pending" | "Unpaid" | "",
+  "targetPaymentMethod": "Cash" | "UPI" | "Cheque" | "Split" | "",
+  "targetDate": string,
+  "targetAmountMode": "NET_AMOUNT" | "ZERO" | "CUSTOM",
+  "discrepancyReason": string,
+  "searchKeyword": string
+}`;
+
         const geminiRes = await ai.models.generateContent({
           model: 'gemini-2.5-flash',
-          contents: `Analyze the following admin user request for a billing database of ${allBills.length} records:
-User Prompt: "${prompt.trim()}"
-
-Identify:
-1. What records to filter:
-   - REC_AMT_WITH_FBR (user wants bills with rec/collected amt > 0 but status FBR or Cancel)
-   - DIFF_ZERO_UNPAID (user wants bills where collected amt + line cut >= net amt / diff is 0, but status is not Paid)
-   - UNPAID_DRIVERS (user wants unpaid bills for driver/party/salesperson)
-   - CUSTOM (other filter request)
-2. Is this an edit/update intent? (e.g. user says "status paid karo", "update status", "status badlo", "paid set karo", "paid karo")
-3. Target paymentMode to set (e.g., 'Paid', 'Unpaid', 'FBR', or empty)
-4. Key names/drivers/parties mentioned (if any)
-
-Respond ONLY in valid JSON with schema:
-{
-  "explanation": "Short clear explanation in Hinglish/English",
-  "filterRule": "REC_AMT_WITH_FBR" | "DIFF_ZERO_UNPAID" | "UNPAID_DRIVERS" | "CUSTOM",
-  "isWriteIntent": boolean,
-  "targetStatus": string,
-  "searchKeyword": string
-}`,
+          contents: promptContext,
           config: {
             responseMimeType: 'application/json',
           },
@@ -675,9 +705,12 @@ Respond ONLY in valid JSON with schema:
           try {
             const parsed = JSON.parse(geminiRes.text.trim());
             aiExplanation = parsed.explanation || '';
-            filterRule = parsed.filterRule || 'CUSTOM';
             isWriteIntent = Boolean(parsed.isWriteIntent);
-            targetStatus = parsed.targetStatus || '';
+            targetPaymentMode = parsed.targetPaymentMode || '';
+            targetPaymentMethod = parsed.targetPaymentMethod || '';
+            targetDate = parsed.targetDate || '';
+            targetAmountMode = parsed.targetAmountMode || 'NET_AMOUNT';
+            discrepancyReason = parsed.discrepancyReason || '';
             searchKeyword = parsed.searchKeyword || '';
           } catch {}
         }
@@ -686,103 +719,314 @@ Respond ONLY in valid JSON with schema:
       }
     }
 
-    // Heuristic fallbacks for common user prompts if Gemini API key isn't present or returned general output
-    const rawLowerPrompt = prompt.toLowerCase();
-    const writeVerbs = ['karo', 'set', 'update', 'badlo', 'change', 'maro', 'kijiye'];
-    const hasWriteVerb = writeVerbs.some(w => rawLowerPrompt.includes(w));
+    // Heuristic & rule-based fallbacks (guarantees accurate execution even without API key or if API was offline)
+    const rawLower = userPrompt.toLowerCase();
+    const writeVerbs = ['karo', 'set', 'update', 'badlo', 'change', 'maro', 'kijiye', 'mark', 'kar do', 'bharo', 'paid', 'fbr', 'credit'];
+    const hasWriteVerb = writeVerbs.some(w => rawLower.includes(w)) || hasXlsBills;
 
-    if (rawLowerPrompt.includes('fbr') && (rawLowerPrompt.includes('rec') || rawLowerPrompt.includes('collected') || rawLowerPrompt.includes('amt') || rawLowerPrompt.includes('amount') || rawLowerPrompt.includes('jama'))) {
-      filterRule = 'REC_AMT_WITH_FBR';
-      if (hasWriteVerb || rawLowerPrompt.includes('paid') || rawLowerPrompt.includes('status')) isWriteIntent = true;
-      if (!targetStatus) targetStatus = 'Paid';
-    } else if ((rawLowerPrompt.includes('diff') || rawLowerPrompt.includes('difference')) && (rawLowerPrompt.includes('0') || rawLowerPrompt.includes('zero') || rawLowerPrompt.includes('nil')) && (rawLowerPrompt.includes('paid') || rawLowerPrompt.includes('rec') || hasWriteVerb)) {
-      filterRule = 'DIFF_ZERO_UNPAID';
+    if (hasXlsBills) {
       isWriteIntent = true;
-      targetStatus = 'Paid';
-    } else if (rawLowerPrompt.includes('paid') && hasWriteVerb) {
-      isWriteIntent = true;
-      if (!targetStatus) targetStatus = 'Paid';
-    }
-
-    // Filter DB records based on rule & prompt
-    const matchedBills: any[] = [];
-    const patches: any[] = [];
-
-    for (const b of allBills) {
-      const netAmt = Number(b.billNetAmt) || 0;
-      const recAmt = Number(b.collectedAmount) || 0;
-      const lc = Number(b.lineCutAmt) || 0;
-      const diff = Math.max(0, netAmt - lc - recAmt);
-      const curMode = String(b.paymentMode || 'Unpaid').trim();
-
-      let isMatch = false;
-      let patchChanges: Record<string, any> = {};
-
-      if (filterRule === 'REC_AMT_WITH_FBR') {
-        if (recAmt > 0 && (curMode.toUpperCase() === 'FBR' || curMode.toUpperCase() === 'CANCEL' || curMode.toUpperCase() === 'UNPAID')) {
-          isMatch = true;
-          patchChanges = { paymentMode: targetStatus || 'Paid' };
-        }
-      } else if (filterRule === 'DIFF_ZERO_UNPAID') {
-        if ((recAmt + lc >= netAmt - 1) && curMode !== 'Paid') {
-          isMatch = true;
-          patchChanges = { paymentMode: 'Paid' };
-        }
-      } else {
-        // Custom search: match keywords or prompt conditions
-        const searchStr = `${b.billNo} ${b.partyName} ${b.driverName} ${b.salespersonName} ${curMode}`.toLowerCase();
-        const keywords = prompt.toLowerCase().replace(/karo|set|update|badlo|dikhao|batao|sab|me|status|bill|bills/g, ' ').split(/\s+/).filter(w => w.length > 2);
-
-        let keywordMatch = false;
-        if (searchKeyword && searchStr.includes(searchKeyword.toLowerCase())) {
-          keywordMatch = true;
-        } else if (keywords.length > 0 && keywords.some(k => searchStr.includes(k))) {
-          keywordMatch = true;
-        } else if (isWriteIntent && keywords.length === 0) {
-          // General bulk update (e.g. "sab me status paid karo")
-          if (curMode !== 'Paid') keywordMatch = true;
-        }
-
-        // Additional condition checks
-        if (rawLowerPrompt.includes('unpaid') && curMode !== 'Unpaid' && curMode !== 'Pending') {
-          keywordMatch = false;
-        }
-
-        if (keywordMatch) {
-          isMatch = true;
-          if (isWriteIntent && targetStatus) {
-            patchChanges = { paymentMode: targetStatus };
-          }
+      if (!targetPaymentMode) {
+        if (rawLower.includes('fbr') || rawLower.includes('cancel') || rawLower.includes('return')) {
+          targetPaymentMode = 'FBR';
+          targetAmountMode = 'ZERO';
+          if (!discrepancyReason) discrepancyReason = 'Goods Return / FBR';
+        } else if (rawLower.includes('credit') || rawLower.includes('del pending') || rawLower.includes('pending')) {
+          targetPaymentMode = 'Del Pending';
+          targetAmountMode = 'ZERO';
+        } else if (rawLower.includes('unpaid') || rawLower.includes('reset')) {
+          targetPaymentMode = 'Unpaid';
+          targetAmountMode = 'ZERO';
+        } else {
+          // Default for XLS upload command is Paid in Cash (unless specified)
+          targetPaymentMode = 'Paid';
+          targetAmountMode = 'NET_AMOUNT';
         }
       }
 
-      if (isMatch) {
+      if (targetPaymentMode === 'Paid' && !targetPaymentMethod) {
+        if (rawLower.includes('upi') || rawLower.includes('online') || rawLower.includes('gpay') || rawLower.includes('phonepe') || rawLower.includes('scanner')) {
+          targetPaymentMethod = 'UPI';
+        } else if (rawLower.includes('cheque') || rawLower.includes('check') || rawLower.includes('bank')) {
+          targetPaymentMethod = 'Cheque';
+        } else {
+          targetPaymentMethod = 'Cash';
+        }
+      }
+
+      // Extract explicit date if mentioned in prompt (e.g. 25/08/2026 or 25-08-2026)
+      const dateMatch = userPrompt.match(/\b(\d{1,2}[-/.]\d{1,2}[-/.]\d{2,4})\b/);
+      if (dateMatch && !targetDate) {
+        const parts = dateMatch[1].replace(/[-.]/g, '/').split('/');
+        if (parts.length === 3) {
+          targetDate = `${parts[0].padStart(2, '0')}/${parts[1].padStart(2, '0')}/${parts[2].length === 2 ? '20' + parts[2] : parts[2]}`;
+        }
+      }
+      if (!targetDate) targetDate = todayDMY;
+    } else {
+      if (rawLower.includes('fbr') && (rawLower.includes('rec') || rawLower.includes('collected') || rawLower.includes('amt') || rawLower.includes('amount') || rawLower.includes('jama'))) {
+        filterRule = 'REC_AMT_WITH_FBR';
+        if (hasWriteVerb || rawLower.includes('paid')) isWriteIntent = true;
+        if (!targetPaymentMode) targetPaymentMode = 'Paid';
+        if (!targetPaymentMethod) targetPaymentMethod = 'Cash';
+      } else if ((rawLower.includes('diff') || rawLower.includes('difference')) && (rawLower.includes('0') || rawLower.includes('zero') || rawLower.includes('nil'))) {
+        filterRule = 'DIFF_ZERO_UNPAID';
+        isWriteIntent = true;
+        targetPaymentMode = 'Paid';
+        targetPaymentMethod = 'Cash';
+      } else if (rawLower.includes('paid') && hasWriteVerb) {
+        isWriteIntent = true;
+        if (!targetPaymentMode) targetPaymentMode = 'Paid';
+        if (rawLower.includes('upi')) targetPaymentMethod = 'UPI';
+        else if (rawLower.includes('cheque')) targetPaymentMethod = 'Cheque';
+        else if (!targetPaymentMethod) targetPaymentMethod = 'Cash';
+      } else if (rawLower.includes('fbr') && hasWriteVerb) {
+        isWriteIntent = true;
+        targetPaymentMode = 'FBR';
+        targetAmountMode = 'ZERO';
+        if (!discrepancyReason) discrepancyReason = 'Goods Return / FBR';
+      }
+      if (!targetDate) targetDate = todayDMY;
+    }
+
+    // Build Bill Number Lookup Index for ultra fast and fuzzy matching
+    const cleanBn = (s: string) => String(s || '').trim().toUpperCase().replace(/\s+/g, '');
+    const stripGst = (s: string) => cleanBn(s).replace(/^GST[-_]?/i, '');
+
+    const billMapByClean = new Map<string, any>();
+    const billMapByStripped = new Map<string, any>();
+    for (const b of allBills) {
+      const c = cleanBn(b.billNo);
+      if (c) billMapByClean.set(c, b);
+      const st = stripGst(b.billNo);
+      if (st) billMapByStripped.set(st, b);
+    }
+
+    const matchedBills: any[] = [];
+    const patches: any[] = [];
+    const matchedBillIds = new Set<string>();
+    const unmatchedBillNos: string[] = [];
+
+    if (hasXlsBills) {
+      // ── Process Uploaded XLS Bill Numbers ──
+      for (const rawBn of inputBillNos) {
+        const c = cleanBn(rawBn);
+        const st = stripGst(rawBn);
+        const bill = billMapByClean.get(c) || billMapByStripped.get(st) || billMapByStripped.get(c);
+
+        if (!bill) {
+          unmatchedBillNos.push(String(rawBn));
+          continue;
+        }
+
+        if (matchedBillIds.has(bill.id)) continue;
+        matchedBillIds.add(bill.id);
+
+        const netAmt = Number(bill.billNetAmt) || 0;
+        const lc = Number(bill.lineCutAmt) || 0;
+        const effectiveNet = Math.max(0, netAmt - lc);
+        const curMode = String(bill.paymentMode || 'Unpaid').trim();
+
+        let patchChanges: Record<string, any> = {};
+
+        if (isWriteIntent && targetPaymentMode) {
+          if (targetPaymentMode === 'Paid') {
+            const method = targetPaymentMethod || 'Cash';
+            patchChanges = {
+              paymentMode: 'Paid',
+              paymentMethod: method,
+              paymentDate: targetDate || todayDMY,
+              collectedAmount: effectiveNet,
+              outstandingAmount: 0,
+              cashAmount: method === 'Cash' ? effectiveNet : 0,
+              upiAmount: method === 'UPI' ? effectiveNet : 0,
+              chequeAmount: method === 'Cheque' ? effectiveNet : 0,
+            };
+          } else if (targetPaymentMode === 'FBR') {
+            patchChanges = {
+              paymentMode: 'FBR',
+              paymentMethod: 'FBR',
+              paymentDate: targetDate || todayDMY,
+              discrepancyReason: discrepancyReason || 'Goods Return / FBR',
+              collectedAmount: 0,
+              cashAmount: 0,
+              upiAmount: 0,
+              chequeAmount: 0,
+              outstandingAmount: 0,
+            };
+          } else if (targetPaymentMode === 'Del Pending' || targetPaymentMode === 'Credit') {
+            patchChanges = {
+              paymentMode: targetPaymentMode === 'Del Pending' ? 'Del Pending' : 'Credit',
+              deliveryDate: targetDate || bill.deliveryDate || todayDMY,
+              collectedAmount: 0,
+              cashAmount: 0,
+              upiAmount: 0,
+              chequeAmount: 0,
+              outstandingAmount: effectiveNet,
+            };
+          } else if (targetPaymentMode === 'Unpaid') {
+            patchChanges = {
+              paymentMode: 'Unpaid',
+              collectedAmount: 0,
+              cashAmount: 0,
+              upiAmount: 0,
+              chequeAmount: 0,
+              outstandingAmount: effectiveNet,
+            };
+          }
+        }
+
         matchedBills.push({
-          id: b.id,
-          billNo: b.billNo,
-          partyName: b.partyName || '',
-          driverName: b.driverName || '',
+          id: bill.id,
+          billNo: bill.billNo,
+          partyName: bill.partyName || '',
+          driverName: bill.driverName || '',
           billNetAmt: netAmt,
-          collectedAmount: recAmt,
+          collectedAmount: patchChanges.collectedAmount !== undefined ? patchChanges.collectedAmount : (Number(bill.collectedAmount) || 0),
           lineCutAmt: lc,
-          diff,
+          diff: patchChanges.outstandingAmount !== undefined ? patchChanges.outstandingAmount : Math.max(0, netAmt - lc - (Number(bill.collectedAmount) || 0)),
           currentStatus: curMode,
           proposedStatus: patchChanges.paymentMode || curMode,
+          proposedMethod: patchChanges.paymentMethod || bill.paymentMethod || '-',
+          proposedDate: patchChanges.paymentDate || patchChanges.deliveryDate || bill.paymentDate || bill.deliveryDate || '-',
           changes: patchChanges,
         });
 
         if (Object.keys(patchChanges).length > 0) {
           patches.push({
-            id: b.id,
-            billNo: b.billNo,
+            id: bill.id,
+            billNo: bill.billNo,
             changes: patchChanges,
           });
+        }
+      }
+    } else {
+      // ── Process Natural Language DB Query / Filter ──
+      for (const b of allBills) {
+        const netAmt = Number(b.billNetAmt) || 0;
+        const recAmt = Number(b.collectedAmount) || 0;
+        const lc = Number(b.lineCutAmt) || 0;
+        const diff = Math.max(0, netAmt - lc - recAmt);
+        const curMode = String(b.paymentMode || 'Unpaid').trim();
+
+        let isMatch = false;
+        let patchChanges: Record<string, any> = {};
+
+        if (filterRule === 'REC_AMT_WITH_FBR') {
+          if (recAmt > 0 && (curMode.toUpperCase() === 'FBR' || curMode.toUpperCase() === 'CANCEL' || curMode.toUpperCase() === 'UNPAID')) {
+            isMatch = true;
+            if (isWriteIntent) {
+              patchChanges = {
+                paymentMode: 'Paid',
+                paymentMethod: targetPaymentMethod || 'Cash',
+                paymentDate: targetDate || todayDMY,
+                cashAmount: (targetPaymentMethod === 'Cash' || !targetPaymentMethod) ? recAmt : 0,
+                upiAmount: targetPaymentMethod === 'UPI' ? recAmt : 0,
+                chequeAmount: targetPaymentMethod === 'Cheque' ? recAmt : 0,
+                outstandingAmount: Math.max(0, netAmt - lc - recAmt),
+              };
+            }
+          }
+        } else if (filterRule === 'DIFF_ZERO_UNPAID') {
+          if ((recAmt + lc >= netAmt - 1) && curMode !== 'Paid') {
+            isMatch = true;
+            if (isWriteIntent) {
+              patchChanges = {
+                paymentMode: 'Paid',
+                paymentMethod: targetPaymentMethod || 'Cash',
+                paymentDate: targetDate || todayDMY,
+                collectedAmount: Math.max(recAmt, netAmt - lc),
+                cashAmount: (targetPaymentMethod === 'Cash' || !targetPaymentMethod) ? Math.max(recAmt, netAmt - lc) : 0,
+                outstandingAmount: 0,
+              };
+            }
+          }
+        } else {
+          // Custom search
+          const searchStr = `${b.billNo} ${b.partyName} ${b.driverName} ${b.salespersonName} ${curMode}`.toLowerCase();
+          const keywords = userPrompt.toLowerCase().replace(/karo|set|update|badlo|dikhao|batao|sab|me|status|bill|bills/g, ' ').split(/\s+/).filter(w => w.length > 2);
+
+          let keywordMatch = false;
+          if (searchKeyword && searchStr.includes(searchKeyword.toLowerCase())) {
+            keywordMatch = true;
+          } else if (keywords.length > 0 && keywords.some(k => searchStr.includes(k))) {
+            keywordMatch = true;
+          } else if (isWriteIntent && keywords.length === 0) {
+            if (curMode !== 'Paid') keywordMatch = true;
+          }
+
+          if (keywordMatch) {
+            isMatch = true;
+            if (isWriteIntent && targetPaymentMode) {
+              const effectiveNet = Math.max(0, netAmt - lc);
+              if (targetPaymentMode === 'Paid') {
+                const method = targetPaymentMethod || 'Cash';
+                patchChanges = {
+                  paymentMode: 'Paid',
+                  paymentMethod: method,
+                  paymentDate: targetDate || todayDMY,
+                  collectedAmount: effectiveNet,
+                  outstandingAmount: 0,
+                  cashAmount: method === 'Cash' ? effectiveNet : 0,
+                  upiAmount: method === 'UPI' ? effectiveNet : 0,
+                  chequeAmount: method === 'Cheque' ? effectiveNet : 0,
+                };
+              } else if (targetPaymentMode === 'FBR') {
+                patchChanges = {
+                  paymentMode: 'FBR',
+                  paymentMethod: 'FBR',
+                  paymentDate: targetDate || todayDMY,
+                  discrepancyReason: discrepancyReason || 'Goods Return / FBR',
+                  collectedAmount: 0,
+                  cashAmount: 0,
+                  upiAmount: 0,
+                  chequeAmount: 0,
+                  outstandingAmount: 0,
+                };
+              } else if (targetPaymentMode === 'Del Pending' || targetPaymentMode === 'Credit') {
+                patchChanges = {
+                  paymentMode: targetPaymentMode === 'Del Pending' ? 'Del Pending' : 'Credit',
+                  deliveryDate: targetDate || todayDMY,
+                  collectedAmount: 0,
+                  outstandingAmount: effectiveNet,
+                };
+              }
+            }
+          }
+        }
+
+        if (isMatch) {
+          matchedBills.push({
+            id: b.id,
+            billNo: b.billNo,
+            partyName: b.partyName || '',
+            driverName: b.driverName || '',
+            billNetAmt: netAmt,
+            collectedAmount: patchChanges.collectedAmount !== undefined ? patchChanges.collectedAmount : recAmt,
+            lineCutAmt: lc,
+            diff,
+            currentStatus: curMode,
+            proposedStatus: patchChanges.paymentMode || curMode,
+            proposedMethod: patchChanges.paymentMethod || b.paymentMethod || '-',
+            proposedDate: patchChanges.paymentDate || patchChanges.deliveryDate || b.paymentDate || b.deliveryDate || '-',
+            changes: patchChanges,
+          });
+
+          if (Object.keys(patchChanges).length > 0) {
+            patches.push({
+              id: b.id,
+              billNo: b.billNo,
+              changes: patchChanges,
+            });
+          }
         }
       }
     }
 
     if (!aiExplanation) {
-      if (filterRule === 'REC_AMT_WITH_FBR') {
+      if (hasXlsBills) {
+        aiExplanation = `Uploaded XLS file me se ${inputBillNos.length} Bill Numbers mile, jisme se ${matchedBills.length} bills database me match hue. Target: '${targetPaymentMode || 'Paid'}' (${targetPaymentMethod || 'Cash'}), Date: ${targetDate || todayDMY}.`;
+      } else if (filterRule === 'REC_AMT_WITH_FBR') {
         aiExplanation = `Ese ${matchedBills.length} bills mile jisme Collected Amount (> 0) hai par status FBR/Cancel show ho raha hai.`;
       } else if (filterRule === 'DIFF_ZERO_UNPAID') {
         aiExplanation = `Ese ${matchedBills.length} bills mile jinka Collected Amount + Line Cut total Net Amount ke barabar hai (Diff = 0), par status Paid nahi hai.`;
@@ -792,13 +1036,15 @@ Respond ONLY in valid JSON with schema:
     }
 
     const proposedActionText = isWriteIntent && patches.length > 0
-      ? `${patches.length} bills ka status '${targetStatus || 'Paid'}' update karne ka proposal tayar hai.`
-      : `Filter result (${matchedBills.length} bills found). Modify intent specified: ${isWriteIntent}`;
+      ? `${patches.length} bills ka status '${targetPaymentMode || 'Paid'}' (${targetPaymentMethod || 'Cash'}), Rec Date: '${targetDate || todayDMY}', Cash/Collection Amount = Net Amount update karne ka proposal tayar hai.`
+      : `Filter result (${matchedBills.length} bills found).`;
 
     return res.json({
       ok: true,
       explanation: aiExplanation,
       matchedCount: matchedBills.length,
+      unmatchedCount: unmatchedBillNos.length,
+      unmatchedBillNos,
       matchedBills,
       isWriteIntent,
       proposedActionText,

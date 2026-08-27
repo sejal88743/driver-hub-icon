@@ -6,6 +6,7 @@ import { cn } from "@/lib/utils";
 import { ChevronUp, ChevronDown, Calculator, X, Check, Save, Square, FileText, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { isGreenParty } from "@/lib/greenParties";
+import { getDisplayBillNo } from "@/lib/commissionMoc";
 
 type Props = {
   bills: Bill[];
@@ -527,7 +528,7 @@ export default function DriverDayTable({ bills, selectedDriver, displayDate, onS
 
         return [
           i + 1,
-          b.billNo.replace(/^GST[-/]?/i, ''),
+          getDisplayBillNo(b).replace(/^GST[-/]?/i, ''),
           (b.partyName || '-').substring(0, 24),
           b.billNetAmt > 0 ? b.billNetAmt.toLocaleString('en-IN') : '-',
           !isSnap && cash > 0 ? cash.toLocaleString('en-IN') : '',
@@ -705,7 +706,7 @@ export default function DriverDayTable({ bills, selectedDriver, displayDate, onS
           const chqCell  = chq > 0 ? chq.toLocaleString('en-IN') : '-';
 
           return [
-            b.billNo.replace(/^GST[-/]?/i, ''),
+            getDisplayBillNo(b).replace(/^GST[-/]?/i, ''),
             (b.partyName || '-').substring(0, 24),
             b.billNetAmt > 0 ? b.billNetAmt.toLocaleString('en-IN') : '-',
             cash > 0 ? cash.toLocaleString('en-IN') : '-',
@@ -1186,10 +1187,7 @@ export default function DriverDayTable({ bills, selectedDriver, displayDate, onS
                     </div>
                   </td>
                   <td className="px-0.5 py-0 font-black">
-                    {b.billNo}
-                    {((b.billNo || '').toUpperCase().startsWith('MOC') || b.collectionCode === 'MOC') && b.srNo && b.srNo !== '0' && (
-                      <span className="ml-1 text-[10px] px-1 py-0.2 rounded bg-primary/10 text-primary border border-primary/20">#{b.srNo}</span>
-                    )}
+                    {getDisplayBillNo(b)}
                   </td>
                   <td className="px-0.5 py-0 font-black truncate max-w-[110px]" title={b.partyName || ''}>
                     <span className={cn(

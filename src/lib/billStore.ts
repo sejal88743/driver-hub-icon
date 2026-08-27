@@ -608,10 +608,10 @@ export function applyRealtimeTableChange(
     const id = record?.id || oldRecord?.id;
     const name = String(record?.name || oldRecord?.name || '').trim().toUpperCase();
     if (eventType === 'DELETE') {
-      _banks = _banks.filter(b => b.id !== id && b.name.toUpperCase() !== name);
+      _banks = _banks.filter(b => b.id !== id && (b.name || '').toUpperCase() !== name);
     } else if (record && name) {
       const bank: Bank = { id: record.id || `bn_${Math.random().toString(36).slice(2, 9)}`, name };
-      const idx = _banks.findIndex(b => b.id === bank.id || b.name.toUpperCase() === name);
+      const idx = _banks.findIndex(b => b.id === bank.id || (b.name || '').toUpperCase() === name);
       if (idx >= 0) _banks[idx] = bank;
       else _banks.push(bank);
     }
@@ -829,7 +829,7 @@ export async function saveBanks(banks: Bank[]): Promise<boolean> {
   const threshold = 0.50;
 
   function addOrMerge(item: { id?: string; name: string }) {
-    const nameNorm = item.name.trim().toUpperCase();
+    const nameNorm = String(item?.name || '').trim().toUpperCase();
     for (const m of merged) {
       const score = calculateSimilarity(nameNorm, m.name);
       if (score >= threshold) {
@@ -2098,21 +2098,23 @@ export async function savePayment(
     if (chequeDate) fallbackPatch.chequeDate = excelSerialToDate(chequeDate);
     if (discrepancyReason != null) fallbackPatch.discrepancyReason = discrepancyReason;
     
-    const { getNextMocSrNo, formatMocPartyName } = await import('@/lib/commissionMoc');
-    const autoSrNo = isMocBn ? String(getNextMocSrNo(billNo, _bills)) : '';
-    const stableId = billId || (isMocBn ? `moc_${billNo.replace(/\s+/g, '_')}_${Date.now()}_${Math.random().toString(36).slice(2, 6)}` : `bill_${Math.random().toString(36).slice(2, 9)}`);
+    const { extractMocNumber, formatMocSerialBillNo, getNextMocSrNo, formatMocPartyName } = await import('@/lib/commissionMoc');
+    const mocNum = isMocBn ? (extractMocNumber(normBillNo) || '1') : '';
+    const autoSrNo = isMocBn ? String(getNextMocSrNo(mocNum, _bills)) : '';
+    const finalBillNo = isMocBn ? formatMocSerialBillNo(mocNum, autoSrNo) : billNo;
+    const stableId = billId || (isMocBn ? `moc_${mocNum}_${autoSrNo}_${Date.now()}_${Math.random().toString(36).slice(2, 6)}` : `bill_${Math.random().toString(36).slice(2, 9)}`);
 
     // Put in local memory immediately so table shows it
     const stubBill: Bill = {
       srNo: autoSrNo,
       date: fallbackPaymentDate || paymentDate,
       deliveryDate: fallbackPaymentDate || paymentDate,
-      partyCode: isMocBn ? billNo.replace(/\s+/g, '') : '',
-      partyHulCode: isMocBn ? billNo : '',
+      partyCode: isMocBn ? `MOC${mocNum}` : '',
+      partyHulCode: isMocBn ? `MOC${mocNum}` : '',
       billAgeing: 0,
       id: stableId,
-      billNo,
-      partyName: isMocBn ? (formatMocPartyName('', billNo) || `COMMISSION (${billNo.toUpperCase()})`) : '',
+      billNo: finalBillNo,
+      partyName: isMocBn ? (formatMocPartyName('', `MOC ${mocNum}`) || `COMMISSION (MOC ${mocNum})`) : '',
       salespersonName: isMocBn ? 'MOC' : '',
       collectionCode: isMocBn ? 'MOC' : '',
       beatName: isMocBn ? 'COMMISSION' : '',
@@ -2230,6 +2232,28 @@ export async function savePayment(
     outstandingAmount: finalOutstanding,
     ...(isMocBill ? { billNetAmt: collected, lineCutAmt: 0, salespersonName: 'MOC', collectionCode: 'MOC', beatName: 'COMMISSION' } : {}),
   };
+  if (isMocBill) {
+    const { extractMocNumber, extractMocSrNumber, formatMocSerialBillNo, formatMocPartyName, getNextMocSrNo } = await import('@/lib/commissionMoc');
+    const mocNum = extractMocNumber(normBillNo) || extractMocNumber(_bills[index].billNo) || extractMocNumber(_bills[index].partyName) || '1';
+    let srNo = _bills[index].srNo;
+    const existingSrInBn = extractMocSrNumber(_bills[index].billNo);
+    if (existingSrInBn && existingSrInBn > 0) {
+      srNo = String(existingSrInBn);
+    } else if (!srNo || srNo === '0') {
+      srNo = String(getNextMocSrNo(mocNum, _bills));
+    }
+    const formattedBn = formatMocSerialBillNo(mocNum, srNo);
+    patch.billNo = formattedBn;
+    patch.srNo = String(srNo);
+    patch.partyCode = `MOC${mocNum}`;
+    patch.partyHulCode = `MOC${mocNum}`;
+    patch.partyName = formatMocPartyName('', `MOC ${mocNum}`);
+    patch.salespersonName = 'MOC';
+    patch.collectionCode = 'MOC';
+    patch.beatName = 'COMMISSION';
+    patch.billNetAmt = collected;
+    patch.lineCutAmt = 0;
+  }
   // Save chequeDate immediately with payment data when provided
   if (chequeDate) patch.chequeDate = excelSerialToDate(chequeDate);
 
