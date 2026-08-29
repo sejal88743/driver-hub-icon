@@ -107,6 +107,24 @@ export default function Dashboard() {
   const [spModalPhone, setSpModalPhone] = useState('');
   const [spPendingBill, setSpPendingBill] = useState<Bill | null>(null);
   const [downloadStatus, setDownloadStatus] = useState(() => getDriverDownloadStatus(dashDate));
+  const [autoCreditWa, setAutoCreditWa] = useState<boolean>(() => {
+    try {
+      const saved = localStorage.getItem('vitratrack_auto_credit_wa');
+      return saved !== null ? saved === 'true' : true;
+    } catch {
+      return true;
+    }
+  });
+
+  const toggleAutoCreditWa = () => {
+    setAutoCreditWa(prev => {
+      const next = !prev;
+      try {
+        localStorage.setItem('vitratrack_auto_credit_wa', String(next));
+      } catch {}
+      return next;
+    });
+  };
 
   useEffect(() => {
     setDownloadStatus(getDriverDownloadStatus(dashDate));
@@ -1900,6 +1918,22 @@ export default function Dashboard() {
     setOwnerSavedBillNos(prev => [...prev.filter(x => x !== savedIdentifier && x !== (selectedBill?.id || '')), savedIdentifier, ...(selectedBill?.id ? [selectedBill.id] : [])]);
     setShowPaidPopup(true);
     setSaving(false);
+
+    // ── Auto WhatsApp to Salesperson on CREDIT Save ──
+    if (finalMode === 'Credit' && autoCreditWa) {
+      const billToNotify: Bill | undefined = selectedBill
+        ? {
+            ...selectedBill,
+            paymentMode: 'Credit',
+            lineCutAmt: lineCutToSave != null ? lineCutToSave : selectedBill.lineCutAmt,
+            collectedAmount: 0,
+            driverName: selectedBill.driverName || (selectedDriver !== 'OWNER' ? selectedDriver : '') || selectedDriver,
+          }
+        : getBills().find(b => b.billNo === savedIdentifier);
+      if (billToNotify) {
+        handleSendWhatsAppToSalesperson(billToNotify);
+      }
+    }
     
     setTimeout(() => {
       setShowPaidPopup(false);
@@ -2154,6 +2188,17 @@ export default function Dashboard() {
     setOwnerSavedBillNos(prev => [...prev.filter(x => x !== selectedBillNo), selectedBillNo]);
     setShowPaidPopup(true);
     setSaving(false);
+
+    // ── Auto WhatsApp to Salesperson on Part/Credit Save ──
+    if (autoCreditWa) {
+      const billToNotify: Bill | undefined = selectedBill
+        ? { ...selectedBill, ...patch }
+        : getBills().find(b => b.billNo === selectedBillNo);
+      if (billToNotify) {
+        handleSendWhatsAppToSalesperson(billToNotify);
+      }
+    }
+
     setTimeout(() => { setShowPaidPopup(false); billInputRef.current?.focus(); }, 2500);
     handleReset();
     refresh();
@@ -2279,10 +2324,10 @@ export default function Dashboard() {
     }
   }
 
-  // Helper to calculate due days from bill date to current date
+  // Helper to calculate due days from delivery date (or bill date) to current date: DUE DAYS = CURRENT DATE - DEL DATE
   const calculateBillDueDays = (dateStr?: string): number => {
     if (!dateStr) return 0;
-    const iso = displayToIso(dateStr);
+    const iso = displayToIso(dateStr) || (dateStr.includes('-') ? dateStr : '');
     if (!iso) return 0;
     const parts = iso.split('-');
     if (parts.length !== 3) return 0;
@@ -2291,11 +2336,11 @@ export default function Dashboard() {
     const d = parseInt(parts[2], 10);
     if (isNaN(y) || isNaN(m) || isNaN(d)) return 0;
 
-    const billDate = new Date(y, m, d);
+    const delDateObj = new Date(y, m, d);
     const now = new Date();
     const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-    const billDay = new Date(billDate.getFullYear(), billDate.getMonth(), billDate.getDate());
-    const diffMs = today.getTime() - billDay.getTime();
+    const delDay = new Date(delDateObj.getFullYear(), delDateObj.getMonth(), delDateObj.getDate());
+    const diffMs = today.getTime() - delDay.getTime();
     return Math.max(0, Math.floor(diffMs / (1000 * 60 * 60 * 24)));
   };
 
@@ -2309,7 +2354,8 @@ export default function Dashboard() {
     const salespersonName = cleanSalespersonName(rawSalespersonName).trim() || rawSalespersonName || 'N/A';
     const partyName = b.partyName || '-';
     const billNo = b.billNo || '-';
-    const billDate = isoToDisplay(b.date || b.deliveryDate) || '-';
+    const delDate = isoToDisplay(b.deliveryDate || b.date) || '-';
+    const driverName = b.driverName || (selectedDriver && selectedDriver !== 'OWNER' ? selectedDriver : '') || selectedDriver || '-';
     const billAmt = b.billNetAmt || 0;
 
     // Line cut calculation
@@ -2343,13 +2389,14 @@ export default function Dashboard() {
     const isCredit = currentMode === 'credit' || (!isPaid && currentMode !== 'fbr' && currentMode !== 'cancel' && currentMode !== 'del pending');
 
     if (isCredit) {
-      const dueDays = calculateBillDueDays(b.date || b.deliveryDate);
+      const dueDays = calculateBillDueDays(b.deliveryDate || b.date);
       return `*PAYMENT  PENDING ALERT*
 ━━━━━━━━━━━━━━━━━━━━
 👤 Salesperson: ${salespersonName}
 🏢 Party: ${partyName}
 📄 Bill No: ${billNo}
-📅 Bill Date: ${billDate}
+🚚 Driver: ${driverName}
+📅 Del Date: ${delDate}
 💰 Bill Net Amt: ₹${billAmt.toLocaleString('en-IN')}
 *DUE DAYS= ${dueDays} Days*
 📌 Status: CREDIT
@@ -2363,7 +2410,8 @@ Kripya party se is bill ka payment collection coordinate karein.`;
 👤 Salesperson: ${salespersonName}
 🏢 Party: ${partyName}
 📄 Bill No: ${billNo}
-📅 Bill Date: ${billDate}
+🚚 Driver: ${driverName}
+📅 Del Date: ${delDate}
 🗓️ Rec Date: ${effectiveRec}
 💰 Bill Net Amt: ₹${billAmt.toLocaleString('en-IN')}
 📉 Line Cut: ₹${lineCut.toLocaleString('en-IN')}
@@ -2373,20 +2421,21 @@ Kripya party se is bill ka payment collection coordinate karein.`;
     }
 
     // Default / FBR / Del Pending fallback
-    const dueDays = calculateBillDueDays(b.date || b.deliveryDate);
+    const dueDays = calculateBillDueDays(b.deliveryDate || b.date);
     const modeUpper = (currentMode || 'PENDING').toUpperCase();
     return `*PAYMENT  PENDING ALERT*
 ━━━━━━━━━━━━━━━━━━━━
 👤 Salesperson: ${salespersonName}
 🏢 Party: ${partyName}
 📄 Bill No: ${billNo}
-📅 Bill Date: ${billDate}
+🚚 Driver: ${driverName}
+📅 Del Date: ${delDate}
 💰 Bill Net Amt: ₹${billAmt.toLocaleString('en-IN')}
 *DUE DAYS= ${dueDays} Days*
 📌 Status: ${modeUpper}
 ━━━━━━━━━━━━━━━━━━━━
 Kripya party se is bill ka payment collection coordinate karein.`;
-  }, [selectedBill, lcInputVal, cashAmt, upiAmt, chqAmt, paymentMode, recDateOverride, recDateInput]);
+  }, [selectedBill, selectedDriver, lcInputVal, cashAmt, upiAmt, chqAmt, paymentMode, recDateOverride, recDateInput]);
 
   // ── WhatsApp Direct Reminder to Salesperson ─────────────────────────────────
   const handleSendWhatsAppToSalesperson = useCallback((targetBill?: Bill | null) => {
@@ -2750,6 +2799,32 @@ Kripya party se is bill ka payment collection coordinate karein.`;
                 />
               </div>
             </Link>
+
+            {/* Auto Credit WhatsApp Dispatch Toggle (ON / OFF) */}
+            <button
+              type="button"
+              onClick={toggleAutoCreditWa}
+              className={cn(
+                "flex items-center gap-1 px-1.5 py-1 rounded-lg border shrink-0 transition-all cursor-pointer shadow-inner select-none",
+                autoCreditWa
+                  ? "bg-emerald-950/50 hover:bg-emerald-900/60 border-emerald-400/50 text-emerald-200 ring-1 ring-emerald-400/30"
+                  : "bg-black/30 hover:bg-black/40 border-white/20 text-primary-foreground/70"
+              )}
+              title={`Credit Auto WhatsApp: ${autoCreditWa ? 'ON (Auto Send Enabled)' : 'OFF (Auto Send Disabled)'}\nClick to toggle automatic WhatsApp message when saving Credit bills`}
+            >
+              <MessageCircle className={cn("w-3 h-3 shrink-0", autoCreditWa ? "text-emerald-400" : "text-primary-foreground/50")} />
+              <span className="text-[8px] font-black uppercase tracking-tight hidden sm:inline">CR WA</span>
+              <span
+                className={cn(
+                  "text-[7.5px] font-black px-1 py-0.5 rounded leading-none transition-all",
+                  autoCreditWa
+                    ? "bg-emerald-500 text-white shadow-[0_0_6px_#34d399]"
+                    : "bg-red-500/80 text-white"
+                )}
+              >
+                {autoCreditWa ? 'ON' : 'OFF'}
+              </span>
+            </button>
           </div>
 
           {driverStats && (
