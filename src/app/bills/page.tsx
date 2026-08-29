@@ -290,7 +290,12 @@ export default function BillsPage() {
       const contact = findSalespersonContact(bill.salespersonName) || getSalespersonContacts().find(c => (c.name || '').toLowerCase() === (bill.salespersonName || '').toLowerCase());
       mobile = formatMobile(contact?.mobile || '');
     }
-    window.open(`https://wa.me/${mobile}?text=${encodeURIComponent(message)}`, '_blank');
+    const encodedMsg = encodeURIComponent(message);
+    if (mobile) {
+      window.location.href = `whatsapp://send?phone=${mobile}&text=${encodedMsg}`;
+    } else {
+      window.location.href = `whatsapp://send?text=${encodedMsg}`;
+    }
     setWaPopup(null);
   }
 

@@ -325,7 +325,12 @@ export default function DriverPage() {
 
             if (idx !== -1) {
               const curMode = (currentBills[idx].paymentMode || '').trim().toLowerCase();
-              if (dr && (curMode === '' || curMode === 'credit' || curMode === 'pending' || curMode === 'assigned' || curMode === 'del pending' || curMode === 'unpaid')) {
+              const hasPaymentRec = (Number(currentBills[idx].collectedAmount) || 0) > 0 || (Number(currentBills[idx].cashAmount) || 0) > 0 || (Number(currentBills[idx].upiAmount) || 0) > 0 || (Number(currentBills[idx].chequeAmount) || 0) > 0 || !!currentBills[idx].paymentDate;
+              const isCredit = curMode === 'credit';
+              const isFBR = curMode === 'fbr' || curMode === 'cancel';
+
+              // If bill has payment received or is in Credit/FBR, preserve status & do not overwrite with 'Assigned'
+              if (dr && !hasPaymentRec && !isCredit && !isFBR && (curMode === '' || curMode === 'pending' || curMode === 'assigned' || curMode === 'del pending' || curMode === 'unpaid')) {
                 patch.paymentMode = 'Assigned';
               }
               if (partyVal && (!currentBills[idx].partyName || currentBills[idx].partyName.startsWith('Party '))) {
@@ -428,20 +433,16 @@ export default function DriverPage() {
     }
     const existingMode = (allBills[idx].paymentMode || '').trim().toLowerCase();
     const patch: { driverName: string; deliveryDate: string; paymentMode?: string } = { driverName: assignDriver, deliveryDate: displayDate };
-    // Today's delivery → mark Assigned. Overrides blank/Credit/Pending/Del Pending (stale
-    // auto-defaults from earlier, not a real payment). Never touches FBR/Cancel or an
-    // already-collected payment. Del Pending bills reassigned for today must show Assigned.
-    const OVERRIDABLE = new Set(['', 'credit', 'pending', 'assigned', 'del pending']);
-    if (displayDate === getTodayDMY() && OVERRIDABLE.has(existingMode)) {
-      patch.paymentMode = 'Assigned';
-      (patch as any).paymentDate = '';
-      (patch as any).paymentTime = '';
-      (patch as any).cashAmount = 0;
-      (patch as any).upiAmount = 0;
-      (patch as any).chequeAmount = 0;
-      (patch as any).chequeNo = '';
-      (patch as any).bankName = '';
-      (patch as any).collectedAmount = 0;
+    const hasPaymentRec = (Number(allBills[idx].collectedAmount) || 0) > 0 || (Number(allBills[idx].cashAmount) || 0) > 0 || (Number(allBills[idx].upiAmount) || 0) > 0 || (Number(allBills[idx].chequeAmount) || 0) > 0 || !!allBills[idx].paymentDate;
+    const isCredit = existingMode === 'credit';
+    const isFBR = existingMode === 'fbr' || existingMode === 'cancel';
+
+    // If bill already has payment received or is in Credit/FBR, do NOT change status to 'Assigned' and do NOT wipe payment details
+    if (!hasPaymentRec && !isCredit && !isFBR) {
+      const OVERRIDABLE = new Set(['', 'pending', 'assigned', 'del pending', 'unpaid']);
+      if (displayDate === getTodayDMY() && OVERRIDABLE.has(existingMode)) {
+        patch.paymentMode = 'Assigned';
+      }
     }
     const ok = await patchBillInMemory(allBills[idx].billNo, patch);
     refresh();
@@ -747,8 +748,8 @@ export default function DriverPage() {
         .replace(/\{\{days\}\}/gi, days)
         .replace(/\{\{lineCutAmt\}\}/gi, String((b.billNetAmt - (b.collectedAmount || 0)).toLocaleString('en-IN')))
         .replace(/\{\{driver\}\}/gi, d.name);
-      const waUrl = `https://wa.me/?text=${encodeURIComponent(msg)}`;
-      window.open(waUrl, '_blank');
+      const encodedMsg = encodeURIComponent(msg);
+      window.location.href = `whatsapp://send?text=${encodedMsg}`;
       // Small delay so browser doesn't block multiple popups
       if (i < dBills.length - 1) await new Promise(r => setTimeout(r, 700));
     }

@@ -2279,6 +2279,115 @@ export default function Dashboard() {
     }
   }
 
+  // Helper to calculate due days from bill date to current date
+  const calculateBillDueDays = (dateStr?: string): number => {
+    if (!dateStr) return 0;
+    const iso = displayToIso(dateStr);
+    if (!iso) return 0;
+    const parts = iso.split('-');
+    if (parts.length !== 3) return 0;
+    const y = parseInt(parts[0], 10);
+    const m = parseInt(parts[1], 10) - 1;
+    const d = parseInt(parts[2], 10);
+    if (isNaN(y) || isNaN(m) || isNaN(d)) return 0;
+
+    const billDate = new Date(y, m, d);
+    const now = new Date();
+    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const billDay = new Date(billDate.getFullYear(), billDate.getMonth(), billDate.getDate());
+    const diffMs = today.getTime() - billDay.getTime();
+    return Math.max(0, Math.floor(diffMs / (1000 * 60 * 60 * 24)));
+  };
+
+  // Helper to format WhatsApp message based on bill status (CREDIT vs PAID)
+  const formatSalespersonWhatsAppMessage = useCallback((
+    b: Bill,
+    customSalespersonName?: string,
+    useFormContext: boolean = true
+  ) => {
+    const rawSalespersonName = customSalespersonName || (b.salespersonName || '').trim();
+    const salespersonName = cleanSalespersonName(rawSalespersonName).trim() || rawSalespersonName || 'N/A';
+    const partyName = b.partyName || '-';
+    const billNo = b.billNo || '-';
+    const billDate = isoToDisplay(b.date || b.deliveryDate) || '-';
+    const billAmt = b.billNetAmt || 0;
+
+    // Line cut calculation
+    let lineCut = (b.lineCutAmt || 0) || Number(b.cancelLine) || 0;
+    if (useFormContext && selectedBill && selectedBill.billNo === b.billNo && lcInputVal) {
+      const parsedLc = parseAmountExpression(lcInputVal);
+      if (parsedLc > 0) lineCut = parsedLc;
+    }
+
+    // Collected calculation
+    let collected = b.collectedAmount || 0;
+    if (useFormContext && selectedBill && selectedBill.billNo === b.billNo) {
+      const formCash = Number(cashAmt) || 0;
+      const formUpi = Number(upiAmt) || 0;
+      const formChq = Number(chqAmt) || 0;
+      const formSum = formCash + formUpi + formChq;
+      if (formSum > 0) collected = formSum;
+    }
+
+    const pendingAmt = Math.max(0, billAmt - lineCut - collected);
+    const effectiveRec = isoToDisplay(b.paymentDate) || (recDateOverride ? recDateOverride : (recDateInput ? isoToDisplay(recDateInput) : '')) || getTodayDMY();
+
+    const currentMode = (
+      (useFormContext && selectedBill && selectedBill.billNo === b.billNo && paymentMode) ||
+      b.paymentMode ||
+      ''
+    ).trim().toLowerCase();
+
+    // Check if status is PAID vs CREDIT
+    const isPaid = (collected > 0) || currentMode === 'paid' || (!!b.paymentDate && pendingAmt === 0);
+    const isCredit = currentMode === 'credit' || (!isPaid && currentMode !== 'fbr' && currentMode !== 'cancel' && currentMode !== 'del pending');
+
+    if (isCredit) {
+      const dueDays = calculateBillDueDays(b.date || b.deliveryDate);
+      return `*PAYMENT  PENDING ALERT*
+━━━━━━━━━━━━━━━━━━━━
+👤 Salesperson: ${salespersonName}
+🏢 Party: ${partyName}
+📄 Bill No: ${billNo}
+📅 Bill Date: ${billDate}
+💰 Bill Net Amt: ₹${billAmt.toLocaleString('en-IN')}
+*DUE DAYS= ${dueDays} Days*
+📌 Status: CREDIT
+━━━━━━━━━━━━━━━━━━━━
+Kripya party se is bill ka payment collection coordinate karein.`;
+    }
+
+    if (isPaid) {
+      return `🔔 VitraTrack - REC PAYMENT 
+━━━━━━━━━━━━━━━━━━━━
+👤 Salesperson: ${salespersonName}
+🏢 Party: ${partyName}
+📄 Bill No: ${billNo}
+📅 Bill Date: ${billDate}
+🗓️ Rec Date: ${effectiveRec}
+💰 Bill Net Amt: ₹${billAmt.toLocaleString('en-IN')}
+📉 Line Cut: ₹${lineCut.toLocaleString('en-IN')}
+💵 Collected Amt: ₹${collected.toLocaleString('en-IN')}
+⚠️ Pending Amt: ₹${pendingAmt.toLocaleString('en-IN')}
+📌 *Status: PAID*`;
+    }
+
+    // Default / FBR / Del Pending fallback
+    const dueDays = calculateBillDueDays(b.date || b.deliveryDate);
+    const modeUpper = (currentMode || 'PENDING').toUpperCase();
+    return `*PAYMENT  PENDING ALERT*
+━━━━━━━━━━━━━━━━━━━━
+👤 Salesperson: ${salespersonName}
+🏢 Party: ${partyName}
+📄 Bill No: ${billNo}
+📅 Bill Date: ${billDate}
+💰 Bill Net Amt: ₹${billAmt.toLocaleString('en-IN')}
+*DUE DAYS= ${dueDays} Days*
+📌 Status: ${modeUpper}
+━━━━━━━━━━━━━━━━━━━━
+Kripya party se is bill ka payment collection coordinate karein.`;
+  }, [selectedBill, lcInputVal, cashAmt, upiAmt, chqAmt, paymentMode, recDateOverride, recDateInput]);
+
   // ── WhatsApp Direct Reminder to Salesperson ─────────────────────────────────
   const handleSendWhatsAppToSalesperson = useCallback((targetBill?: Bill | null) => {
     const b = targetBill || selectedBill;
@@ -2286,28 +2395,7 @@ export default function Dashboard() {
 
     const rawSalespersonName = (b.salespersonName || '').trim();
     const salespersonName = cleanSalespersonName(rawSalespersonName).trim() || rawSalespersonName;
-    const billAmt = b.billNetAmt || 0;
-    const lineCut = (b.lineCutAmt || 0) || Number(b.cancelLine) || 0;
-    const collected = b.collectedAmount || 0;
-    const pendingAmt = Math.max(0, billAmt - lineCut - collected);
-    const billDate = b.date || b.deliveryDate || '-';
-    const effectiveRec = b.paymentDate || (recDateOverride ? recDateOverride : (recDateInput ? isoToDisplay(recDateInput) : ''));
-    const modeStr = b.paymentMode || (collected > 0 ? 'Paid' : 'Pending');
-
-    const msg = 
-`*🔔 VitraTrack - Pending Bill Payment Reminder*
-━━━━━━━━━━━━━━━━━━━━
-👤 *Salesperson:* ${rawSalespersonName || 'N/A'}
-🏢 *Party:* ${b.partyName || '-'}
-📄 *Bill No:* ${b.billNo || '-'}
-📅 *Bill Date:* ${billDate}
-${effectiveRec ? `🗓️ *Rec Date:* ${effectiveRec}\n` : ''}💰 *Bill Net Amt:* ₹${billAmt.toLocaleString('en-IN')}
-📉 *Line Cut:* ₹${lineCut.toLocaleString('en-IN')}
-💵 *Collected Amt:* ₹${collected.toLocaleString('en-IN')}
-⚠️ *Pending Amt:* ₹${pendingAmt.toLocaleString('en-IN')}
-📌 *Status:* ${modeStr.toUpperCase()}
-━━━━━━━━━━━━━━━━━━━━
-*Kripya party se is bill ka payment collection coordinate karein.*`;
+    const msg = formatSalespersonWhatsAppMessage(b, rawSalespersonName, true);
 
     // Robust search using findSalespersonContact (handles exact, clean name without SMN suffix, id, etc.)
     const contact = findSalespersonContact(rawSalespersonName) || findSalespersonContact(salespersonName);
@@ -2315,8 +2403,8 @@ ${effectiveRec ? `🗓️ *Rec Date:* ${effectiveRec}\n` : ''}💰 *Bill Net Amt
     const cleanDigits = (contact?.mobile || '').replace(/\D/g, '');
     if (cleanDigits.length >= 10) {
       const phone = cleanDigits.length === 10 ? `91${cleanDigits}` : cleanDigits;
-      const waUrl = `https://api.whatsapp.com/send?phone=${phone}&text=${encodeURIComponent(msg)}`;
-      window.open(waUrl, '_blank');
+      const encodedMsg = encodeURIComponent(msg);
+      window.location.href = `whatsapp://send?phone=${phone}&text=${encodedMsg}`;
     } else {
       // Prompt modal to enter & save salesperson mobile number
       setSpModalSalespersonName(rawSalespersonName || salespersonName || 'Salesperson');
@@ -2324,7 +2412,7 @@ ${effectiveRec ? `🗓️ *Rec Date:* ${effectiveRec}\n` : ''}💰 *Bill Net Amt
       setSpPendingBill(b);
       setShowSalespersonPhoneModal(true);
     }
-  }, [selectedBill, recDateOverride, recDateInput]);
+  }, [selectedBill, formatSalespersonWhatsAppMessage]);
 
   const handleSaveSalespersonPhoneAndSend = async () => {
     if (!spPendingBill) return;
@@ -2357,31 +2445,10 @@ ${effectiveRec ? `🗓️ *Rec Date:* ${effectiveRec}\n` : ''}💰 *Bill Net Amt
     setShowSalespersonPhoneModal(false);
 
     const phone = cleanDigits.length === 10 ? `91${cleanDigits}` : cleanDigits;
-    const billAmt = spPendingBill.billNetAmt || 0;
-    const lineCut = (spPendingBill.lineCutAmt || 0) || Number(spPendingBill.cancelLine) || 0;
-    const collected = spPendingBill.collectedAmount || 0;
-    const pendingAmt = Math.max(0, billAmt - lineCut - collected);
-    const billDate = spPendingBill.date || spPendingBill.deliveryDate || '-';
-    const effectiveRec = spPendingBill.paymentDate || (recDateOverride ? recDateOverride : (recDateInput ? isoToDisplay(recDateInput) : ''));
-    const modeStr = spPendingBill.paymentMode || (collected > 0 ? 'Paid' : 'Pending');
+    const msg = formatSalespersonWhatsAppMessage(spPendingBill, cleanName || rawName, true);
 
-    const msg = 
-`*🔔 VitraTrack - Pending Bill Payment Reminder*
-━━━━━━━━━━━━━━━━━━━━
-👤 *Salesperson:* ${cleanName || rawName || 'N/A'}
-🏢 *Party:* ${spPendingBill.partyName || '-'}
-📄 *Bill No:* ${spPendingBill.billNo || '-'}
-📅 *Bill Date:* ${billDate}
-${effectiveRec ? `🗓️ *Rec Date:* ${effectiveRec}\n` : ''}💰 *Bill Net Amt:* ₹${billAmt.toLocaleString('en-IN')}
-📉 *Line Cut:* ₹${lineCut.toLocaleString('en-IN')}
-💵 *Collected Amt:* ₹${collected.toLocaleString('en-IN')}
-⚠️ *Pending Amt:* ₹${pendingAmt.toLocaleString('en-IN')}
-📌 *Status:* ${modeStr.toUpperCase()}
-━━━━━━━━━━━━━━━━━━━━
-*Kripya party se is bill ka payment collection coordinate karein.*`;
-
-    const waUrl = `https://api.whatsapp.com/send?phone=${phone}&text=${encodeURIComponent(msg)}`;
-    window.open(waUrl, '_blank');
+    const encodedMsg = encodeURIComponent(msg);
+    window.location.href = `whatsapp://send?phone=${phone}&text=${encodedMsg}`;
   };
 
   // Scroll highlighted dropdown item into view when navigating with arrow keys

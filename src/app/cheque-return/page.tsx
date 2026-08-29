@@ -392,7 +392,8 @@ export default function ChequeReturnPage() {
       return;
     }
     const message = buildReturnChequeMessage(entry);
-    window.open(`https://wa.me/${mobile}?text=${encodeURIComponent(message)}`, '_blank');
+    const encodedMsg = encodeURIComponent(message);
+    window.location.href = `whatsapp://send?phone=${mobile}&text=${encodedMsg}`;
   }
 
   // ── Delete entry ─────────────────────────────────────────────────────────
