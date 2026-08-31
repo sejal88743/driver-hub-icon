@@ -23,22 +23,30 @@ export function cleanSalespersonName(name: string): string {
     return '';
   }
 
-  // Strip code prefixes like "SMN00017 - ", "SM01 -", "SALES01 -"
+  // 1. Strip code prefixes like "SMN00017 - ", "SM01 -", "SALES01 -"
   s = s.replace(/^[A-Z0-9_-]{2,15}\s*[-:_]\s*/i, '').trim();
 
-  // Strip code suffixes like " - SMN00017"
+  // 2. Strip code suffixes like " - SMN00017"
   s = s.replace(/\s*[-:_]\s*[A-Z0-9_-]{2,15}$/i, '').trim();
 
-  // Repeatedly strip role/designation suffixes like (ME), TL, (TL), (FL), FL, ME, etc.
+  // 3. Strip any parenthetical / bracketed "(ME)", "(me)", "[ME]", "{ME}", "(M.E.)", "(M.E)" anywhere in the name
+  s = s.replace(/[\(\[\{]\s*(?:ME|M\.E\.?)\s*[\)\]\}]/gi, ' ');
+
+  // 4. Strip other bracketed roles: (TL), (FL), (SR), (JR), (SO), (DSR), (ASM), (TSO), etc.
+  s = s.replace(/[\(\[\{]\s*(?:TL|FL|T\.L\.?|F\.L\.?|SR|JR|SO|DSR|ASM|TSO)\s*[\)\]\}]/gi, ' ');
+
+  // 5. Repeatedly strip role/designation suffixes and standalone words like (ME), TL, FL, ME, etc.
   let prev = '';
   while (prev !== s) {
     prev = s;
-    // 1. Parenthetical / bracketed suffixes anywhere at end: (ME), [TL], (FL), (T.L.), (M.E.), (F.L.), etc.
-    s = s.replace(/\s*[\(\[\{]\s*(?:ME|TL|FL|M\.E\.|T\.L\.|F\.L\.|M\.E|T\.L|F\.L|SR|JR)\s*[\)\]\}]\s*$/i, '').trim();
-    // 2. Suffixes with hyphen or slash: - TL, / (ME), - (FL), etc.
-    s = s.replace(/\s*[-/:]\s*(?:[\(\[\{]?\s*(?:ME|TL|FL|M\.E\.|T\.L\.|F\.L\.|SR|JR)\s*[\)\]\}]?)\s*$/i, '').trim();
-    // 3. Standalone trailing words: " PATEL TL", " VERMA FL", " SHARMA ME"
-    s = s.replace(/\s+(?:ME|TL|FL|M\.E\.|T\.L\.|F\.L\.|SR|JR)\.?\s*$/i, '').trim();
+    // Prefix (ME), ME -
+    s = s.replace(/^[\(\[\{]?\s*(?:ME|M\.E\.?)\s*[\)\]\}]?\s*[-:_]?\s*/gi, '').trim();
+    // Parenthetical / bracketed suffixes anywhere at end
+    s = s.replace(/\s*[\(\[\{]\s*(?:ME|TL|FL|M\.E\.|T\.L\.|F\.L\.|M\.E|T\.L|F\.L|SR|JR|SO|DSR|ASM|TSO)\s*[\)\]\}]\s*$/i, '').trim();
+    // Suffixes with hyphen or slash or colon: - TL, / (ME), - (FL), - ME, / ME, etc.
+    s = s.replace(/\s*[-/:]\s*(?:[\(\[\{]?\s*(?:ME|TL|FL|M\.E\.|T\.L\.|F\.L\.|SR|JR|SO|DSR|ASM|TSO)\s*[\)\]\}]?)\.?\s*$/i, '').trim();
+    // Standalone trailing words: " PATEL TL", " VERMA FL", " SHARMA ME"
+    s = s.replace(/\s+(?:ME|TL|FL|M\.E\.|T\.L\.|F\.L\.|SR|JR|SO|DSR|ASM|TSO)\.?\s*$/i, '').trim();
   }
 
   // Strip trailing punctuation if left after suffix removal
@@ -52,7 +60,7 @@ export function cleanSalespersonName(name: string): string {
   return s;
 }
 
-// ── Check if two salesperson names are equivalent (handles surname front/back) ──
+// ── Check if two salesperson names are equivalent (handles surname front/back + 50% match) ──
 export function areSalespersonNamesEquivalent(name1: string, name2: string): boolean {
   if (!name1 || !name2) return false;
   const c1 = cleanSalespersonName(name1).trim().toUpperCase();
@@ -73,17 +81,20 @@ export function areSalespersonNamesEquivalent(name1: string, name2: string): boo
   // Check token containment if multi-word (e.g., "PATEL JIGNESH" in "PATEL JIGNESH K")
   const set1 = new Set(tokens1);
   const set2 = new Set(tokens2);
-  if (tokens1.length >= 2 && tokens2.length >= 2) {
-    let common = 0;
-    for (const t of tokens1) {
-      if (set2.has(t)) common++;
-    }
-    const tokenDice = (2 * common) / (tokens1.length + tokens2.length);
-    if (tokenDice >= 0.80) return true;
+  let common = 0;
+  for (const t of tokens1) {
+    if (set2.has(t)) common++;
+  }
+  const tokenDice = (2 * common) / (tokens1.length + tokens2.length);
+  if (tokenDice >= 0.50) return true;
+
+  // Substring inclusion (e.g. "JIGNESH" in "JIGNESH PATEL" or vice versa)
+  if (c1.length >= 3 && c2.length >= 3 && (c1.includes(c2) || c2.includes(c1))) {
+    return true;
   }
 
-  // Fuzzy similarity check (>= 75%)
-  return calculateSimilarity(c1, c2) >= 0.75;
+  // 50% match requirement for salespersons!
+  return calculateSimilarity(c1, c2) >= 0.50;
 }
 
 // ── Clean Party Name ─────────────────────────────────────────────────────────
@@ -209,8 +220,10 @@ export function findCanonicalName(
   rawName: string,
   existingNames: string[],
   cleanFn: (s: string) => string = cleanPartyName,
-  threshold = 0.70
+  threshold?: number
 ): string {
+  const isSalesperson = cleanFn === cleanSalespersonName;
+  const effectiveThreshold = threshold !== undefined ? threshold : (isSalesperson ? 0.50 : 0.70);
   const cleaned = cleanFn(rawName);
   if (!cleaned) return '';
 
@@ -227,8 +240,8 @@ export function findCanonicalName(
     }
   }
 
-  // 2. Equivalent salesperson match (reordered surname etc.)
-  if (cleanFn === cleanSalespersonName) {
+  // 2. Equivalent salesperson match (reordered surname, 50% tokens etc.)
+  if (isSalesperson) {
     for (const item of cleanedExisting) {
       if (areSalespersonNamesEquivalent(cleaned, item.clean)) {
         return item.clean;
@@ -236,13 +249,13 @@ export function findCanonicalName(
     }
   }
 
-  // 3. Similarity match (highest score >= threshold)
+  // 3. Similarity match (highest score >= effectiveThreshold)
   let bestMatch = '';
   let highestScore = 0;
 
   for (const item of cleanedExisting) {
     const score = calculateSimilarity(cleaned, item.clean);
-    if (score >= threshold && score > highestScore) {
+    if (score >= effectiveThreshold && score > highestScore) {
       highestScore = score;
       bestMatch = item.clean;
     }
@@ -255,8 +268,11 @@ export function findCanonicalName(
 export function buildCanonicalMap(
   rawNames: string[],
   cleanFn: (s: string) => string,
-  threshold = 0.70
+  threshold?: number
 ): Map<string, string> {
+  const isSalesperson = cleanFn === cleanSalespersonName;
+  const effectiveThreshold = threshold !== undefined ? threshold : (isSalesperson ? 0.50 : 0.70);
+
   const cleanedSet = new Set<string>();
   for (const n of rawNames) {
     if (!n) continue;
@@ -272,8 +288,6 @@ export function buildCanonicalMap(
   const normToCanonical = new Map<string, string>();
   const tokenSortToCanonical = new Map<string, string>();
   const distinctCanonicals: Array<{ name: string; norm: string; sortedTokens: string }> = [];
-
-  const isSalesperson = cleanFn === cleanSalespersonName;
 
   for (const name of cleanedNames) {
     const norm = name.trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
@@ -312,7 +326,7 @@ export function buildCanonicalMap(
 
     for (const item of distinctCanonicals) {
       const score = calculateSimilarity(name, item.name);
-      if (score >= threshold && score > bestScore) {
+      if (score >= effectiveThreshold && score > bestScore) {
         bestScore = score;
         matchedCanonical = item.name;
       }

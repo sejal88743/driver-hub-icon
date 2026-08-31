@@ -1,14 +1,17 @@
 import { useState, useRef, useEffect } from 'react';
-import { X, Check, Loader2 } from 'lucide-react';
+import { X, Check, Loader2, Scissors } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
-import type { Bill } from '@/lib/billStore';
+import { getBills, type Bill } from '@/lib/billStore';
 
-type ChainItem = {
+export type ChainItem = {
   billNo: string;
   partyName: string;
   billNetAmt: number;
   lineCutInput: string;
+  applied?: number;
+  lineCut?: number;
+  netPayable?: number;
 };
 
 type Props = {
@@ -21,6 +24,47 @@ type Props = {
   onSaveAll: (items: ChainItem[]) => Promise<void>;
   overflowSaving: boolean;
 };
+
+// Robust bill lookup helper
+function findBillInList(query: string, billList: Bill[]): Bill | undefined {
+  if (!query) return undefined;
+  const q = query.toString().trim().toLowerCase();
+  if (!q) return undefined;
+
+  const norm = (s: string) => (s || '').toString().toLowerCase()
+    .replace(/^gst[-/]?/i, '')
+    .replace(/^inv[-/]?/i, '')
+    .replace(/^bill[-/]?/i, '')
+    .replace(/[^0-9a-z]/g, '')
+    .replace(/^0+/, '');
+
+  const getDigits = (s: string) => (s || '').toString().replace(/\D/g, '').replace(/^0+/, '');
+
+  const qNorm = norm(q);
+  const qDigits = getDigits(q);
+
+  // 1. Exact raw match
+  let match = billList.find(b => (b.billNo || '').toLowerCase().trim() === q);
+  if (match) return match;
+
+  // 2. Exact normalized match
+  if (qNorm) {
+    match = billList.find(b => norm(b.billNo) === qNorm);
+    if (match) return match;
+  }
+
+  // 3. Pure digit match
+  if (qDigits) {
+    match = billList.find(b => getDigits(b.billNo) === qDigits);
+    if (match) return match;
+  }
+
+  // 4. Prefix or suffix match
+  return billList.find(b => {
+    const bLower = (b.billNo || '').toLowerCase().trim();
+    return bLower.endsWith(q) || q.endsWith(bLower) || bLower.includes(q);
+  });
+}
 
 export default function OverflowModal({
   isOpen,
@@ -36,6 +80,8 @@ export default function OverflowModal({
   const [nextBillInput, setNextBillInput] = useState('');
   const [nextBillErr, setNextBillErr] = useState('');
   const nextInputRef = useRef<HTMLInputElement>(null);
+
+  const allAvailableBills = bills && bills.length > 0 ? bills : getBills();
 
   // Sync initial items when modal opens
   useEffect(() => {
@@ -64,19 +110,24 @@ export default function OverflowModal({
   if (!isOpen) return null;
 
   // Live calculations for each pending item in the chain
-  let rem = overflowTotalCollected;
-  const processed = pendingItems.map(item => {
-    const foundBill = bills.find(b => b.billNo === item.billNo);
+  let rem = Number(overflowTotalCollected) || 0;
+  const processed = pendingItems.map((item, idx) => {
+    const foundBill = findBillInList(item.billNo, allAvailableBills);
+    const billNetAmt = Number(item.billNetAmt) || Number(foundBill?.billNetAmt) || Number(foundBill?.outstandingAmount) || 0;
     const existingLc = (Number(foundBill?.lineCutAmt) || 0) || (Number(foundBill?.cancelLine) || 0);
 
-    const lineCut = item.lineCutInput !== ''
-      ? Math.max(0, Math.min(Number(item.lineCutInput) || 0, item.billNetAmt))
-      : (existingLc > 0 ? existingLc : 0);
+    let lineCut = 0;
+    if (item.lineCutInput !== '' && item.lineCutInput !== undefined) {
+      lineCut = Math.max(0, Math.min(Number(item.lineCutInput) || 0, billNetAmt));
+    } else {
+      // Default line cut if money runs short on this item
+      lineCut = existingLc > 0 ? existingLc : Math.max(0, billNetAmt - rem);
+    }
 
-    const netPayable = Math.max(0, item.billNetAmt - lineCut);
+    const netPayable = Math.max(0, billNetAmt - lineCut);
     const applied = Math.min(rem, netPayable);
-    rem -= applied;
-    return { ...item, lineCut, applied, netPayable };
+    rem = Math.max(0, rem - applied);
+    return { ...item, billNetAmt, lineCut, applied, netPayable };
   });
   const remaining = rem;
 
@@ -84,26 +135,36 @@ export default function OverflowModal({
     const bn = nextBillInput.trim();
     if (!bn) return;
     
-    // Exact or suffix/prefix match
-    const foundBill = bills.find(b => b.billNo === bn || b.billNo.endsWith(bn) || bn.endsWith(b.billNo));
+    const foundBill = findBillInList(bn, allAvailableBills);
     if (!foundBill) {
-      setNextBillErr(`Bill "${bn}" not found`);
+      setNextBillErr(`Bill "${bn}" nahi mila`);
       return;
     }
     if (pendingItems.some(x => x.billNo === foundBill.billNo)) {
-      setNextBillErr('Already in chain');
+      setNextBillErr('Bill pehle se chain me hai');
       return;
     }
     
-    setNextBillErr('');
+    const billNetAmt = Number(foundBill.billNetAmt) || Number(foundBill.outstandingAmount) || 0;
     const existingLc = (Number(foundBill.lineCutAmt) || 0) || (Number(foundBill.cancelLine) || 0);
-    const nextLineCut = existingLc > 0 ? String(existingLc) : '0';
+
+    // Auto-calculate line cut for the new bill if remaining money is less than the bill net amount
+    let nextLineCut = '0';
+    if (existingLc > 0) {
+      nextLineCut = String(existingLc);
+    } else if (remaining < billNetAmt) {
+      // Auto apply line cut for the shortfall so the bill is 100% covered!
+      const shortfall = Math.max(0, billNetAmt - remaining);
+      nextLineCut = String(shortfall);
+    }
+
+    setNextBillErr('');
     setPendingItems(prev => [
       ...prev, 
       { 
         billNo: foundBill.billNo, 
         partyName: foundBill.partyName, 
-        billNetAmt: foundBill.billNetAmt, 
+        billNetAmt: billNetAmt, 
         lineCutInput: nextLineCut 
       }
     ]);
@@ -138,10 +199,15 @@ export default function OverflowModal({
               Total: <span className="text-primary font-black">₹{overflowTotalCollected.toLocaleString('en-IN')}</span>
               <span className="mx-1.5 text-border">·</span>
               Mode: <span className="text-primary font-black">{overflowMode}</span>
-              {remaining > 0 && (
+              {remaining > 0 ? (
                 <>
                   <span className="mx-1.5 text-border">·</span>
                   <span className="text-orange-500 font-black">Rem: ₹{remaining.toLocaleString('en-IN')}</span>
+                </>
+              ) : (
+                <>
+                  <span className="mx-1.5 text-border">·</span>
+                  <span className="text-emerald-600 font-black">Full Allocated</span>
                 </>
               )}
             </p>
@@ -156,7 +222,7 @@ export default function OverflowModal({
         </div>
 
         {/* Pending bills — each with editable line cut + remove button */}
-        <div className="px-5 py-3 space-y-2 max-h-60 overflow-y-auto no-scrollbar" id="overflow-items-list">
+        <div className="px-5 py-3 space-y-2 max-h-64 overflow-y-auto no-scrollbar" id="overflow-items-list">
           {processed.map((item, i) => (
             <div 
               key={item.billNo} 
@@ -165,15 +231,19 @@ export default function OverflowModal({
             >
               <div className="flex items-center justify-between">
                 <div className="min-w-0 flex-1">
-                  <p className="text-[10px] font-black uppercase text-foreground">{item.billNo}</p>
-                  <p className="text-[8px] text-muted-foreground font-bold truncate uppercase">{item.partyName} · Amt ₹{item.billNetAmt.toLocaleString('en-IN')}</p>
+                  <p className="text-[11px] font-black uppercase text-foreground">{item.billNo}</p>
+                  <p className="text-[8.5px] text-muted-foreground font-bold truncate uppercase">{item.partyName} · Bill ₹{item.billNetAmt.toLocaleString('en-IN')}</p>
                 </div>
                 <div className="flex items-center gap-1.5 shrink-0 ml-2">
                   <div className="text-right">
-                    <p className="text-[10px] font-black text-emerald-600">Apply ₹{item.applied.toLocaleString('en-IN')}</p>
-                    {item.lineCut > 0 && <p className="text-[9px] font-black text-destructive">Cut ₹{item.lineCut.toLocaleString('en-IN')}</p>}
+                    <p className="text-[11px] font-black text-emerald-600">Apply ₹{item.applied.toLocaleString('en-IN')}</p>
+                    {item.lineCut > 0 && (
+                      <p className="text-[9px] font-black text-destructive flex items-center justify-end gap-0.5">
+                        <Scissors className="w-2.5 h-2.5" /> Cut ₹{item.lineCut.toLocaleString('en-IN')}
+                      </p>
+                    )}
                   </div>
-                  {/* Remove button — only for bills added after the first (first bill is the primary entry) */}
+                  {/* Remove button — only for bills added after the first */}
                   {i > 0 && (
                     <button
                       id={`overflow-item-remove-btn-${item.billNo}`}
@@ -186,8 +256,10 @@ export default function OverflowModal({
                   )}
                 </div>
               </div>
-              <div className="flex items-center gap-2">
-                <span className="text-[8px] font-black text-muted-foreground uppercase shrink-0">Line Cut:</span>
+              <div className="flex items-center gap-2 bg-background/80 rounded-lg px-2 py-1 border border-border/40">
+                <span className="text-[8.5px] font-black text-muted-foreground uppercase shrink-0 flex items-center gap-1">
+                  <Scissors className="w-3 h-3 text-destructive" /> Line Cut:
+                </span>
                 <input
                   id={`overflow-item-linecut-input-${item.billNo}`}
                   type="number" 
@@ -196,18 +268,25 @@ export default function OverflowModal({
                   value={item.lineCutInput}
                   onChange={e => handleUpdateLineCut(i, e.target.value)}
                   onKeyDown={e => { if (e.key === 'Enter') nextInputRef.current?.focus(); }}
-                  className="flex-1 h-7 px-2 bg-card rounded-lg text-[10px] font-black border border-destructive/30 focus:border-destructive outline-none text-center text-destructive"
+                  className="flex-1 h-6 px-2 bg-transparent rounded text-[10.5px] font-black border-0 outline-none text-right text-destructive focus:ring-1 focus:ring-destructive/40"
                 />
               </div>
             </div>
           ))}
         </div>
 
-        {/* Next bill input (only if remaining > 0) */}
+        {/* Next bill input */}
         <div className="px-5 pb-5 pt-1 space-y-2" id="overflow-actions-container">
-          {remaining > 0 && (
-            <div>
-              <p className="text-[9px] font-black text-orange-600 uppercase mb-1">Baki ₹{remaining.toLocaleString('en-IN')} — Agla Bill No:</p>
+          <div>
+            <div className="flex items-center justify-between mb-1">
+              <p className="text-[9px] font-black text-orange-600 uppercase">
+                {remaining > 0 ? `Baki ₹${remaining.toLocaleString('en-IN')} — Agla Bill No:` : 'Aur Bill Add Karein:'}
+              </p>
+              {remaining > 0 && (
+                <span className="text-[8px] font-bold text-muted-foreground uppercase">Auto Line Cut Active</span>
+              )}
+            </div>
+            <div className="flex gap-1.5">
               <input
                 ref={nextInputRef}
                 id="overflow-next-bill-input"
@@ -218,31 +297,27 @@ export default function OverflowModal({
                 onChange={e => { setNextBillInput(e.target.value); setNextBillErr(''); }}
                 onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); handleAddNextBill(); } }}
                 className={cn(
-                  "w-full h-11 px-4 bg-muted rounded-2xl text-sm font-black border-2 outline-none uppercase text-center transition-all", 
+                  "flex-1 h-10 px-3 bg-muted rounded-xl text-sm font-black border-2 outline-none uppercase text-center transition-all", 
                   nextBillErr ? "border-destructive" : "border-border focus:border-primary"
                 )}
               />
-              {nextBillErr && (
-                <p className="text-destructive text-[9px] font-black uppercase mt-1 text-center" id="overflow-next-bill-error">
-                  {nextBillErr}
-                </p>
-              )}
               <Button 
                 id="overflow-add-bill-btn"
                 onClick={handleAddNextBill} 
                 disabled={!nextBillInput.trim()} 
-                className="w-full mt-1.5 h-8 rounded-xl font-black uppercase text-[10px] bg-orange-500 hover:bg-orange-600 text-white cursor-pointer"
+                className="h-10 px-4 rounded-xl font-black uppercase text-[10px] bg-orange-500 hover:bg-orange-600 text-white cursor-pointer shrink-0"
               >
-                Add Bill to Chain
+                Add Bill
               </Button>
             </div>
-          )}
-          {remaining <= 0 && (
-            <p className="text-[9px] font-black text-emerald-600 uppercase text-center py-1" id="overflow-complete-msg">
-              Chain Complete — Ready to Save All
-            </p>
-          )}
-          <div className="flex gap-2 pt-1" id="overflow-final-buttons">
+            {nextBillErr && (
+              <p className="text-destructive text-[9px] font-black uppercase mt-1 text-center" id="overflow-next-bill-error">
+                {nextBillErr}
+              </p>
+            )}
+          </div>
+
+          <div className="flex gap-2 pt-2" id="overflow-final-buttons">
             <Button 
               id="overflow-cancel-btn"
               variant="outline" 
@@ -253,7 +328,7 @@ export default function OverflowModal({
             </Button>
             <Button
               id="overflow-save-all-btn"
-              onClick={() => onSaveAll(pendingItems)}
+              onClick={() => onSaveAll(processed)}
               disabled={overflowSaving || pendingItems.length === 0}
               className={cn(
                 "flex-[2] rounded-2xl font-black uppercase text-[10px] h-11 text-white cursor-pointer", 

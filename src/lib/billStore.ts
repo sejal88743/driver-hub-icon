@@ -466,18 +466,19 @@ export function setServerData(data: {
       c
     ]));
     const merged = data.salespersonContacts.map(s => {
-      const key = cleanSalespersonName(s.name || '').trim().toLowerCase() || (s.name || '').trim().toLowerCase();
+      const cleanName = cleanSalespersonName(s.name || '').trim() || (s.name || '').trim();
+      const key = cleanName.toLowerCase();
       const l = localMap.get(key);
       if (l && l.mobile && (!s.mobile || s.mobile.trim() === '')) {
-        return { ...s, mobile: l.mobile };
+        return { ...s, name: cleanName, mobile: l.mobile };
       }
-      return s;
+      return { ...s, name: cleanName };
     });
     const serverKeys = new Set(data.salespersonContacts.map(c => 
       cleanSalespersonName(c.name || '').trim().toLowerCase() || (c.name || '').trim().toLowerCase()
     ));
     for (const [k, l] of localMap) {
-      if (k && !serverKeys.has(k) && l.mobile) merged.push(l);
+      if (k && !serverKeys.has(k) && l.mobile) merged.push({ ...l, name: cleanSalespersonName(l.name || '').trim() || l.name });
     }
     _salespersonContacts = merged;
   }
@@ -1301,7 +1302,14 @@ export async function mergeTwoSalespersons(
     const spRaw = (b.salespersonName || '').trim();
     const spLower = spRaw.toLowerCase();
     const spClean = cleanSalespersonName(spRaw).trim().toLowerCase();
-    if (spLower === fromLower || (fromBaseClean && spClean === fromBaseClean) || areSalespersonNamesEquivalent(spRaw, fromClean)) {
+    const isMatch = (
+      spLower === fromLower ||
+      (fromBaseClean && spClean === fromBaseClean) ||
+      areSalespersonNamesEquivalent(spRaw, fromClean) ||
+      calculateSimilarity(spClean, fromBaseClean) >= 0.50 ||
+      (spClean.length >= 3 && fromBaseClean.length >= 3 && (spClean.includes(fromBaseClean) || fromBaseClean.includes(spClean)))
+    );
+    if (isMatch) {
       changed++;
       modifiedPatches.push({ id: b.id, billNo: b.billNo, patch: { salespersonName: toBaseClean } });
       return { ...b, salespersonName: toBaseClean };
@@ -1320,7 +1328,13 @@ export async function mergeTwoSalespersons(
   const remaining = _salespersonContacts.filter((c) => {
     const cLower = (c.name || '').trim().toLowerCase();
     const cClean = cleanSalespersonName(c.name || '').trim().toLowerCase();
-    return cLower !== fromLower && (!fromBaseClean || cClean !== fromBaseClean) && !areSalespersonNamesEquivalent(c.name || '', fromClean);
+    const isMatch = (
+      cLower === fromLower ||
+      (fromBaseClean && cClean === fromBaseClean) ||
+      areSalespersonNamesEquivalent(c.name || '', fromClean) ||
+      calculateSimilarity(cClean, fromBaseClean) >= 0.50
+    );
+    return !isMatch;
   });
 
   // Update or insert toName contact with preserved mobile number
@@ -1489,6 +1503,7 @@ export async function consolidateSimilarPartiesOnly(threshold = 0.70): Promise<{
 
   let mergedPartiesCount = 0;
   let changed = 0;
+  const changedBills: Bill[] = [];
   const updatedBills = _bills.map(bill => {
     if (bill.partyName) {
       const cleaned = cleanPartyName(bill.partyName);
@@ -1496,7 +1511,9 @@ export async function consolidateSimilarPartiesOnly(threshold = 0.70): Promise<{
       if (canonical !== bill.partyName) {
         changed++;
         mergedPartiesCount++;
-        return { ...bill, partyName: canonical };
+        const nb = { ...bill, partyName: canonical };
+        changedBills.push(nb);
+        return nb;
       }
     }
     return bill;
@@ -1509,7 +1526,7 @@ export async function consolidateSimilarPartiesOnly(threshold = 0.70): Promise<{
     markWriteStart();
     try {
       const m = await import('@/lib/apiSync');
-      await m.apiBulkUpsertWithProgress(updatedBills);
+      await m.apiBulkUpsertWithProgress(changedBills);
     } catch (err) {
       console.error('Failed to persist merged party names:', err);
     } finally {
@@ -1520,15 +1537,19 @@ export async function consolidateSimilarPartiesOnly(threshold = 0.70): Promise<{
   return { updatedCount: changed, mergedParties: mergedPartiesCount };
 }
 
-export async function consolidateSimilarSalespersonsOnly(threshold = 0.70): Promise<{
+export async function consolidateSimilarSalespersonsOnly(threshold = 0.50): Promise<{
   updatedCount: number;
   mergedSPs: number;
 }> {
-  const rawSPs = _bills.map(b => b.salespersonName).filter(Boolean);
+  const rawSPs = [
+    ..._bills.map(b => b.salespersonName),
+    ..._salespersonContacts.map(c => c.name)
+  ].filter(Boolean) as string[];
   const spMap = buildCanonicalMap(rawSPs, cleanSalespersonName, threshold);
 
   let mergedSPCount = 0;
   let changed = 0;
+  const changedBills: Bill[] = [];
   const updatedBills = _bills.map(bill => {
     if (bill.salespersonName) {
       const cleaned = cleanSalespersonName(bill.salespersonName);
@@ -1536,25 +1557,70 @@ export async function consolidateSimilarSalespersonsOnly(threshold = 0.70): Prom
       if (canonical !== bill.salespersonName) {
         changed++;
         mergedSPCount++;
-        return { ...bill, salespersonName: canonical };
+        const nb = { ...bill, salespersonName: canonical };
+        changedBills.push(nb);
+        return nb;
       }
     }
     return bill;
   });
 
+  // Also clean & deduplicate salesperson contacts with deep mobile preservation
+  const cleanContactsMap = new Map<string, Contact>();
+  for (const c of _salespersonContacts) {
+    const cleanName = cleanSalespersonName(c.name || '').trim();
+    if (!cleanName) continue;
+    const canonical = spMap.get(cleanName) || cleanName;
+    const key = canonical.toLowerCase();
+    const existing = cleanContactsMap.get(key);
+    const cDigits = (c.mobile || '').replace(/\D/g, '');
+    const cMobile = cDigits.length >= 10 ? cDigits.slice(-10) : cDigits;
+    const stableId = c.id || `sp_${key.replace(/[^a-z0-9]/g, '_').slice(0, 44)}`;
+
+    if (!existing) {
+      cleanContactsMap.set(key, { ...c, id: stableId, name: canonical, mobile: cMobile });
+    } else {
+      const existingDigits = (existing.mobile || '').replace(/\D/g, '');
+      const bestMobile = existingDigits.length >= 10 ? existing.mobile : (cMobile || existing.mobile || '');
+      cleanContactsMap.set(key, {
+        ...existing,
+        id: existing.id || stableId,
+        name: canonical,
+        mobile: bestMobile,
+      });
+    }
+  }
+
+  // Also ensure every canonical name in spMap has an entry in contacts so mobile can be entered
+  for (const canon of Array.from(spMap.values())) {
+    const key = canon.toLowerCase();
+    if (!cleanContactsMap.has(key)) {
+      cleanContactsMap.set(key, {
+        id: `sp_${key.replace(/[^a-z0-9]/g, '_').slice(0, 44)}`,
+        name: canon,
+        mobile: '',
+      });
+    }
+  }
+
+  _salespersonContacts = Array.from(cleanContactsMap.values());
   if (changed > 0) {
     _bills = updatedBills;
-    dispatchUpdate();
-    persistLocalState();
-    markWriteStart();
-    try {
-      const m = await import('@/lib/apiSync');
-      await m.apiBulkUpsertWithProgress(updatedBills);
-    } catch (err) {
-      console.error('Failed to persist merged salesperson names:', err);
-    } finally {
-      markWriteEnd();
+  }
+
+  dispatchUpdate();
+  persistLocalState();
+  markWriteStart();
+  try {
+    const m = await import('@/lib/apiSync');
+    if (changed > 0) {
+      await m.apiBulkUpsertWithProgress(changedBills);
     }
+    await m.apiPushSalespersonContacts(_salespersonContacts);
+  } catch (err) {
+    console.error('Failed to persist merged salesperson names:', err);
+  } finally {
+    markWriteEnd();
   }
 
   return { updatedCount: changed, mergedSPs: mergedSPCount };
@@ -1569,12 +1635,14 @@ export async function consolidateSimilarPartyAndSalespersons(customBills?: Bill[
   const { updatedBills, mergedPartiesCount, mergedSPCount } = standardizeBills(target, 0.70);
 
   let changed = 0;
+  const changedBills: Bill[] = [];
   for (let i = 0; i < target.length; i++) {
     if (
       target[i].partyName !== updatedBills[i].partyName ||
       target[i].salespersonName !== updatedBills[i].salespersonName
     ) {
       changed++;
+      changedBills.push(updatedBills[i]);
     }
   }
 
@@ -1585,7 +1653,7 @@ export async function consolidateSimilarPartyAndSalespersons(customBills?: Bill[
     markWriteStart();
     try {
       const m = await import('@/lib/apiSync');
-      await m.apiBulkUpsertWithProgress(updatedBills);
+      await m.apiBulkUpsertWithProgress(changedBills);
     } catch (err) {
       console.error('Failed to persist merged party/salesperson names:', err);
     } finally {

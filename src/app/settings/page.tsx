@@ -2313,8 +2313,9 @@ export default function SettingsPage() {
                           setTimeout(() => setSalesEditMsg(''), 3000);
                           return;
                         }
+                        const cleanDigits = salesEditMobile.replace(/\D/g, '').slice(-10);
+                        const targetClean = cleanSalespersonName(salesEditName).trim() || salesEditName.trim();
                         const current = getSalespersonContacts();
-                        const targetClean = cleanSalespersonName(salesEditName).trim();
                         const targetCleanLower = targetClean.toLowerCase();
                         const targetRaw = salesEditName.trim().toLowerCase();
                         const idx = current.findIndex(c => {
@@ -2324,14 +2325,13 @@ export default function SettingsPage() {
                         });
                         let next: Contact[];
                         const stableId = `sp_${targetCleanLower.replace(/[^a-z0-9]/g, '_').slice(0, 44)}`;
-                        const cleanDigits = salesEditMobile.replace(/\D/g, '').slice(-10);
                         if (idx >= 0) {
                           next = current.slice();
                           const existing = next[idx];
                           next[idx] = {
                             ...existing,
                             id: existing.id || stableId,
-                            name: cleanSalespersonName(existing.name || targetClean),
+                            name: targetClean,
                             mobile: cleanDigits,
                           };
                         } else {
@@ -2341,6 +2341,14 @@ export default function SettingsPage() {
                             mobile: cleanDigits,
                           }];
                         }
+
+                        // Clean salesperson name in bills if it was dirty
+                        if (targetClean !== salesEditName) {
+                          const allBills = getBills();
+                          const updated = allBills.map(b => (b.salespersonName === salesEditName || cleanSalespersonName(b.salespersonName || '') === targetClean) ? { ...b, salespersonName: targetClean } : b);
+                          mergeBillsInMemoryOnly(updated);
+                        }
+
                         await saveSalespersonContacts(next);
                         setSalesEditStatus('saved');
                         setSalesEditMsg('');
@@ -2820,12 +2828,12 @@ export default function SettingsPage() {
                 variant="outline"
                 onClick={() => {
                   requestConfirm({
-                    title: 'Merge Similar Salesperson Names (70%+ Match)',
-                    message: 'All similar salesperson names across all bills and directory will be consolidated into standard clean names and synced to Supabase.',
-                    confirmText: 'Merge Similar SPs',
+                    title: 'Merge Similar Salesperson Names (50%+ Match)',
+                    message: 'All similar salesperson names (50%+ match) across all bills and directory will be consolidated into standard clean names (without (ME)) and synced to Supabase.',
+                    confirmText: 'Merge Similar SPs (50%+)',
                     variant: 'warning',
                     onConfirm: async () => {
-                      const res = await consolidateSimilarSalespersonsOnly();
+                      const res = await consolidateSimilarSalespersonsOnly(0.50);
                       setPurgeMsg(`Salespersons Merge Complete! Merged: ${res.mergedSPs}, Bills Updated: ${res.updatedCount}`);
                       setTimeout(() => setPurgeMsg(''), 8000);
                     }
@@ -2833,14 +2841,14 @@ export default function SettingsPage() {
                 }}
                 className="w-full h-9 mb-2 rounded-xl font-black uppercase text-[10px] tracking-widest border-orange-400 text-orange-700 hover:bg-orange-50"
               >
-                Merge Similar Salesperson Names (70% Match)
+                Merge Similar Salesperson Names (50%+ Match)
               </Button>
               {(() => {
                 const contacts = getSalespersonContacts();
                 const namesSet = new Set<string>();
-                for (const c of contacts) if (c.name) namesSet.add(c.name);
-                for (const b of getBills()) if (b.salespersonName) namesSet.add(b.salespersonName);
-                const names = Array.from(namesSet).sort((a, b) => a.localeCompare(b));
+                for (const c of contacts) if (c.name) namesSet.add(cleanSalespersonName(c.name));
+                for (const b of getBills()) if (b.salespersonName) namesSet.add(cleanSalespersonName(b.salespersonName));
+                const names = Array.from(namesSet).filter(Boolean).sort((a, b) => a.localeCompare(b));
                 return (
                   <div className="grid grid-cols-1 sm:grid-cols-[1fr_1fr_auto] gap-1.5 mb-2">
                     <select

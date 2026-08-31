@@ -434,12 +434,13 @@ async function fetchAllBills(): Promise<Bill[]> {
 }
 
 // Generic paginated fetch — parallel count-based batching for fast table sync
-async function fetchAllRows(table: string, orderCol = 'id'): Promise<any[]> {
+async function fetchAllRows(table: string, orderCol = 'id', selectCols = '*'): Promise<any[]> {
   if (!supabase) return [];
   const CHUNK_SIZE = 1000;
 
   try {
-    const { count, error: countErr } = await supabase.from(table).select(orderCol || '*', { count: 'exact', head: true });
+    const headCol = orderCol ? (orderCol.includes(',') ? orderCol.split(',')[0].trim() : orderCol) : '*';
+    const { count, error: countErr } = await supabase.from(table).select(headCol, { count: 'exact', head: true });
     if (!countErr && typeof count === 'number' && count >= 0) {
       if (count === 0) return [];
       const totalPages = Math.ceil(count / CHUNK_SIZE);
@@ -450,7 +451,7 @@ async function fetchAllRows(table: string, orderCol = 'id'): Promise<any[]> {
         const promises = [];
         for (let j = i; j < Math.min(i + BATCH_SIZE, totalPages); j++) {
           const start = j * CHUNK_SIZE;
-          let query = supabase!.from(table).select('*');
+          let query = supabase!.from(table).select(selectCols);
           if (orderCol) query = query.order(orderCol);
           promises.push(query.range(start, start + CHUNK_SIZE - 1));
         }
@@ -474,7 +475,7 @@ async function fetchAllRows(table: string, orderCol = 'id'): Promise<any[]> {
   let useNoOrder = false; // set to true once we detect ordering doesn't work
   while (true) {
     try {
-      let query = supabase.from(table).select('*');
+      let query = supabase.from(table).select(selectCols);
       if (orderCol && !useNoOrder) {
         query = query.order(orderCol);
       }
@@ -592,7 +593,7 @@ async function chunkedUpsertWithProgress(
   if (bills.length === 0) return { count: 0 };
   await probeBillSchemaColumns();
   const unique = dedupeBillsByBillNo(bills);
-  const CHUNK = 500;
+  const CHUNK = 150;
   let saved = 0;
   try {
     for (let i = 0; i < unique.length; i += CHUNK) {
@@ -1037,12 +1038,16 @@ export async function apiPushPartyContacts(contacts: Contact[]) {
 export async function apiPushSalespersonContacts(contacts: Contact[]) {
   if (contacts.length === 0) return { count: 0 };
   try {
-    const tagged = contacts.map(c => ({
-      id:     c.id || contactId('sp', c.name),
-      name:   c.name,
-      mobile: c.mobile,
-      type:   'salesperson',
-    }));
+    const { cleanSalespersonName } = await import('./nameStandardizer');
+    const tagged = contacts.map(c => {
+      const cleanName = cleanSalespersonName(c.name || '').trim() || (c.name || '').trim();
+      return {
+        id:     c.id || contactId('sp', cleanName),
+        name:   cleanName,
+        mobile: c.mobile,
+        type:   'salesperson',
+      };
+    });
     const saved = await upsertContactsChunked(tagged);
     return { count: saved };
   } catch (err) {
@@ -1498,74 +1503,90 @@ export async function apiMergeTwoSalespersons(
     const fromTrim = fromName.trim();
     const toTrim = toName.trim();
     const fromLower = fromTrim.toLowerCase();
-    const { cleanSalespersonName } = await import('./nameStandardizer');
+    const { cleanSalespersonName, areSalespersonNamesEquivalent, calculateSimilarity } = await import('./nameStandardizer');
     const fromBaseClean = cleanSalespersonName(fromTrim).trim().toLowerCase();
-    const toBaseClean = cleanSalespersonName(toTrim).trim();
+    const toBaseClean = cleanSalespersonName(toTrim).trim() || toTrim;
 
-    // 1. Update bills: rename fromName → toName in batches
-    const allBillRows = await fetchAllRows('bills', 'id,salesperson_name');
+    // 1. Update bills: rename fromName (and all 50%+ similar / equivalent variants) → toBaseClean in batches
+    const allBillRows = await fetchAllRows('bills', 'id', 'id,salesperson_name');
     const toUpdate = (allBillRows as any[]).filter((r) => {
       const sp = String(r.salesperson_name || '').trim();
       const spLower = sp.toLowerCase();
       const spClean = cleanSalespersonName(sp).trim().toLowerCase();
-      return spLower === fromLower || (fromBaseClean && spClean === fromBaseClean);
+      return (
+        spLower === fromLower ||
+        (fromBaseClean && spClean === fromBaseClean) ||
+        areSalespersonNamesEquivalent(sp, fromTrim) ||
+        calculateSimilarity(spClean, fromBaseClean) >= 0.50 ||
+        (spClean.length >= 3 && fromBaseClean.length >= 3 && (spClean.includes(fromBaseClean) || fromBaseClean.includes(spClean)))
+      );
     });
     const ids = toUpdate.map((r) => r.id as string);
-    const BATCH = 500;
+    const BATCH = 150;
     let billsUpdated = 0;
     for (let i = 0; i < ids.length; i += BATCH) {
+      const batchIds = ids.slice(i, i + BATCH);
       const { error } = await supabase
         .from('bills')
-        .update({ salesperson_name: toTrim })
-        .in('id', ids.slice(i, i + BATCH));
-      if (!error) billsUpdated += Math.min(BATCH, ids.length - i);
+        .update({ salesperson_name: toBaseClean })
+        .in('id', batchIds);
+      if (!error) billsUpdated += batchIds.length;
     }
 
-    // 2. Merge contacts: keep toName, delete fromName, guarantee mobile preservation
+    // 2. Merge contacts: keep toName (cleaned, no (ME)), delete fromName, guarantee mobile preservation
     const { data: contactRows } = await supabase
       .from('contacts')
       .select('id, name, mobile, type')
       .eq('type', 'salesperson');
 
     if (contactRows && Array.isArray(contactRows)) {
-      const fromContact = (contactRows as any[]).find((c) => {
+      const fromContacts = (contactRows as any[]).filter((c) => {
         const name = String(c.name || '').trim().toLowerCase();
         const clean = cleanSalespersonName(name).trim().toLowerCase();
-        return name === fromLower || (fromBaseClean && clean === fromBaseClean);
+        return (
+          name === fromLower ||
+          (fromBaseClean && clean === fromBaseClean) ||
+          areSalespersonNamesEquivalent(c.name || '', fromTrim) ||
+          calculateSimilarity(clean, fromBaseClean) >= 0.50
+        );
       });
       const toContact = (contactRows as any[]).find((c) => {
         const name = String(c.name || '').trim().toLowerCase();
         const clean = cleanSalespersonName(name).trim().toLowerCase();
         const toCleanLower = toBaseClean.toLowerCase();
-        return name === toTrim.toLowerCase() || (toCleanLower && clean === toCleanLower);
+        return name === toTrim.toLowerCase() || (toCleanLower && clean === toCleanLower) || areSalespersonNamesEquivalent(c.name || '', toTrim);
       });
 
+      const fromContactWithMobile = fromContacts.find(c => c.mobile && String(c.mobile).trim());
       const effectiveMobile = (toContact?.mobile && String(toContact.mobile).trim())
         ? String(toContact.mobile).trim()
-        : (fromContact?.mobile ? String(fromContact.mobile).trim() : '');
+        : (fromContactWithMobile?.mobile ? String(fromContactWithMobile.mobile).trim() : '');
 
       if (toContact) {
-        if (effectiveMobile && toContact.mobile !== effectiveMobile) {
-          await supabase
-            .from('contacts')
-            .update({ mobile: effectiveMobile })
-            .eq('id', toContact.id);
-        }
-      } else if (effectiveMobile) {
-        const newId = contactId('sp', toBaseClean || toTrim);
+        await supabase
+          .from('contacts')
+          .update({
+            name: toBaseClean,
+            ...(effectiveMobile ? { mobile: effectiveMobile } : {})
+          })
+          .eq('id', toContact.id);
+      } else if (effectiveMobile || toBaseClean) {
+        const newId = contactId('sp', toBaseClean);
         await supabase
           .from('contacts')
           .insert({
             id: newId,
-            name: toTrim,
-            mobile: effectiveMobile,
+            name: toBaseClean,
+            mobile: effectiveMobile || '',
             type: 'salesperson',
           });
       }
 
       // Delete fromName contact(s)
-      if (fromContact) {
-        await supabase.from('contacts').delete().eq('id', fromContact.id);
+      for (const fc of fromContacts) {
+        if (fc.id !== toContact?.id) {
+          await supabase.from('contacts').delete().eq('id', fc.id);
+        }
       }
     }
 
@@ -1593,22 +1614,23 @@ export async function apiMergeTwoParties(
     const fromClean = fromName.trim().toLowerCase();
     const toClean = toName.trim();
     // 1. Update bills: rename fromName → toName in batches
-    const allBillRows = await fetchAllRows('bills', 'id,party_name,party_code');
+    const allBillRows = await fetchAllRows('bills', 'id', 'id,party_name,party_code');
     const toUpdate = (allBillRows as any[]).filter(
       (r) => String(r.party_name || '').trim().toLowerCase() === fromClean
     );
     const ids = toUpdate.map((r) => r.id as string);
-    const BATCH = 500;
+    const BATCH = 150;
     let billsUpdated = 0;
     const payload: Record<string, unknown> = { party_name: toClean };
     if (toCode) payload.party_code = toCode;
 
     for (let i = 0; i < ids.length; i += BATCH) {
+      const batchIds = ids.slice(i, i + BATCH);
       const { error } = await supabase
         .from('bills')
         .update(payload)
-        .in('id', ids.slice(i, i + BATCH));
-      if (!error) billsUpdated += Math.min(BATCH, ids.length - i);
+        .in('id', batchIds);
+      if (!error) billsUpdated += batchIds.length;
     }
 
     // 2. Merge contacts

@@ -1278,50 +1278,16 @@ export default function Dashboard() {
         newUpi = targetFromMode === 'UPI' ? 0 : existingUpi;
       }
 
-      const totalCol = newCash + newUpi + newChq;
-      const targetRecDate = matched.paymentDate || recDateOverride || isoToDisplay(dashDate) || dashDate;
-      const existingLc = (matched.lineCutAmt || 0) || Number(matched.cancelLine) || 0;
-
       setCashAmt(newCash > 0 ? String(newCash) : '');
       setUpiAmt(newUpi > 0 ? String(newUpi) : '');
       setChqAmt(newChq > 0 ? String(newChq) : '');
       setPaymentMode(targetToMode);
       setEditLocked(false);
 
-      savePayment(
-        matched.billNo,
-        targetToMode,
-        null,
-        totalCol,
-        matched.cancelLine || null,
-        selectedDriver || matched.driverName || '',
-        dashDate,
-        matched.chequeNo || null,
-        matched.bankName || null,
-        null,
-        { cash: newCash, upi: newUpi, cheque: newChq },
-        existingLc > 0 ? existingLc : null,
-        targetRecDate,
-        selectedDriver === 'OWNER' ? 'OWNER' : (getLoggedInName() || selectedDriver || 'OWNER'),
-        matched.chequeDate || null,
-        matched.discrepancyReason || null,
-      ).then(ok => {
-        if (ok) {
-          setLastSavedBill({
-            billNo: matched.billNo,
-            partyName: matched.partyName,
-            diff: 0,
-          });
-          setOwnerSavedBillNos(prev => [...prev.filter(x => x !== matched.billNo), matched.billNo]);
-          setShowPaidPopup(true);
-          setTimeout(() => setShowPaidPopup(false), 2000);
-          setVoiceFeedback(`Bill ${matched.billNo} — ${targetFromMode} se ${targetToMode} me ₹${amountToTransfer} save kar diya`);
-          speakText(`${targetToMode} me convert karke save kar diya`);
-          refresh();
-        } else {
-          speakText("Save fail ho gaya, dobara try karein");
-        }
-      });
+      // User preference: GPay and Cheque are never auto-matched or auto-saved silently
+      setVoiceFeedback(`Bill ${matched.billNo} — ${targetFromMode} se ${targetToMode} ₹${amountToTransfer} set kiya. Save karein.`);
+      speakText(`${targetToMode} set kiya, check karke save karein`);
+      setVoiceAutoSave(null);
       return;
     }
 
@@ -1332,7 +1298,6 @@ export default function Dashboard() {
       const existingCash = Number(matched.cashAmount) || 0;
       const existingUpi = Number(matched.upiAmount) || 0;
 
-      // If user says "gpay me paid karo" and bill was in cash, automatically move from cash:
       let amountToPay = cmd.amount || (existingCash > 0 ? existingCash : (existingUpi > 0 ? existingUpi : net));
       if (amountToPay <= 0) amountToPay = net;
 
@@ -1350,40 +1315,47 @@ export default function Dashboard() {
       setPaymentMode(targetMode);
       setEditLocked(false);
 
-      savePayment(
-        matched.billNo,
-        targetMode,
-        null,
-        totalCol,
-        matched.cancelLine || null,
-        selectedDriver || matched.driverName || '',
-        dashDate,
-        matched.chequeNo || null,
-        matched.bankName || null,
-        null,
-        { cash: newCash, upi: newUpi, cheque: newChq },
-        existingLc > 0 ? existingLc : null,
-        targetRecDate,
-        selectedDriver === 'OWNER' ? 'OWNER' : (getLoggedInName() || selectedDriver || 'OWNER'),
-        matched.chequeDate || null,
-        matched.discrepancyReason || null,
-      ).then(ok => {
-        if (ok) {
-          setLastSavedBill({
-            billNo: matched.billNo,
-            partyName: matched.partyName,
-            diff: 0,
-          });
-          setOwnerSavedBillNos(prev => [...prev.filter(x => x !== matched.billNo), matched.billNo]);
-          setShowPaidPopup(true);
-          setTimeout(() => setShowPaidPopup(false), 2000);
-          setVoiceFeedback(`Bill ${matched.billNo} — ${targetMode} me ₹${amountToPay} Paid`);
-          speakText(`${targetMode} me save kar diya`);
-          refresh();
-        } else {
-          speakText("Save fail ho gaya, dobara try karein");
-        }
-      });
+      if (targetMode === 'Cash') {
+        savePayment(
+          matched.billNo,
+          targetMode,
+          null,
+          totalCol,
+          matched.cancelLine || null,
+          selectedDriver || matched.driverName || '',
+          dashDate,
+          matched.chequeNo || null,
+          matched.bankName || null,
+          null,
+          { cash: newCash, upi: newUpi, cheque: newChq },
+          existingLc > 0 ? existingLc : null,
+          targetRecDate,
+          selectedDriver === 'OWNER' ? 'OWNER' : (getLoggedInName() || selectedDriver || 'OWNER'),
+          matched.chequeDate || null,
+          matched.discrepancyReason || null,
+        ).then(ok => {
+          if (ok) {
+            setLastSavedBill({
+              billNo: matched.billNo,
+              partyName: matched.partyName,
+              diff: 0,
+            });
+            setOwnerSavedBillNos(prev => [...prev.filter(x => x !== matched.billNo), matched.billNo]);
+            setShowPaidPopup(true);
+            setTimeout(() => setShowPaidPopup(false), 2000);
+            setVoiceFeedback(`Bill ${matched.billNo} — Cash me ₹${amountToPay} Paid`);
+            speakText("Cash me save kar diya");
+            refresh();
+          } else {
+            speakText("Save fail ho gaya, dobara try karein");
+          }
+        });
+      } else {
+        // GPay and Cheque: Do not auto-match/auto-save; populate fields and let user review and confirm
+        setVoiceFeedback(`Bill ${matched.billNo} — ${targetMode === 'UPI' ? 'GPay' : targetMode} ₹${amountToPay} set kiya. Verify karke Save karein.`);
+        speakText(`${targetMode === 'UPI' ? 'GPay' : targetMode} amount daala hai, save dabayein`);
+        setVoiceAutoSave(null);
+      }
       return;
     }
 
@@ -1398,14 +1370,16 @@ export default function Dashboard() {
       setUpiAmt(cmd.mode === 'UPI' ? String(targetAmount) : '');
       setChqAmt(cmd.mode === 'Cheque' ? String(targetAmount) : '');
 
-      if (Math.abs(net - targetAmount) < 0.5 && cmd.mode !== 'Cheque') {
-        const okMsg = `Bill ${matched.billNo} — ${targetAmount} ${cmd.mode} Paid`;
+      if (Math.abs(net - targetAmount) < 0.5 && cmd.mode === 'Cash') {
+        const okMsg = `Bill ${matched.billNo} — ${targetAmount} Cash Paid`;
         setVoiceFeedback(okMsg);
         speakText("Paid");
         setVoiceAutoSave({ billNo: matched.billNo, amount: targetAmount });
       } else {
         const warnMsg = cmd.mode === 'Cheque'
           ? `Bill ${matched.billNo} — Cheque details bharkar save karein`
+          : cmd.mode === 'UPI'
+          ? `Bill ${matched.billNo} — GPay ₹${targetAmount} verify karke save karein`
           : `Bill ${matched.billNo} — Amount ${targetAmount} verify karein`;
         setVoiceFeedback(warnMsg);
         speakText("Amount check karein");
@@ -1762,7 +1736,29 @@ export default function Dashboard() {
     }
 
     setOwnerSavedBillNos(prev => [...prev.filter(x => x !== selectedBillNo), selectedBillNo]);
+
+    // ── Auto WhatsApp to Salesperson on CREDIT Save: SEND FIRST ──
+    const billToNotify: Bill = {
+      ...(savedBill || selectedBill),
+      paymentMode: 'Credit',
+      lineCutAmt: effectiveLineCut,
+      collectedAmount: totalCollected,
+      driverName: effectiveDriver,
+    };
+    handleSendWhatsAppToSalesperson(billToNotify);
+
+    // ── FIR SAVE SHOW HOGA ──
+    setLastSavedBill({
+      billNo: selectedBillNo,
+      partyName: selectedBill.partyName,
+      diff: 0,
+    });
+    setShowPaidPopup(true);
     setSaving(false);
+    setTimeout(() => {
+      setShowPaidPopup(false);
+      billInputRef.current?.focus();
+    }, 2000);
     handleReset();
     refresh();
   }
@@ -1884,32 +1880,25 @@ export default function Dashboard() {
       return;
     }
 
-    // ── Auto-sync bankName + chequeDate + chequeNo to all bills with same CHQ NO ──
-    // Matches across all drivers/dates so a cheque correction propagates everywhere.
-    // Uses patchBillDirect for immediate Supabase save (cheque data is critical).
-    if (Number(chqAmt) > 0 && chequeNo?.trim()) {
-      const newChqNorm = chequeNo.trim().toLowerCase();
-      const oldChqNorm = (selectedBill?.chequeNo || '').trim().toLowerCase();
-      // Search by old cheque no if it changed (so we still find the linked bills), else by new
-      const searchKey = (oldChqNorm && oldChqNorm !== newChqNorm) ? oldChqNorm : newChqNorm;
-      const siblings = getBills().filter(b =>
-        b.billNo !== selectedBillNo &&
-        b.chequeNo?.trim().toLowerCase() === searchKey
-      );
-      if (siblings.length > 0) {
-        for (const sib of siblings) {
-          const patch: Record<string, any> = {};
-          if (chequeNo.trim() && sib.chequeNo !== chequeNo.trim()) patch.chequeNo = chequeNo.trim();
-          if (bankName?.trim() && sib.bankName !== bankName) patch.bankName = bankName;
-          if (chequeDate && sib.chequeDate !== chequeDate) patch.chequeDate = chequeDate;
-          if (Object.keys(patch).length > 0) {
-            patchBillDirect(sib.billNo, patch).catch(() => {});
+    const savedIdentifier = selectedBill?.billNo || selectedBillNo;
+
+    // ── Auto WhatsApp to Salesperson on CREDIT Save: SEND FIRST ──
+    if (finalMode === 'Credit') {
+      const billToNotify: Bill | undefined = selectedBill
+        ? {
+            ...selectedBill,
+            paymentMode: 'Credit',
+            lineCutAmt: lineCutToSave != null ? lineCutToSave : selectedBill.lineCutAmt,
+            collectedAmount: totalCollected,
+            driverName: selectedBill.driverName || (selectedDriver !== 'OWNER' ? selectedDriver : '') || selectedDriver,
           }
-        }
+        : getBills().find(b => b.billNo === savedIdentifier);
+      if (billToNotify) {
+        handleSendWhatsAppToSalesperson(billToNotify);
       }
     }
 
-    const savedIdentifier = selectedBill?.billNo || selectedBillNo;
+    // ── FIR SAVE SHOW HOGA ──
     setLastSavedBill({ 
       billNo: savedIdentifier, 
       partyName: selectedBill?.partyName,
@@ -1918,22 +1907,6 @@ export default function Dashboard() {
     setOwnerSavedBillNos(prev => [...prev.filter(x => x !== savedIdentifier && x !== (selectedBill?.id || '')), savedIdentifier, ...(selectedBill?.id ? [selectedBill.id] : [])]);
     setShowPaidPopup(true);
     setSaving(false);
-
-    // ── Auto WhatsApp to Salesperson on CREDIT Save ──
-    if (finalMode === 'Credit' && autoCreditWa) {
-      const billToNotify: Bill | undefined = selectedBill
-        ? {
-            ...selectedBill,
-            paymentMode: 'Credit',
-            lineCutAmt: lineCutToSave != null ? lineCutToSave : selectedBill.lineCutAmt,
-            collectedAmount: 0,
-            driverName: selectedBill.driverName || (selectedDriver !== 'OWNER' ? selectedDriver : '') || selectedDriver,
-          }
-        : getBills().find(b => b.billNo === savedIdentifier);
-      if (billToNotify) {
-        handleSendWhatsAppToSalesperson(billToNotify);
-      }
-    }
     
     setTimeout(() => {
       setShowPaidPopup(false);
@@ -1962,27 +1935,6 @@ export default function Dashboard() {
       setSaving(false);
       setSaveError('Cheque details save nahi hua. Dobara try karein.');
       return;
-    }
-
-    // ── Propagate chequeNo / bankName / chequeDate to all bills with same cheque ──
-    // Search by original cheque no so linked bills are found even if no is being corrected.
-    const origChequeNo = (selectedBill.chequeNo || '').trim().toLowerCase();
-    const newChequeNo  = chequeNo.trim();
-    const searchKey    = origChequeNo || newChequeNo.toLowerCase();
-    if (searchKey) {
-      const siblings = getBills().filter(b =>
-        b.billNo !== selectedBillNo &&
-        b.chequeNo?.trim().toLowerCase() === searchKey
-      );
-      for (const sib of siblings) {
-        const sibPatch: Record<string, any> = {};
-        if (newChequeNo && sib.chequeNo !== newChequeNo) sibPatch.chequeNo = newChequeNo;
-        if (bankName?.trim()  && sib.bankName  !== bankName)   sibPatch.bankName   = bankName;
-        if (chequeDate        && sib.chequeDate !== chequeDate) sibPatch.chequeDate = chequeDate;
-        if (Object.keys(sibPatch).length > 0) {
-          patchBillDirect(sib.billNo, sibPatch).catch(() => {});
-        }
-      }
     }
 
     setLastSavedBill({ billNo: selectedBillNo, partyName: selectedBill.partyName, diff: 0 });
@@ -2045,23 +1997,33 @@ export default function Dashboard() {
   }
 
   // ── Save ALL pending overflow bills together ──────────────────────────────────
-  async function handleOverflowSaveAll(itemsSnap: typeof overflowPendingItems) {
+  async function handleOverflowSaveAll(itemsSnap: Array<{ billNo: string; partyName: string; billNetAmt: number; lineCutInput: string; applied?: number; lineCut?: number; netPayable?: number }>) {
     if (overflowSaving || itemsSnap.length === 0) return;
     setOverflowSaving(true);
     setSaveError(null);
     const chainRecDate = overflowRecDateSaved || isoToDisplay(dashDate) || dashDate;
     const chainChequeDate = overflowChequeDateSaved || null;
-    let rem = overflowTotalCollected;
-    for (const item of itemsSnap) {
-      const bill = getBills().find(b => b.billNo === item.billNo);
-      const existingLc = (Number(bill?.lineCutAmt) || 0) || (Number(bill?.cancelLine) || 0);
-      const lineCut = item.lineCutInput !== ''
-        ? Math.max(0, Math.min(Number(item.lineCutInput) || 0, item.billNetAmt))
-        : (existingLc > 0 ? existingLc : 0);
+    let rem = Number(overflowTotalCollected) || 0;
 
-      const netPayable = Math.max(0, item.billNetAmt - lineCut);
-      const applied = Math.min(rem, netPayable);
-      rem -= applied;
+    for (const item of itemsSnap) {
+      const allBills = getBills();
+      const bill = allBills.find(b => (b.billNo || '').toLowerCase() === (item.billNo || '').toLowerCase());
+      const billNet = Number(item.billNetAmt) || Number(bill?.billNetAmt) || Number(bill?.outstandingAmount) || 0;
+      const existingLc = (Number(bill?.lineCutAmt) || 0) || (Number(bill?.cancelLine) || 0);
+
+      let lineCut = item.lineCut !== undefined
+        ? item.lineCut
+        : (item.lineCutInput !== ''
+            ? Math.max(0, Math.min(Number(item.lineCutInput) || 0, billNet))
+            : (existingLc > 0 ? existingLc : Math.max(0, billNet - rem)));
+
+      const netPayable = Math.max(0, billNet - lineCut);
+      const applied = item.applied !== undefined ? item.applied : Math.min(rem, netPayable);
+      rem = Math.max(0, rem - applied);
+
+      // Auto-cover remaining shortfall with Line Cut so every bill in the chain is marked PAID
+      const effectiveLineCut = (lineCut > 0) ? lineCut : Math.max(0, billNet - applied);
+
       const appliedSplit = {
         cash:   (overflowMode === 'Cash' || overflowMode === 'Split') ? applied : 0,
         upi:    overflowMode === 'UPI'    ? applied : 0,
@@ -2079,7 +2041,7 @@ export default function Dashboard() {
         overflowBankSaved || null,
         null,
         appliedSplit,
-        lineCut > 0 ? lineCut : null,
+        effectiveLineCut > 0 ? effectiveLineCut : null,
         chainRecDate,
         getLoggedInName(),
         chainChequeDate
@@ -2088,20 +2050,6 @@ export default function Dashboard() {
         setOverflowSaving(false);
         setSaveError(`Bill ${item.billNo} database me save nahi hua. Dobara try karein.`);
         return;
-      }
-    }
-
-    // Auto-sync bankName + chequeDate + chequeNo to all bills with same CHQ NO
-    if (overflowChequeSaved?.trim()) {
-      const chqNorm = overflowChequeSaved.trim().toLowerCase();
-      const siblings = getBills().filter(b => (b.chequeNo || '').trim().toLowerCase() === chqNorm);
-      for (const sib of siblings) {
-        const patch: Record<string, any> = {};
-        if (chainChequeDate && sib.chequeDate !== chainChequeDate) patch.chequeDate = chainChequeDate;
-        if (overflowBankSaved && sib.bankName !== overflowBankSaved) patch.bankName = overflowBankSaved;
-        if (Object.keys(patch).length > 0) {
-          patchBillDirect(sib.billNo, patch).catch(() => {});
-        }
       }
     }
 
@@ -2184,20 +2132,19 @@ export default function Dashboard() {
       return;
     }
 
+    // ── Auto WhatsApp to Salesperson on Part/Credit Save: SEND FIRST ──
+    const billToNotify: Bill | undefined = selectedBill
+      ? { ...selectedBill, ...patch }
+      : getBills().find(b => b.billNo === selectedBillNo);
+    if (billToNotify) {
+      handleSendWhatsAppToSalesperson(billToNotify);
+    }
+
+    // ── FIR SAVE SHOW HOGA ──
     setLastSavedBill({ billNo: selectedBillNo, partyName: selectedBill.partyName, diff: outstanding });
     setOwnerSavedBillNos(prev => [...prev.filter(x => x !== selectedBillNo), selectedBillNo]);
     setShowPaidPopup(true);
     setSaving(false);
-
-    // ── Auto WhatsApp to Salesperson on Part/Credit Save ──
-    if (autoCreditWa) {
-      const billToNotify: Bill | undefined = selectedBill
-        ? { ...selectedBill, ...patch }
-        : getBills().find(b => b.billNo === selectedBillNo);
-      if (billToNotify) {
-        handleSendWhatsAppToSalesperson(billToNotify);
-      }
-    }
 
     setTimeout(() => { setShowPaidPopup(false); billInputRef.current?.focus(); }, 2500);
     handleReset();
@@ -2565,11 +2512,11 @@ Kripya party se is bill ka payment collection coordinate karein.`;
   // Paid/Protected-bill editing follows Admin > Users > Edit. Back Date remains date-only.
   const userCannotEditReceivedBill = isUserRole && isProtectedBill && !userPerms.canEdit;
 
-  // Cheque valid: chequeNo required always; bank required always (driver, user, owner)
+  // Cheque valid: chequeNo required (>=3 digits); bank required for owner/user, optional for driver
   const chqAmt_num = Number(chqAmt);
   const chqValid = chqAmt_num <= 0 || (
     chequeNo.trim().length >= 3 &&
-    !!bankName.trim()
+    (isDriverMode || !!bankName.trim())
   );
 
   // Cheque metadata-only update: editLocked bill or received bill with existing cheque details updated — allow saving
@@ -3386,25 +3333,6 @@ Kripya party se is bill ka payment collection coordinate karein.`;
                           value={chequeNo} onChange={e => {
                             const v = e.target.value.replace(/\D/g, '').slice(0, 6);
                             setChequeNo(v);
-                            // Auto-fill bank + cheque date from sibling bills sharing this cheque no
-                            if (v.length === 6) {
-                              const effDriver = (selectedDriver === 'OWNER' && selectedBill?.driverName && selectedBill.driverName !== 'OWNER')
-                                ? selectedBill.driverName : selectedDriver;
-                              const sib = getBills().find(b =>
-                                b.billNo !== selectedBillNo &&
-                                b.driverName === effDriver &&
-                                b.deliveryDate === displayDate &&
-                                (b.chequeNo || '').trim() === v
-                              );
-                              if (sib) {
-                                if (sib.bankName && !bankName) setBankName(sib.bankName);
-                                if (sib.chequeDate) {
-                                  setChequeDate(sib.chequeDate);
-                                  const p = sib.chequeDate.split('/');
-                                  if (p.length >= 2) setChqDateDD(`${p[0]}/${p[1]}`);
-                                }
-                              }
-                            }
                           }}
                           disabled={saving}
                           onKeyDown={e => {
@@ -3467,12 +3395,12 @@ Kripya party se is bill ka payment collection coordinate karein.`;
                         banks={getBanks()}
                         value={bankName}
                         onChange={setBankName}
-                        placeholder="BANK *"
+                        placeholder={isDriverMode ? "BANK (OPTIONAL)" : "BANK *"}
                         inputRef={bankInputRef}
                         onEnterKey={() => saveBtnRef.current?.focus()}
                         className={cn(
                           "w-full h-10 px-2 bg-muted/50 rounded-xl text-[10px] font-black outline-none disabled:opacity-50 focus:ring-2 focus:ring-violet-500/30",
-                          chqAmt_num > 0 && !bankName.trim()
+                          chqAmt_num > 0 && !bankName.trim() && !isDriverMode
                             ? "border-2 border-red-400 bg-red-50/60"
                             : "border border-border/30"
                         )}
