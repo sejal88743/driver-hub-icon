@@ -77,23 +77,31 @@ function readLocal() {
   });
 }
 
+let lastFullSyncTime = 0;
+
 function scheduleDebouncedFullSync(delayMs = 1500) {
   if (fullSyncDebounceTimer) clearTimeout(fullSyncDebounceTimer);
   fullSyncDebounceTimer = setTimeout(() => {
-    doFullSync();
+    doFullSync(true);
   }, delayMs);
 }
 
-async function doFullSync() {
+async function doFullSync(force = false) {
   if (syncInFlight) return;
+  const now = Date.now();
+  // Avoid spamming full network sync if completed recently unless explicitly forced
+  if (!force && (now - lastFullSyncTime < 15_000)) {
+    return;
+  }
   // If a local write operation is currently in-flight or occurred in the last 2.5s, skip full refresh
-  if (isWriteInProgress() || (Date.now() - getLastWriteAt() < 2500)) {
+  if (isWriteInProgress() || (now - getLastWriteAt() < 2500)) {
     return;
   }
   syncInFlight = true;
   patch({ syncing: true });
   try {
     const data = await apiFetchAllData();
+    lastFullSyncTime = Date.now();
     // 1. Merge any un-flushed local dirty patches on top of bills fetched from Supabase
     const patchedBills = applyDirtyPatches(data?.bills || []);
 

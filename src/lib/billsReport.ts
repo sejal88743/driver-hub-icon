@@ -400,31 +400,59 @@ export async function processBillsReportBuffer(
   buffer: ArrayBuffer,
   onStatus: (s: BillsReportStatus) => void
 ): Promise<void> {
-  onStatus({ status: 'loading', message: 'Reading Sales Register...' });
+  onStatus({ status: 'loading', message: 'Reading Sales Register file...' });
+  // Yield to UI thread to allow status message to render
+  await new Promise(r => setTimeout(r, 10));
+
   try {
     const XLSX = await import('xlsx');
-    onStatus({ status: 'loading', message: 'Supabase se existing bills fetch ho rahe hain...' });
-    const { apiFetchAllData, apiPatchBills, apiBulkInsertWithProgress } = await import('@/lib/apiSync');
-    const data = await apiFetchAllData();
+    onStatus({ status: 'loading', message: 'Checking existing bills...' });
+    await new Promise(r => setTimeout(r, 10));
+
+    const { apiFetchAllData, apiBulkUpsertWithProgress, apiBulkInsertWithProgress } = await import('@/lib/apiSync');
+    
+    // Get existing bills: use in-memory store if hydrated, otherwise fetch
+    let localBills = getBills();
+    if (!localBills || localBills.length === 0) {
+      onStatus({ status: 'loading', message: 'Loading database records...' });
+      const data = await apiFetchAllData();
+      localBills = data?.bills || [];
+    }
+
+    onStatus({ status: 'loading', message: 'Parsing Sales Register rows...' });
+    await new Promise(r => setTimeout(r, 10));
+
     const parsed = parseRegister(buffer, XLSX);
 
-    // Build list of all known SP names for 60% resolution (existing bills + contacts)
-    const spNames: string[] = Array.from(new Set([
+    // Build list of all known SP names for 60% resolution
+    const rawSpList = [
       ...getSalespersonContacts().map(c => c.name).filter(Boolean),
-      ...getBills().map(b => b.salespersonName).filter(Boolean),
-      ...data.bills.map((b: Bill) => b.salespersonName).filter(Boolean),
-    ])) as string[];
+      ...localBills.map((b: Bill) => b.salespersonName).filter(Boolean),
+    ];
+    const spNames: string[] = Array.from(new Set(rawSpList.map(n => cleanSalespersonName(n)).filter(Boolean)));
 
-    // Apply 60% SP name resolution to every group in the register
+    // Fast memoized resolver for unique salesperson names
+    const spResolverCache = new Map<string, string>();
+    const resolveSpName = (raw: string): string => {
+      if (!raw) return '';
+      const cleaned = cleanSalespersonName(raw);
+      if (!cleaned) return '';
+      const cached = spResolverCache.get(cleaned.toUpperCase());
+      if (cached !== undefined) return cached;
+      const res = findCanonicalName(cleaned, spNames, cleanSalespersonName, 0.60);
+      const finalVal = res || cleaned;
+      spResolverCache.set(cleaned.toUpperCase(), finalVal);
+      return finalVal;
+    };
+
+    // Apply memoized SP name resolution to every group in the register
     for (const group of parsed.groups.values()) {
       if (group.salespersonName) {
-        group.salespersonName = findCanonicalName(
-          group.salespersonName, spNames, cleanSalespersonName, 0.60
-        );
+        group.salespersonName = resolveSpName(group.salespersonName);
       }
     }
 
-    const { updates, missing } = buildUpdates(parsed.groups, data.bills);
+    const { updates, missing } = buildUpdates(parsed.groups, localBills);
     const newBills = buildNewBills(missing, spNames);
 
     if (updates.length === 0 && newBills.length === 0) {
@@ -434,45 +462,41 @@ export async function processBillsReportBuffer(
 
     const totalToSave = updates.length + newBills.length;
     onStatus({ status: 'loading', message: `Supabase me save ho raha hai... 0 / ${totalToSave}` });
+    await new Promise(r => setTimeout(r, 10));
 
-    // ── Patch existing bills ─────────────────────────────────────────────────
-    const byBillNo = new Map(data.bills.map((bill: Bill) => [text(bill.billNo), bill]));
+    // ── Bulk Upsert existing updated bills ────────────────────────────────────
+    const byBillNo = new Map(localBills.map((bill: Bill) => [text(bill.billNo), bill]));
     let savedUpdates = 0;
 
     if (updates.length > 0) {
-      const patches = updates
-        .map(update => {
-          const bill = byBillNo.get(update.billNo);
-          return bill?.id ? { id: bill.id, patch: update.patch } : null;
-        })
-        .filter((value): value is { id: string; patch: Partial<Bill> } => value !== null);
-
-      const BATCH_SIZE = 250;
-      for (let i = 0; i < patches.length; i += BATCH_SIZE) {
-        const result = await apiPatchBills(patches.slice(i, i + BATCH_SIZE));
-        savedUpdates += result.count;
-        onStatus({ status: 'loading', message: `Supabase me save ho raha hai... ${savedUpdates} / ${totalToSave}` });
-        if (result.count !== Math.min(BATCH_SIZE, patches.length - i)) {
-          onStatus({ status: 'error', message: `Supabase update incomplete: ${savedUpdates} / ${patches.length} bills saved.` });
-          return;
+      const mergedBills: Bill[] = [];
+      for (const update of updates) {
+        const existing = byBillNo.get(update.billNo);
+        if (existing) {
+          mergedBills.push({ ...existing, ...update.patch });
         }
       }
 
-      const mergedBills = updates.map(update => {
-        const existing = byBillNo.get(update.billNo)!;
-        return { ...existing, ...update.patch };
-      });
-      mergeBillsInMemoryOnly(mergedBills);
+      if (mergedBills.length > 0) {
+        // Fast bulk upsert in chunks of 500 in single HTTP requests
+        const upRes = await apiBulkUpsertWithProgress(mergedBills, (saved, total) => {
+          savedUpdates = saved;
+          onStatus({ status: 'loading', message: `Supabase me update ho raha hai... ${saved} / ${totalToSave}` });
+        });
+        savedUpdates = upRes.count || mergedBills.length;
+        mergeBillsInMemoryOnly(mergedBills);
+      }
     }
 
     // ── Insert new bills ─────────────────────────────────────────────────────
     let savedNew = 0;
     if (newBills.length > 0) {
       addBillsToMemoryOnly(newBills);
-      await apiBulkInsertWithProgress(newBills, (saved) => {
+      const insRes = await apiBulkInsertWithProgress(newBills, (saved, total) => {
         savedNew = saved;
-        onStatus({ status: 'loading', message: `Supabase me save ho raha hai... ${savedUpdates + savedNew} / ${totalToSave}` });
+        onStatus({ status: 'loading', message: `Supabase me new bills save ho rahe hain... ${savedUpdates + saved} / ${totalToSave}` });
       });
+      savedNew = insRes.count || newBills.length;
     }
 
     // ── Build result details ─────────────────────────────────────────────────

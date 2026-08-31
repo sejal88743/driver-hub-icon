@@ -1,5 +1,5 @@
 
-import { useState, useMemo, useEffect } from "react";
+import { useState, useMemo, useEffect, useRef } from "react";
 import { Bill, CashBreakdown, saveSummaries, getSummaries, DriverDailySummary, getDrivers } from "@/lib/billStore";
 import { getRole } from "@/lib/auth";
 import { cn } from "@/lib/utils";
@@ -75,7 +75,7 @@ export default function DriverDayTable({ bills, selectedDriver, displayDate, onS
   }, [selectedDriver, displayDate]);
 
   // Auto-save breakdown whenever it changes (debounced 600ms) — driver+date keyed, never wiped
-  const breakdownRef = { current: breakdown };
+  const breakdownRef = useRef(breakdown);
   breakdownRef.current = breakdown;
   useEffect(() => {
     const hasAny = Object.values(breakdown).some(v => (v || 0) > 0);

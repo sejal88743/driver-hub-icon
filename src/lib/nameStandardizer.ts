@@ -5,11 +5,23 @@
 
 import type { Bill } from './billStore';
 
+// Caches for high-frequency operations to ensure ultra-fast processing without UI freeze
+const spCleanCache = new Map<string, string>();
+const partyCleanCache = new Map<string, string>();
+const similarityCache = new Map<string, number>();
+
 // ── Clean Salesperson Name ───────────────────────────────────────────────────
 export function cleanSalespersonName(name: string): string {
   if (!name) return '';
-  let s = String(name).trim();
-  if (!s) return '';
+  const rawKey = String(name);
+  const cached = spCleanCache.get(rawKey);
+  if (cached !== undefined) return cached;
+
+  let s = rawKey.trim();
+  if (!s) {
+    spCleanCache.set(rawKey, '');
+    return '';
+  }
 
   // Strip code prefixes like "SMN00017 - ", "SM01 -", "SALES01 -"
   s = s.replace(/^[A-Z0-9_-]{2,15}\s*[-:_]\s*/i, '').trim();
@@ -34,6 +46,9 @@ export function cleanSalespersonName(name: string): string {
 
   // Normalize internal whitespace
   s = s.replace(/\s+/g, ' ');
+
+  if (spCleanCache.size > 8000) spCleanCache.clear();
+  spCleanCache.set(rawKey, s);
   return s;
 }
 
@@ -74,14 +89,24 @@ export function areSalespersonNamesEquivalent(name1: string, name2: string): boo
 // ── Clean Party Name ─────────────────────────────────────────────────────────
 export function cleanPartyName(name: string): string {
   if (!name) return '';
-  let s = String(name).trim();
-  if (!s) return '';
+  const rawKey = String(name);
+  const cached = partyCleanCache.get(rawKey);
+  if (cached !== undefined) return cached;
+
+  let s = rawKey.trim();
+  if (!s) {
+    partyCleanCache.set(rawKey, '');
+    return '';
+  }
   // Strip GST or code prefixes like "GSTIN123 - ", "C00123 - ", "HUL123 - "
   s = s.replace(/^(GST[0-9A-Z]*|[A-Z0-9_-]{2,15})\s*[-:_]\s*/i, '').trim();
   // Strip code suffixes
   s = s.replace(/\s*[-:_]\s*[A-Z0-9_-]{2,15}$/i, '').trim();
   // Normalize internal whitespace
   s = s.replace(/\s+/g, ' ');
+
+  if (partyCleanCache.size > 8000) partyCleanCache.clear();
+  partyCleanCache.set(rawKey, s);
   return s;
 }
 
@@ -128,6 +153,10 @@ export function calculateSimilarity(str1: string, str2: string): number {
   if (norm1 === norm2) return 1.0;
   if (!norm1 || !norm2) return 0;
 
+  const cacheKey = norm1 < norm2 ? `${norm1}||${norm2}` : `${norm2}||${norm1}`;
+  const cached = similarityCache.get(cacheKey);
+  if (cached !== undefined) return cached;
+
   const wordsList1 = norm1.split(/\s+/).filter(w => w.length > 0);
   const wordsList2 = norm2.split(/\s+/).filter(w => w.length > 0);
 
@@ -135,6 +164,8 @@ export function calculateSimilarity(str1: string, str2: string): number {
   const sorted1 = [...wordsList1].sort().join(' ');
   const sorted2 = [...wordsList2].sort().join(' ');
   if (sorted1 && sorted2 && sorted1 === sorted2) {
+    if (similarityCache.size > 15000) similarityCache.clear();
+    similarityCache.set(cacheKey, 1.0);
     return 1.0;
   }
 
@@ -162,7 +193,10 @@ export function calculateSimilarity(str1: string, str2: string): number {
     }
   }
 
-  return Math.max(levSim, tokenDice, subBonus);
+  const result = Math.max(levSim, tokenDice, subBonus);
+  if (similarityCache.size > 15000) similarityCache.clear();
+  similarityCache.set(cacheKey, result);
+  return result;
 }
 
 // ── Is Similar Check (default 70% threshold) ─────────────────────────────────
@@ -182,29 +216,35 @@ export function findCanonicalName(
 
   const cleanUpper = cleaned.toUpperCase();
 
-  // 1. Exact case-insensitive match
-  const exactMatch = existingNames.find(
-    n => cleanFn(n).toUpperCase() === cleanUpper
-  );
-  if (exactMatch) return cleanFn(exactMatch);
+  // Fast pre-cleaned list
+  const cleanedExisting: Array<{ raw: string; clean: string; upper: string }> = [];
+  for (const n of existingNames) {
+    const c = cleanFn(n);
+    if (c) {
+      const u = c.toUpperCase();
+      if (u === cleanUpper) return c; // Immediate exact match O(1)
+      cleanedExisting.push({ raw: n, clean: c, upper: u });
+    }
+  }
 
   // 2. Equivalent salesperson match (reordered surname etc.)
   if (cleanFn === cleanSalespersonName) {
-    const eqMatch = existingNames.find(n => areSalespersonNamesEquivalent(cleaned, n));
-    if (eqMatch) return cleanFn(eqMatch);
+    for (const item of cleanedExisting) {
+      if (areSalespersonNamesEquivalent(cleaned, item.clean)) {
+        return item.clean;
+      }
+    }
   }
 
   // 3. Similarity match (highest score >= threshold)
   let bestMatch = '';
   let highestScore = 0;
 
-  for (const existing of existingNames) {
-    const existingClean = cleanFn(existing);
-    if (!existingClean) continue;
-    const score = calculateSimilarity(cleaned, existingClean);
+  for (const item of cleanedExisting) {
+    const score = calculateSimilarity(cleaned, item.clean);
     if (score >= threshold && score > highestScore) {
       highestScore = score;
-      bestMatch = existingClean;
+      bestMatch = item.clean;
     }
   }
 
