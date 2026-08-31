@@ -63,6 +63,7 @@ import {
 } from '@/lib/billStore';
 import TopNav from '@/components/TopNav';
 import { ConfirmModal } from '@/components/ConfirmModal';
+import { safeReadWorkbook } from '@/lib/xlsxHelper';
 import { cn } from '@/lib/utils';
 import { apiFetchAllData } from '@/lib/apiSync';
 import {
@@ -571,7 +572,7 @@ export default function SettingsPage() {
 
           // Read workbook preserving all formatting, fonts, types, NF, styles
           const data = new Uint8Array(dataBuffer);
-          const wb = XLSX.read(data, { type: 'array', cellStyles: true, cellNF: true, cellDates: false, dense: false });
+          const wb = safeReadWorkbook(XLSX, data, { cellStyles: true, cellNF: true, cellDates: false, dense: false });
           const sNames = wb.SheetNames || [];
           const mainSheetName = sNames[0] || 'Collection';
           const ws = wb.Sheets[mainSheetName];
@@ -690,8 +691,7 @@ export default function SettingsPage() {
 
       // 3. Read the original uploaded file with 100% cell styles and formatting intact
       const data = new Uint8Array(rawBuffer);
-      const wb = XLSX.read(data, {
-        type: 'array',
+      const wb = safeReadWorkbook(XLSX, data, {
         cellStyles: true,
         cellNF: true,
         cellDates: false,
@@ -1040,7 +1040,7 @@ export default function SettingsPage() {
             const dataBuffer = evt.target?.result;
             if (!dataBuffer) { setLedgerResult({ status: 'error', message: 'Could not read file.' }); return; }
             const data = new Uint8Array(dataBuffer as ArrayBuffer);
-            const wb = XLSX.read(data, { type: 'array', dense: false, cellStyles: false, cellNF: false, cellFormula: false });
+            const wb = safeReadWorkbook(XLSX, data, { dense: false, cellStyles: false, cellNF: false, cellFormula: false });
             const ws = wb.Sheets[wb.SheetNames[0]];
             if (!ws['!ref']) { setLedgerResult({ status: 'error', message: 'Sheet is empty or unreadable.' }); return; }
 
@@ -1186,7 +1186,7 @@ export default function SettingsPage() {
             const dataBuffer = evt.target?.result;
             if (!dataBuffer) { setRecPaymentResult({ status: 'error', message: 'Could not read file.' }); return; }
             const data = new Uint8Array(dataBuffer as ArrayBuffer);
-            const wb = XLSX.read(data, { type: 'array', dense: false, cellStyles: false, cellNF: false, cellFormula: false });
+            const wb = safeReadWorkbook(XLSX, data, { dense: false, cellStyles: false, cellNF: false, cellFormula: false });
             const ws = wb.Sheets[wb.SheetNames[0]];
             if (!ws['!ref']) { setRecPaymentResult({ status: 'error', message: 'Sheet is empty or unreadable.' }); return; }
 
@@ -1403,7 +1403,7 @@ export default function SettingsPage() {
             const dataBuffer = evt.target?.result;
             if (!dataBuffer) { setCollSummaryResult({ status: 'error', message: 'Could not read file.' }); return; }
             const data = new Uint8Array(dataBuffer as ArrayBuffer);
-            const wb = XLSX.read(data, { type: 'array', raw: false });
+            const wb = safeReadWorkbook(XLSX, data, { raw: false });
             const ws = wb.Sheets[wb.SheetNames[0]];
             if (!ws['!ref']) { setCollSummaryResult({ status: 'error', message: 'Sheet is empty.' }); return; }
 
@@ -1536,7 +1536,7 @@ export default function SettingsPage() {
     try {
       const XLSX = await import('xlsx');
       const data = new Uint8Array(await file.arrayBuffer());
-      const wb = XLSX.read(data, { type: 'array', cellStyles: false, cellNF: false, cellFormula: false });
+      const wb = safeReadWorkbook(XLSX, data, { cellStyles: false, cellNF: false, cellFormula: false });
       const ws = wb.Sheets[wb.SheetNames[0]];
       if (!ws?.['!ref']) { setContactResult({ status: 'error', message: 'Sheet is empty.' }); return; }
 
@@ -1646,7 +1646,7 @@ export default function SettingsPage() {
             const dataBuffer = evt.target?.result;
             if (!dataBuffer) { setSalesResult({ status: 'error', message: 'Could not read file.' }); return; }
             const data = new Uint8Array(dataBuffer as ArrayBuffer);
-            const wb = XLSX.read(data, { type: 'array', cellStyles: false, cellNF: false, cellFormula: false });
+            const wb = safeReadWorkbook(XLSX, data, { cellStyles: false, cellNF: false, cellFormula: false });
             const ws = wb.Sheets[wb.SheetNames[0]];
             if (!ws['!ref']) { setSalesResult({ status: 'error', message: 'Sheet is empty.' }); return; }
             const range = XLSX.utils.decode_range(ws['!ref']!);
@@ -1986,7 +1986,7 @@ export default function SettingsPage() {
         setTimeout(async () => {
           try {
             const data = new Uint8Array(evt.target?.result as ArrayBuffer);
-            const wb = XLSX.read(data, { type: 'array', cellStyles: false, cellNF: false, cellFormula: false });
+            const wb = safeReadWorkbook(XLSX, data, { cellStyles: false, cellNF: false, cellFormula: false });
             
             const statsList: { label: string; count: number }[] = [];
             let isValid = false;
@@ -2138,10 +2138,10 @@ export default function SettingsPage() {
             <span className="text-[8px] font-black bg-amber-100 text-amber-700 px-2 py-0.5 rounded-full uppercase tracking-wider">Bill Wise Sync</span>
           </div>
           <p className="text-[8px] font-bold text-muted-foreground uppercase mb-1 leading-tight">
-            Sales Register file (Excel/XLS). Columns: <span className="text-amber-700">BillRefNo · BillDate · Party Name · Party Code · Beat Name · BillValue</span>
+            Sales Register file (Excel/XLS). Columns: <span className="text-amber-700">BillRefNo · BillDate · Party Name · Party Code · Beat Name · BillValue · CashDisc · Adjustments</span>
           </p>
           <p className="text-[8px] font-bold text-muted-foreground uppercase mb-2 leading-tight">
-            Bill No wise Bill Date, Party Name, Party Code, Beat Name, Bill Value Supabase me Add/Update hoga. Duplicate Bill No me (-) negative value <span className="text-red-600 font-black">Line Cut Amt</span> me aur (+) positive value <span className="text-emerald-600 font-black">Bill Net Amt</span> me update hogi.
+            Bill No wise Bill Date, Party Name, Party Code, Beat Name, Bill Value, CashDisc (sr_no) aur Adjustments (collection_code) Supabase me Add/Update hoga. Duplicate Bill No me (-) negative value <span className="text-red-600 font-black">Line Cut Amt</span> me aur (+) positive value <span className="text-emerald-600 font-black">Bill Net Amt</span> me update hogi.
           </p>
           <div onClick={() => billsReportFileRef.current?.click()} className="border-2 border-dashed rounded-xl p-3 flex items-center gap-3 cursor-pointer hover:bg-amber-50 transition-all border-amber-300">
             {billsReportResult?.status === 'loading' ? <Loader2 className="w-5 h-5 animate-spin text-amber-600 shrink-0" /> : <FileSpreadsheet className="w-5 h-5 text-amber-600 shrink-0" />}

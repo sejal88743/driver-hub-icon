@@ -2465,3 +2465,39 @@ export async function applyGreenPartyUpdatesToBillsAndContacts(): Promise<{ bill
 
   return { billsUpdated, contactsUpdated };
 }
+
+/**
+ * Calculates DIS% for a bill based on CashDisc (srNo), Adjustments (collectionCode), and Taxable Amt (billNetAmt).
+ * Formula: DIS% = ((CashDisc + Adjustments) * 100) / (Taxable Amt + CashDisc + Adjustments)
+ */
+export function calculateBillDiscountPercent(b: Partial<Bill> | null | undefined): {
+  disPercent: number;
+  disText: string;
+  cashDisc: number;
+  adjustments: number;
+  taxableAmt: number;
+} {
+  if (!b) return { disPercent: 0, disText: '0.00%', cashDisc: 0, adjustments: 0, taxableAmt: 0 };
+
+  const rawCashDisc = Number(b.srNo) || 0;
+  const rawAdj = (b.collectionCode && b.collectionCode.toUpperCase() !== 'MOC') ? (Number(b.collectionCode) || 0) : 0;
+  const taxableAmt = Number(b.billNetAmt) || 0;
+
+  const totalDisc = rawCashDisc + rawAdj;
+  const denominator = taxableAmt + rawCashDisc + rawAdj;
+
+  let disPercent = 0;
+  if (denominator > 0 && totalDisc > 0) {
+    disPercent = (totalDisc * 100) / denominator;
+  }
+
+  const disText = `${disPercent.toFixed(2)}%`;
+  return {
+    disPercent,
+    disText,
+    cashDisc: rawCashDisc,
+    adjustments: rawAdj,
+    taxableAmt,
+  };
+}
+

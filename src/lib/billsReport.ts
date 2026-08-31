@@ -16,6 +16,7 @@
 import type { Bill } from './billStore';
 import { cleanSalespersonName, cleanPartyName, findCanonicalName } from './nameStandardizer';
 import { mergeBillsInMemoryOnly, addBillsToMemoryOnly, getSalespersonContacts, getBills, excelSerialToDate } from './billStore';
+import { safeReadWorkbook } from './xlsxHelper';
 
 export type BillsReportStatus = {
   status: 'loading' | 'success' | 'error';
@@ -34,6 +35,10 @@ type BillGroup = {
   partyName: string;
   salespersonName: string;
   billDate: string;
+  cashDisc: number;
+  adjustments: number;
+  hasCashDisc: boolean;
+  hasAdjustments: boolean;
 };
 
 type BillReportUpdate = {
@@ -80,8 +85,7 @@ function parseRegister(data: ArrayBuffer, XLSX: any): {
   positiveRows: number;
   negativeRows: number;
 } {
-  const wb = XLSX.read(new Uint8Array(data), {
-    type: 'array',
+  const wb = safeReadWorkbook(XLSX, data, {
     dense: false,
     cellStyles: false,
     cellNF: false,
@@ -116,6 +120,8 @@ function parseRegister(data: ArrayBuffer, XLSX: any): {
   const partyNameKey = findKey(keys, /party\s*name/i, /customer\s*name/i, /retailer\s*name/i, /^party$/i, /^customer$/i);
   const salespersonKey = findKey(keys, /salesperson/i, /sales\s*person/i, /salesman/i, /salesman\s*name/i, /executive/i, /sp\s*name/i);
   const billDateKey = findKey(keys, /billdate/i, /bill\s*date/i, /sales\s*return\s*date/i, /^date$/i, /invoice\s*date/i, /doc\s*date/i, /document\s*date/i);
+  const cashDiscKey = findKey(keys, /^cash\s*disc/i, /^cash\s*discount/i, /^cashdisc/i, /^cash_disc/i, /^cd$/i, /cash\s*disc/i, /cash\s*discount/i, /^cash\s*disc\s*amt/i);
+  const adjustmentsKey = findKey(keys, /^adjustment/i, /^adjustments/i, /^adjust/i, /^adj$/i, /^adj\s*amt/i, /adjustment/i, /adjustments/i, /^adj\s*amount/i);
 
   if (!billNoKey || !billValueKey) {
     throw new Error(`Required columns not found (BillRefNo, BillValue). Found: ${keys.slice(0, 14).join(', ')}`);
@@ -137,6 +143,8 @@ function parseRegister(data: ArrayBuffer, XLSX: any): {
     const billNo = text(row[billNoKey]);
     if (!billNo || isSummaryRow(billNo)) continue;
     const billValue = amount(row[billValueKey]);
+    const rowCashDisc = cashDiscKey ? amount(row[cashDiscKey]) : 0;
+    const rowAdjustments = adjustmentsKey ? amount(row[adjustmentsKey]) : 0;
 
     let group = groups.get(billNo);
     if (!group) {
@@ -149,8 +157,21 @@ function parseRegister(data: ArrayBuffer, XLSX: any): {
         partyName: '',
         salespersonName: '',
         billDate: '',
+        cashDisc: 0,
+        adjustments: 0,
+        hasCashDisc: false,
+        hasAdjustments: false,
       };
       groups.set(billNo, group);
+    }
+
+    if (cashDiscKey) {
+      group.hasCashDisc = true;
+      group.cashDisc += rowCashDisc;
+    }
+    if (adjustmentsKey) {
+      group.hasAdjustments = true;
+      group.adjustments += rowAdjustments;
     }
 
     if (billValue < 0) {
@@ -291,6 +312,14 @@ function buildUpdates(groups: Map<string, BillGroup>, existingBills: Bill[]): {
       patch.billAgeing = Math.max(0, Math.floor((today.getTime() - parsedTs) / 86400000));
     }
 
+    // 6. CashDisc -> sr_no & Adjustments -> collection_code
+    if (group.hasCashDisc) {
+      patch.srNo = String(group.cashDisc);
+    }
+    if (group.hasAdjustments) {
+      patch.collectionCode = String(group.adjustments);
+    }
+
     if (Object.keys(patch).length > 0) {
       updates.push({
         billNo,
@@ -328,10 +357,10 @@ function buildNewBills(missing: Map<string, BillGroup>, spNames: string[]): Bill
 
     newBills.push({
       id: crypto.randomUUID(),
-      srNo: '',
+      srNo: g.hasCashDisc ? String(g.cashDisc) : '0',
       date: g.billDate || todayStr,
       salespersonName: resolvedSP,
-      collectionCode: '',
+      collectionCode: g.hasAdjustments ? String(g.adjustments) : '0',
       billNo,
       partyCode: g.partyCode,
       partyHulCode: '',

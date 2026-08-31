@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom';
 import { Check, Loader2, RotateCcw, Pencil, Wallet, Smartphone, Landmark, Hash, Trash2, X, Calendar, ListPlus, Mic, MicOff, Volume2, Banknote, MessageCircle } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { useBillStore } from '@/hooks/use-bill-store';
-import { savePayment, getSystemPassword, getBills, saveBills, patchBillInMemory, patchBillDirect, setDailyUnlocked, getBanks, getUserPerm, getBillSearchAutoResetSec, addBillsToMemoryOnly, getSalespersonContacts, saveSalespersonContacts, findSalespersonContact, cleanSalespersonName, Bill } from '@/lib/billStore';
+import { savePayment, getSystemPassword, getBills, saveBills, patchBillInMemory, patchBillDirect, setDailyUnlocked, getBanks, getUserPerm, getBillSearchAutoResetSec, addBillsToMemoryOnly, getSalespersonContacts, saveSalespersonContacts, findSalespersonContact, cleanSalespersonName, calculateBillDiscountPercent, Bill } from '@/lib/billStore';
 import { getRole, getLoggedInName } from '@/lib/auth';
 import { cn } from '@/lib/utils';
 import TopNav from '@/components/TopNav';
@@ -3026,6 +3026,7 @@ Kripya party se is bill ka payment collection coordinate karein.`;
                     : b?.chequeAmount && b.chequeAmount > 0 ? 'CHEQ'
                     : (b?.paymentMode && b.paymentMode !== 'Del Pending' && b.paymentMode !== 'FBR' && b.paymentMode !== 'Credit') ? (b.paymentMode === 'UPI' ? 'GPAY' : b.paymentMode) : (b?.paymentMode ? b.paymentMode : '');
                   const _ddLineCut = (b?.lineCutAmt || 0) || Number(b?.cancelLine) || 0;
+                  const disObj = calculateBillDiscountPercent(b);
                   return (
                     <button key={bn} ref={isHighlighted ? highlightedItemRef : null} onClick={() => handleBillSelect(bn)} className={cn("w-full text-left p-2.5 border-b border-border/30 last:border-0 transition-colors flex items-center justify-between gap-2.5", rowBg)}>
                       {/* Left Side: Row 1 & Row 2 */}
@@ -3089,8 +3090,16 @@ Kripya party se is bill ka payment collection coordinate karein.`;
                         </div>
                       </div>
 
-                      {/* Right Side: Big BILL STATUS badge fitting both rows */}
-                      <div className="shrink-0 flex items-center justify-center self-stretch my-auto">
+                      {/* Right Side: DIS% + Big BILL STATUS badge fitting both rows */}
+                      <div className="shrink-0 flex items-center justify-center self-stretch my-auto gap-2">
+                        <span className={cn(
+                          "text-[14px] font-bold px-2 py-1 rounded-xl border shrink-0 whitespace-nowrap shadow-xs",
+                          isHighlighted
+                            ? "bg-white/20 text-white border-white/30"
+                            : "bg-amber-100 text-amber-950 border-amber-300 dark:bg-amber-950/70 dark:text-amber-200 dark:border-amber-700"
+                        )}>
+                          {disObj.disText}
+                        </span>
                         <span className={cn(
                           "text-[13px] sm:text-[14px] font-black uppercase px-3 py-2 rounded-xl shadow-xs text-center flex items-center justify-center min-h-[44px] min-w-[70px] tracking-wider leading-none",
                           isHighlighted ? (statusLabel==='UNPAID'?'bg-white/20 text-primary-foreground':statusCls) : statusCls
@@ -3170,6 +3179,7 @@ Kripya party se is bill ka payment collection coordinate karein.`;
             : selectedBill.upiAmount && selectedBill.upiAmount > 0 ? 'UPI'
             : selectedBill.chequeAmount && selectedBill.chequeAmount > 0 ? 'CHQ'
             : selectedBill.paymentMode || '';
+          const disObj2 = calculateBillDiscountPercent(selectedBill);
           return (
             <div className="px-2 mt-3 space-y-3 animate-in slide-in-from-top-2 duration-200">
               {/* ── Bill Info Card ── */}
@@ -3177,16 +3187,16 @@ Kripya party se is bill ka payment collection coordinate karein.`;
 
                 {/* ── Row 1: Bill No + Party Name + Status Badge ── */}
                 <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border/40 pb-2">
-                  <div className="flex items-center gap-3 flex-wrap">
+                  <div className="flex items-center gap-3 flex-wrap min-w-0">
                     <span className="text-[22px] sm:text-[25px] font-black text-primary uppercase tracking-wider">{selectedBill.billNo}</span>
-                    {selectedBill.srNo && selectedBill.srNo !== '0' && (
-                      <span className="text-[13px] sm:text-[14px] font-black px-2.5 py-0.5 rounded-lg bg-emerald-100 dark:bg-emerald-950/70 text-emerald-800 dark:text-emerald-200 border border-emerald-300 dark:border-emerald-700">
-                        SR #{selectedBill.srNo}
-                      </span>
-                    )}
                     <span className="text-[17px] sm:text-[19px] font-black text-foreground uppercase">{selectedBill.partyName}</span>
                   </div>
-                  <span className={cn("text-[13px] sm:text-[14px] font-black px-3.5 py-1 rounded-full uppercase shrink-0 shadow-xs", statusCls2)}>{statusLabel2}</span>
+                  <div className="flex items-center gap-2 shrink-0">
+                    <span className="text-[14px] font-bold text-amber-950 dark:text-amber-200 bg-amber-100 dark:bg-amber-950/70 border border-amber-300 dark:border-amber-700 px-2.5 py-1 rounded-xl shadow-xs shrink-0 whitespace-nowrap">
+                      {disObj2.disText}
+                    </span>
+                    <span className={cn("text-[13px] sm:text-[14px] font-black px-3.5 py-1 rounded-full uppercase shrink-0 shadow-xs", statusCls2)}>{statusLabel2}</span>
+                  </div>
                 </div>
 
                 {/* ── Row 2: DRIVER NAME · SALSMAN NAME · REC AMOUNT · PAYMENT MODE (Clean Badges with Option Values Only) ── */}

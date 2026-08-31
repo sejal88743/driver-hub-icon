@@ -13,6 +13,7 @@ import SalespersonAutoDispatchModal from '@/components/SalespersonAutoDispatchMo
 import { cleanPartyName, cleanSalespersonName, buildCanonicalMap } from '@/lib/nameStandardizer';
 import { isGreenParty } from '@/lib/greenParties';
 import { getCommissionMocs, CommissionMoc, isMocBill as checkIsMocBill, extractMocNumber, getDisplayBillNo, isBillMatchingMocCode } from '@/lib/commissionMoc';
+import { safeReadWorkbook } from '@/lib/xlsxHelper';
 
 type SortConfig = {
   key: keyof Bill | 'diff';
@@ -645,7 +646,7 @@ export default function ReportsPage() {
     try {
       const XLSX = await import('xlsx');
       const data = await file.arrayBuffer();
-      const templateWb = XLSX.read(new Uint8Array(data), { type: 'array', raw: true, cellDates: false });
+      const templateWb = safeReadWorkbook(XLSX, new Uint8Array(data), { raw: true, cellDates: false });
 
       // Find Collection Details sheet (first sheet whose name contains "collection")
       const collSheetName = templateWb.SheetNames.find(n =>

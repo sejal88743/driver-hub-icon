@@ -5,6 +5,7 @@ import {
   Upload, X, Check, FileCheck, Layers, Calendar, DollarSign, Ban, Clock
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
+import { safeReadWorkbook } from '@/lib/xlsxHelper';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 import { patchBillsInMemory, getBills } from '@/lib/billStore';
@@ -93,7 +94,7 @@ export function AdminAiAgent() {
     try {
       setLoading(true);
       const data = await file.arrayBuffer();
-      const workbook = XLSX.read(data, { type: 'array' });
+      const workbook = safeReadWorkbook(XLSX, data);
       const firstSheetName = workbook.SheetNames[0];
       const sheet = workbook.Sheets[firstSheetName];
       const json: any[] = XLSX.utils.sheet_to_json(sheet, { defval: '' });

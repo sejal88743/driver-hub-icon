@@ -6,6 +6,7 @@ import { useBillStore } from '@/hooks/use-bill-store';
 import { saveSummaries, DriverDailySummary, type Bill, getSystemPassword, getBills, saveBills, addBillsToStore, getDrivers, saveDrivers, excelSerialToDate, patchBillInMemory, patchBillsInMemory, getWhatsAppTemplates, getWABulkSendEnabled, getDailyUnlocked, setDailyUnlocked, getTodayDMY, getUserPerm } from '@/lib/billStore';
 import { getRole, getLoggedInName } from '@/lib/auth';
 import { processBillsReportFile, BillsReportStatus } from '@/lib/billsReport';
+import { safeReadWorkbook } from '@/lib/xlsxHelper';
 import { generateDriverAssignmentImages } from '@/lib/driverAssignmentImage';
 import { generateBillReportImages } from '@/lib/billReportImage';
 import { recordDriverDownload } from '@/lib/driverDownloadStatus';
@@ -202,7 +203,7 @@ export default function DriverPage() {
       const dateCounts = new Map<string, number>();
 
       for (const data of buffers) {
-        const wb = XLSX.read(data, { type: 'array', cellDates: true });
+        const wb = safeReadWorkbook(XLSX, data, { cellDates: true });
 
         for (const sheetName of wb.SheetNames) {
           const ws = wb.Sheets[sheetName] as Record<string, unknown>;
