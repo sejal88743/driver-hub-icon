@@ -176,23 +176,32 @@ const DB_NAME = 'vitratrack_db_v2';
 const DB_VERSION = 1;
 const STORE_KEYVAL = 'keyval';
 
+let _idbInstance: Promise<IDBDatabase | null> | null = null;
+
 function getIDB(): Promise<IDBDatabase | null> {
   if (typeof window === 'undefined' || !window.indexedDB) return Promise.resolve(null);
-  return new Promise((resolve) => {
-    try {
-      const req = indexedDB.open(DB_NAME, DB_VERSION);
-      req.onupgradeneeded = () => {
-        const db = req.result;
-        if (!db.objectStoreNames.contains(STORE_KEYVAL)) {
-          db.createObjectStore(STORE_KEYVAL);
-        }
-      };
-      req.onsuccess = () => resolve(req.result);
-      req.onerror = () => resolve(null);
-    } catch {
-      resolve(null);
-    }
-  });
+  if (!_idbInstance) {
+    _idbInstance = new Promise((resolve) => {
+      try {
+        const req = indexedDB.open(DB_NAME, DB_VERSION);
+        req.onupgradeneeded = () => {
+          const db = req.result;
+          if (!db.objectStoreNames.contains(STORE_KEYVAL)) {
+            db.createObjectStore(STORE_KEYVAL);
+          }
+        };
+        req.onsuccess = () => resolve(req.result);
+        req.onerror = () => {
+          _idbInstance = null;
+          resolve(null);
+        };
+      } catch {
+        _idbInstance = null;
+        resolve(null);
+      }
+    });
+  }
+  return _idbInstance;
 }
 
 export async function idbSet(key: string, val: any): Promise<void> {
@@ -205,6 +214,28 @@ export async function idbSet(key: string, val: any): Promise<void> {
       store.put(val, key);
       tx.oncomplete = () => resolve();
       tx.onerror = () => resolve();
+      tx.onabort = () => resolve();
+    } catch {
+      resolve();
+    }
+  });
+}
+
+export async function idbSetMany(entries: Record<string, any>): Promise<void> {
+  const db = await getIDB();
+  if (!db) return;
+  return new Promise((resolve) => {
+    try {
+      const tx = db.transaction(STORE_KEYVAL, 'readwrite');
+      const store = tx.objectStore(STORE_KEYVAL);
+      for (const [k, v] of Object.entries(entries)) {
+        if (v !== undefined) {
+          store.put(v, k);
+        }
+      }
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => resolve();
+      tx.onabort = () => resolve();
     } catch {
       resolve();
     }
@@ -246,40 +277,45 @@ export function persistLocalState(immediate = false) {
     } else {
       doPersistLocalState();
     }
-  }, 800);
+  }, 1000);
 }
 
 function doPersistLocalState() {
+  const idbPayload: Record<string, any> = {};
   try {
     if (_bills.length > 0) {
-      localStorage.setItem(LS_BILLS_KEY, JSON.stringify(_bills.slice(0, 2000)));
-      idbSet('cached_bills_full', _bills);
+      localStorage.setItem(LS_BILLS_KEY, JSON.stringify(_bills.slice(0, 400)));
+      idbPayload['cached_bills_full'] = _bills;
     }
     if (_drivers.length > 0) {
       localStorage.setItem(LS_DRIVERS_KEY, JSON.stringify(_drivers));
-      idbSet('cached_drivers', _drivers);
+      idbPayload['cached_drivers'] = _drivers;
     }
     if (_banks.length > 0) {
       localStorage.setItem(LS_BANKS_KEY, JSON.stringify(_banks));
-      idbSet('cached_banks', _banks);
+      idbPayload['cached_banks'] = _banks;
     }
     if (_summaries.length > 0) {
       localStorage.setItem(LS_SUMMARIES_KEY, JSON.stringify(_summaries));
-      idbSet('cached_summaries', _summaries);
+      idbPayload['cached_summaries'] = _summaries;
     }
     if (_partyContacts.length > 0) {
       localStorage.setItem(LS_PARTY_CONTACTS_KEY, JSON.stringify(_partyContacts));
-      idbSet('cached_party_contacts', _partyContacts);
+      idbPayload['cached_party_contacts'] = _partyContacts;
     }
     if (_salespersonContacts.length > 0) {
       localStorage.setItem(LS_SALESPERSON_CONTACTS_KEY, JSON.stringify(_salespersonContacts));
-      idbSet('cached_salesperson_contacts', _salespersonContacts);
+      idbPayload['cached_salesperson_contacts'] = _salespersonContacts;
     }
   } catch (err) {
-    console.warn('[billStore] localStorage quota limit hit, using IndexedDB fallback', err);
-    if (_bills.length > 0) idbSet('cached_bills_full', _bills);
-    if (_salespersonContacts.length > 0) idbSet('cached_salesperson_contacts', _salespersonContacts);
-    if (_partyContacts.length > 0) idbSet('cached_party_contacts', _partyContacts);
+    console.warn('[billStore] localStorage quota limit, offloading to IndexedDB', err);
+    if (_bills.length > 0) idbPayload['cached_bills_full'] = _bills;
+    if (_salespersonContacts.length > 0) idbPayload['cached_salesperson_contacts'] = _salespersonContacts;
+    if (_partyContacts.length > 0) idbPayload['cached_party_contacts'] = _partyContacts;
+  }
+
+  if (Object.keys(idbPayload).length > 0) {
+    idbSetMany(idbPayload).catch(() => {});
   }
 }
 
@@ -767,8 +803,15 @@ export function findSalespersonContact(spName: string): Contact | undefined {
 }
 
 // ─── Bulk write (for imports) ─────────────────────────────────────────────────
+let dispatchScheduled = false;
 function dispatchUpdate() {
-  if (typeof window !== 'undefined') window.dispatchEvent(new Event('bill-store-update'));
+  if (typeof window === 'undefined') return;
+  if (dispatchScheduled) return;
+  dispatchScheduled = true;
+  queueMicrotask(() => {
+    dispatchScheduled = false;
+    window.dispatchEvent(new Event('bill-store-update'));
+  });
 }
 
 export async function saveBills(bills: Bill[]): Promise<boolean> {

@@ -68,11 +68,24 @@ function patch(delta: Partial<StoreSnapshot>) {
 }
 
 function readLocal() {
+  const b = getBills();
+  const d = getDrivers();
+  const bk = getBanks();
+  const s = getSummaries();
+  if (
+    currentSnapshot.bills === b &&
+    currentSnapshot.drivers === d &&
+    currentSnapshot.banks === bk &&
+    currentSnapshot.summaries === s &&
+    currentSnapshot.loading === false
+  ) {
+    return;
+  }
   patch({
-    bills: getBills(),
-    drivers: getDrivers(),
-    banks: getBanks(),
-    summaries: getSummaries(),
+    bills: b,
+    drivers: d,
+    banks: bk,
+    summaries: s,
     loading: false,
   });
 }

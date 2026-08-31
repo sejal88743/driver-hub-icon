@@ -249,17 +249,19 @@ export default function Dashboard() {
   useEffect(() => { localStorage.setItem('vitratrack_dash_date', dashDate); }, [dashDate]);
 
   // ── Draft auto-save: save form state to localStorage whenever user is mid-entry ──
-  // Only saves when a bill is selected. Cleared on successful save (handleReset).
-  // This ensures data survives sudden power cuts / forced page closes.
+  // Debounced by 400ms so typing digits doesn't freeze the main thread on every keypress.
   useEffect(() => {
     if (!selectedBillNo) return;
-    const draft = {
-      dashDate, selectedBillNo, selectedDriver,
-      cashAmt, upiAmt, chqAmt,
-      chequeNo, bankName, chequeDate, chqDateDD,
-      paymentMode, confirmInput, recDateOverride,
-    };
-    try { localStorage.setItem('vt_dash_draft', JSON.stringify(draft)); } catch {}
+    const timer = setTimeout(() => {
+      const draft = {
+        dashDate, selectedBillNo, selectedDriver,
+        cashAmt, upiAmt, chqAmt,
+        chequeNo, bankName, chequeDate, chqDateDD,
+        paymentMode, confirmInput, recDateOverride,
+      };
+      try { localStorage.setItem('vt_dash_draft', JSON.stringify(draft)); } catch {}
+    }, 400);
+    return () => clearTimeout(timer);
   }, [selectedBillNo, selectedDriver, cashAmt, upiAmt, chqAmt, chequeNo, bankName, chequeDate, chqDateDD, paymentMode, confirmInput, recDateOverride, dashDate]);
 
   // When date changes, load owner entries for that date from Supabase.
@@ -429,8 +431,8 @@ export default function Dashboard() {
 
   const selectedBill = useMemo(() => {
     if (!selectedBillNo) return undefined;
-    return billMap.get(selectedBillNo) || getBills().find(b => b.id === selectedBillNo || b.billNo === selectedBillNo);
-  }, [billMap, selectedBillNo, bills]);
+    return billMap.get(selectedBillNo);
+  }, [billMap, selectedBillNo]);
   const _selMode = (selectedBill?.paymentMode || '').toLowerCase();
   const hasSelMoneyRec = (Number(selectedBill?.cashAmount) || 0) > 0 || (Number(selectedBill?.upiAmount) || 0) > 0 || (Number(selectedBill?.chequeAmount) || 0) > 0 || (Number(selectedBill?.collectedAmount) || 0) > 0;
   const hasSelRecDate = !!selectedBill?.paymentDate && selectedBill.paymentDate.trim() !== '' && selectedBill.paymentDate !== '—';
