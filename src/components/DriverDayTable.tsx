@@ -1076,10 +1076,10 @@ export default function DriverDayTable({ bills, selectedDriver, displayDate, onS
           { label: 'FBR',     amt: totals.fbr,        cnt: counts.fbr,          amtColor: 'text-destructive',  cntColor: 'text-destructive/70' },
           { label: 'D.PEND',  amt: totals.delPending, cnt: counts.delPending,   amtColor: 'text-orange-600',   cntColor: 'text-orange-500' },
         ] as { label: string; amt: number | null; cnt: number; amtColor: string; cntColor: string }[]).map(({ label, amt, cnt, amtColor, cntColor }) => (
-          <div key={label} className="bg-card flex flex-col items-center justify-center py-1 px-0.5 gap-0">
-            <span className="text-[7px] font-black uppercase text-muted-foreground leading-none">{label}</span>
-            {amt !== null && <span className={`text-[10px] font-black leading-tight ${amtColor}`}>₹{amt.toLocaleString('en-IN')}</span>}
-            <span className={`text-[9px] font-black leading-none ${cntColor}`}>{cnt}<span className="text-[7px] font-black text-muted-foreground"> bills</span></span>
+          <div key={label} className={cn("bg-card flex flex-col items-center justify-center py-1 px-0.5 gap-0", isDriverMode && "py-0.5")}>
+            <span className="text-[7.5px] sm:text-[8px] font-black uppercase text-muted-foreground leading-none">{label}</span>
+            {amt !== null && <span className={cn("text-[10.5px] sm:text-[11px] font-black leading-tight", amtColor)}>₹{amt.toLocaleString('en-IN')}</span>}
+            <span className={cn("text-[9px] font-black leading-none", cntColor)}>{cnt}<span className="text-[7px] font-black text-muted-foreground"> bills</span></span>
           </div>
         ))}
       </div>
@@ -1245,12 +1245,15 @@ export default function DriverDayTable({ bills, selectedDriver, displayDate, onS
         </table>
       </div>
 
-      <div className="p-3 border-t border-border bg-card flex gap-2">
+      <div className={cn("p-3 border-t border-border bg-card flex gap-2", isDriverMode && "p-2 gap-1.5")}>
         <Button 
           onClick={() => setShowCalculator(true)} 
-          className="flex-1 h-11 rounded-2xl bg-emerald-600 hover:bg-emerald-700 text-white font-black uppercase text-xs tracking-widest shadow-lg flex items-center justify-center gap-2 transition-transform active:scale-95"
+          className={cn(
+            "flex-1 rounded-2xl bg-emerald-600 hover:bg-emerald-700 text-white font-black uppercase tracking-wider shadow-md flex items-center justify-center gap-1.5 transition-transform active:scale-95",
+            isDriverMode ? "h-9 rounded-xl text-[11px]" : "h-11 text-xs tracking-widest"
+          )}
         >
-          <Calculator className="w-4 h-4" />
+          <Calculator className="w-3.5 h-3.5" />
           Cash Breakdown
         </Button>
         {getRole() === 'owner' && (
@@ -1264,9 +1267,12 @@ export default function DriverDayTable({ bills, selectedDriver, displayDate, onS
         )}
         <Button
           onClick={generatePDF}
-          className="flex-1 h-11 rounded-2xl bg-rose-600 hover:bg-rose-700 text-white font-black uppercase text-xs tracking-widest shadow-lg flex items-center justify-center gap-2 transition-transform active:scale-95"
+          className={cn(
+            "flex-1 rounded-2xl bg-rose-600 hover:bg-rose-700 text-white font-black uppercase tracking-wider shadow-md flex items-center justify-center gap-1.5 transition-transform active:scale-95",
+            isDriverMode ? "h-9 rounded-xl text-[11px]" : "h-11 text-xs tracking-widest"
+          )}
         >
-          <FileText className="w-4 h-4" />
+          <FileText className="w-3.5 h-3.5" />
           PDF Download
         </Button>
       </div>

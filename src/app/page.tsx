@@ -2162,6 +2162,21 @@ export default function Dashboard() {
     const netAmt = selectedBill?.billNetAmt;
     const recDate = isDriverRole ? getTodayISO() : recDateParam;
 
+    // Driver mode Cheque validation: Cheque No and Cheque Date are compulsory when Cheque Amount > 0
+    if (isDriverRole && Number(chqAmt) > 0) {
+      if (!chequeNo.trim()) {
+        setSaveError('Cheque No compulsory hai!');
+        setTimeout(() => chequeNoRef.current?.focus(), 40);
+        return;
+      }
+      const hasDate = chqDateDD.trim().length >= 2 || (chequeDate && chequeDate.trim().length >= 4);
+      if (!hasDate) {
+        setSaveError('Cheque Date compulsory hai!');
+        setTimeout(() => chqDateRef.current?.focus(), 40);
+        return;
+      }
+    }
+
     const isMoc = isMocBill(selectedBillNo, selectedBill);
     // MOC bills: ALWAYS save directly without Chain Payment (overflow) or Line Cut popup
     if (isMoc) {
@@ -2189,6 +2204,19 @@ export default function Dashboard() {
   // Entry point for the Save button/Enter key. Open Save Time Popup with editable REC DATE.
   function handleSaveClick() {
     if (getRole() === 'driver' || isDriverMode) {
+      if (Number(chqAmt) > 0) {
+        if (!chequeNo.trim()) {
+          setSaveError('Cheque No compulsory hai!');
+          setTimeout(() => chequeNoRef.current?.focus(), 40);
+          return;
+        }
+        const hasDate = chqDateDD.trim().length >= 2 || (chequeDate && chequeDate.trim().length >= 4);
+        if (!hasDate) {
+          setSaveError('Cheque Date compulsory hai!');
+          setTimeout(() => chqDateRef.current?.focus(), 40);
+          return;
+        }
+      }
       proceedToSave(getTodayISO());
       return;
     }
@@ -2234,6 +2262,7 @@ export default function Dashboard() {
     setPaymentMode('');
     setConfirmInput('');
     setDelPendingDriver('');
+    setDriverKeypadTarget('cash');
     setEditLocked(true);
     setRecDateInput(dashDate);
     setRecDateOverride(isoToDisplay(dashDate));
@@ -2514,12 +2543,18 @@ Kripya party se is bill ka payment collection coordinate karein.`;
   // Paid/Protected-bill editing follows Admin > Users > Edit. Back Date remains date-only.
   const userCannotEditReceivedBill = isUserRole && isProtectedBill && !userPerms.canEdit;
 
-  // Cheque valid: chequeNo required (>=3 digits); bank required for owner/user, optional for driver
+  // Cheque valid:
+  // Driver mode: Cheque No (>=1) and Cheque Date (DD/MM >= 2) are COMPULSORY; Bank is OPTIONAL
+  // Owner/User mode: Cheque No (>=3) and Bank Name are COMPULSORY
   const chqAmt_num = Number(chqAmt);
+  const isChqDateFilled = chqDateDD.trim().length >= 2 || (!!chequeDate && chequeDate.trim().length >= 4);
+  const isChqNoFilled = chequeNo.trim().length >= 1;
   const chqValid = chqAmt_num <= 0 || (
-    chequeNo.trim().length >= 3 &&
-    (isDriverMode || !!bankName.trim())
+    isDriverMode
+      ? (isChqNoFilled && isChqDateFilled)
+      : (chequeNo.trim().length >= 3 && !!bankName.trim())
   );
+
 
   // Cheque metadata-only update: editLocked bill or received bill with existing cheque details updated — allow saving
   // just chequeNo + chequeDate + bankName without touching amounts
@@ -2714,66 +2749,70 @@ Kripya party se is bill ka payment collection coordinate karein.`;
               );
             })()}
 
-            {/* Mandatory Driver Downloads Indicator (TPL & PDF RPT) */}
-            <Link
-              to="/driver"
-              className="flex items-center gap-1.5 bg-black/25 hover:bg-black/35 border border-white/20 px-2 py-1 rounded-lg shrink-0 transition-all cursor-pointer shadow-inner"
-              title={`Driver Downloads (${displayDate}):\n• TPL Assignment: ${downloadStatus.tplDownloaded ? '✓ DOWNLOADED (GREEN)' : '✗ NOT DOWNLOADED (RED)'}\n• PDF RPT: ${downloadStatus.rptDownloaded ? '✓ DOWNLOADED (GREEN)' : '✗ NOT DOWNLOADED (RED)'}\nClick to open Driver Center`}
-            >
-              {/* TPL Indicator */}
-              <div className="flex items-center gap-1" title={downloadStatus.tplDownloaded ? `TPL: Downloaded` : `TPL: Download Pending`}>
-                <span className="text-[8px] font-black text-primary-foreground/90 uppercase tracking-tight">TPL</span>
-                <span
-                  className={cn(
-                    "w-2 h-2 rounded-full shrink-0 transition-all",
-                    downloadStatus.tplDownloaded
-                      ? "bg-emerald-400 shadow-[0_0_8px_#34d399] animate-pulse ring-1 ring-emerald-300"
-                      : "bg-red-500 shadow-[0_0_8px_#ef4444] animate-pulse ring-1 ring-red-400"
-                  )}
-                />
-              </div>
-
-              <span className="w-px h-3 bg-white/25 shrink-0" />
-
-              {/* RPT Indicator */}
-              <div className="flex items-center gap-1" title={downloadStatus.rptDownloaded ? `RPT: Downloaded` : `RPT: Download Pending`}>
-                <span className="text-[8px] font-black text-primary-foreground/90 uppercase tracking-tight">RPT</span>
-                <span
-                  className={cn(
-                    "w-2 h-2 rounded-full shrink-0 transition-all",
-                    downloadStatus.rptDownloaded
-                      ? "bg-emerald-400 shadow-[0_0_8px_#34d399] animate-pulse ring-1 ring-emerald-300"
-                      : "bg-red-500 shadow-[0_0_8px_#ef4444] animate-pulse ring-1 ring-red-400"
-                  )}
-                />
-              </div>
-            </Link>
-
-            {/* Auto Credit WhatsApp Dispatch Toggle (ON / OFF) */}
-            <button
-              type="button"
-              onClick={toggleAutoCreditWa}
-              className={cn(
-                "flex items-center gap-1 px-1.5 py-1 rounded-lg border shrink-0 transition-all cursor-pointer shadow-inner select-none",
-                autoCreditWa
-                  ? "bg-emerald-950/50 hover:bg-emerald-900/60 border-emerald-400/50 text-emerald-200 ring-1 ring-emerald-400/30"
-                  : "bg-black/30 hover:bg-black/40 border-white/20 text-primary-foreground/70"
-              )}
-              title={`Credit Auto WhatsApp: ${autoCreditWa ? 'ON (Auto Send Enabled)' : 'OFF (Auto Send Disabled)'}\nClick to toggle automatic WhatsApp message when saving Credit bills`}
-            >
-              <MessageCircle className={cn("w-3 h-3 shrink-0", autoCreditWa ? "text-emerald-400" : "text-primary-foreground/50")} />
-              <span className="text-[8px] font-black uppercase tracking-tight hidden sm:inline">CR WA</span>
-              <span
-                className={cn(
-                  "text-[7.5px] font-black px-1 py-0.5 rounded leading-none transition-all",
-                  autoCreditWa
-                    ? "bg-emerald-500 text-white shadow-[0_0_6px_#34d399]"
-                    : "bg-red-500/80 text-white"
-                )}
+            {/* Mandatory Driver Downloads Indicator (TPL & PDF RPT) - Office/Owner only */}
+            {!isDriverMode && (
+              <Link
+                to="/driver"
+                className="flex items-center gap-1.5 bg-black/25 hover:bg-black/35 border border-white/20 px-2 py-1 rounded-lg shrink-0 transition-all cursor-pointer shadow-inner"
+                title={`Driver Downloads (${displayDate}):\n• TPL Assignment: ${downloadStatus.tplDownloaded ? '✓ DOWNLOADED (GREEN)' : '✗ NOT DOWNLOADED (RED)'}\n• PDF RPT: ${downloadStatus.rptDownloaded ? '✓ DOWNLOADED (GREEN)' : '✗ NOT DOWNLOADED (RED)'}\nClick to open Driver Center`}
               >
-                {autoCreditWa ? 'ON' : 'OFF'}
-              </span>
-            </button>
+                {/* TPL Indicator */}
+                <div className="flex items-center gap-1" title={downloadStatus.tplDownloaded ? `TPL: Downloaded` : `TPL: Download Pending`}>
+                  <span className="text-[8px] font-black text-primary-foreground/90 uppercase tracking-tight">TPL</span>
+                  <span
+                    className={cn(
+                      "w-2 h-2 rounded-full shrink-0 transition-all",
+                      downloadStatus.tplDownloaded
+                        ? "bg-emerald-400 shadow-[0_0_8px_#34d399] animate-pulse ring-1 ring-emerald-300"
+                        : "bg-red-500 shadow-[0_0_8px_#ef4444] animate-pulse ring-1 ring-red-400"
+                    )}
+                  />
+                </div>
+
+                <span className="w-px h-3 bg-white/25 shrink-0" />
+
+                {/* RPT Indicator */}
+                <div className="flex items-center gap-1" title={downloadStatus.rptDownloaded ? `RPT: Downloaded` : `RPT: Download Pending`}>
+                  <span className="text-[8px] font-black text-primary-foreground/90 uppercase tracking-tight">RPT</span>
+                  <span
+                    className={cn(
+                      "w-2 h-2 rounded-full shrink-0 transition-all",
+                      downloadStatus.rptDownloaded
+                        ? "bg-emerald-400 shadow-[0_0_8px_#34d399] animate-pulse ring-1 ring-emerald-300"
+                        : "bg-red-500 shadow-[0_0_8px_#ef4444] animate-pulse ring-1 ring-red-400"
+                    )}
+                  />
+                </div>
+              </Link>
+            )}
+
+            {/* Auto Credit WhatsApp Dispatch Toggle (ON / OFF) - Office/Owner only */}
+            {!isDriverMode && (
+              <button
+                type="button"
+                onClick={toggleAutoCreditWa}
+                className={cn(
+                  "flex items-center gap-1 px-1.5 py-1 rounded-lg border shrink-0 transition-all cursor-pointer shadow-inner select-none",
+                  autoCreditWa
+                    ? "bg-emerald-950/50 hover:bg-emerald-900/60 border-emerald-400/50 text-emerald-200 ring-1 ring-emerald-400/30"
+                    : "bg-black/30 hover:bg-black/40 border-white/20 text-primary-foreground/70"
+                )}
+                title={`Credit Auto WhatsApp: ${autoCreditWa ? 'ON (Auto Send Enabled)' : 'OFF (Auto Send Disabled)'}\nClick to toggle automatic WhatsApp message when saving Credit bills`}
+              >
+                <MessageCircle className={cn("w-3 h-3 shrink-0", autoCreditWa ? "text-emerald-400" : "text-primary-foreground/50")} />
+                <span className="text-[8px] font-black uppercase tracking-tight hidden sm:inline">CR WA</span>
+                <span
+                  className={cn(
+                    "text-[7.5px] font-black px-1 py-0.5 rounded leading-none transition-all",
+                    autoCreditWa
+                      ? "bg-emerald-500 text-white shadow-[0_0_6px_#34d399]"
+                      : "bg-red-500/80 text-white"
+                  )}
+                >
+                  {autoCreditWa ? 'ON' : 'OFF'}
+                </span>
+              </button>
+            )}
           </div>
 
           {driverStats && (
@@ -2857,46 +2896,55 @@ Kripya party se is bill ka payment collection coordinate karein.`;
                   ref={billInputRef}
                   type="text"
                   inputMode="numeric"
-                  placeholder={selectedDriver ? "ENTER BILL NO OR PARTY NAME..." : "ENTER BILL NO OR PARTY NAME..."}
+                  pattern="[0-9]*"
+                  placeholder={isDriverMode ? "ENTER BILL NO..." : "ENTER BILL NO OR PARTY NAME..."}
                   value={searchQuery}
                   onChange={(e) => { setSearchQuery(e.target.value); setShowDropdown(true); setDropdownIndex(0); if (!e.target.value) { setSelectedBillNo(''); setDebouncedQuery(''); } }}
                   onFocus={() => setShowDropdown(true)}
                   onKeyDown={onKeyDownBillSearch}
-                  className="w-full h-9 pl-4 pr-36 bg-muted/50 rounded-2xl border-2 border-primary/30 text-[19px] sm:text-[20px] font-black tracking-wide uppercase focus:outline-none focus:ring-4 focus:ring-primary/20 shadow-md"
-                />
-                <button
-                  type="button"
-                  onClick={() => setShowMocModal(true)}
-                  title="Commission MOC Month select karein"
-                  className="absolute right-24 px-2 py-1.5 rounded-xl transition-all font-black text-[10px] shrink-0 z-10 bg-emerald-600 hover:bg-emerald-700 text-white shadow-sm flex items-center gap-0.5 uppercase"
-                >
-                  <span>MOC</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setWakeMode(v => !v)}
-                  title='"HEY HUL" bolkar voice entry chalu karein'
                   className={cn(
-                    "absolute right-12 px-2 py-1.5 rounded-xl transition-all font-black text-[10px] shrink-0 z-10",
-                    wakeMode
-                      ? "bg-emerald-600 text-white animate-pulse ring-2 ring-emerald-300"
-                      : "bg-muted text-muted-foreground hover:bg-muted/70"
+                    isDriverMode
+                      ? "w-full h-8.5 pl-3 pr-10 bg-muted/50 rounded-xl border border-primary/40 text-[16px] font-black tracking-wide uppercase focus:outline-none focus:ring-2 focus:ring-primary/30"
+                      : "w-full h-9 pl-4 pr-36 bg-muted/50 rounded-2xl border-2 border-primary/30 text-[19px] sm:text-[20px] font-black tracking-wide uppercase focus:outline-none focus:ring-4 focus:ring-primary/20 shadow-md"
                   )}
-                >
-                  HEY HUL
-                </button>
+                />
+                {!isDriverMode && (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => setShowMocModal(true)}
+                      title="Commission MOC Month select karein"
+                      className="absolute right-24 px-2 py-1.5 rounded-xl transition-all font-black text-[10px] shrink-0 z-10 bg-emerald-600 hover:bg-emerald-700 text-white shadow-sm flex items-center gap-0.5 uppercase"
+                    >
+                      <span>MOC</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setWakeMode(v => !v)}
+                      title='"HEY HUL" bolkar voice entry chalu karein'
+                      className={cn(
+                        "absolute right-12 px-2 py-1.5 rounded-xl transition-all font-black text-[10px] shrink-0 z-10",
+                        wakeMode
+                          ? "bg-emerald-600 text-white animate-pulse ring-2 ring-emerald-300"
+                          : "bg-muted text-muted-foreground hover:bg-muted/70"
+                      )}
+                    >
+                      HEY HUL
+                    </button>
+                  </>
+                )}
                 <button
                   type="button"
                   onClick={toggleVoiceSearch}
                   title={isListening ? "Listening... Click to stop" : "Voice Search (Bolein Bill No)"}
                   className={cn(
-                    "absolute right-2 p-2 rounded-xl transition-all flex items-center justify-center gap-1 font-black text-xs shrink-0 z-10",
+                    "absolute right-1.5 p-1.5 rounded-xl transition-all flex items-center justify-center gap-1 font-black text-xs shrink-0 z-10",
                     isListening
                       ? "bg-red-600 text-white animate-pulse ring-4 ring-red-300 shadow-md"
                       : "bg-primary/10 text-primary hover:bg-primary/20"
                   )}
                 >
-                  {isListening ? <MicOff className="w-5 h-5" /> : <Mic className="w-5 h-5" />}
+                  {isListening ? <MicOff className="w-4 h-4" /> : <Mic className="w-4 h-4" />}
                 </button>
 
               </div>
@@ -3130,137 +3178,150 @@ Kripya party se is bill ka payment collection coordinate karein.`;
             : selectedBill.paymentMode || '';
           const disObj2 = calculateBillDiscountPercent(selectedBill);
           return (
-            <div className="px-2 mt-3 space-y-3 animate-in slide-in-from-top-2 duration-200">
+            <div className={cn("px-2 mt-3 space-y-3 animate-in slide-in-from-top-2 duration-200", isDriverMode && "px-1 mt-1 space-y-1.5")}>
               {/* ── Bill Info Card ── */}
-              <div className="bg-card border border-border rounded-2xl p-3 sm:p-4 shadow-sm space-y-2.5">
+              <div className={cn("bg-card border border-border rounded-2xl p-3 sm:p-4 shadow-sm space-y-2.5", isDriverMode && "p-2 rounded-xl space-y-1.5")}>
 
                 {/* ── Row 1: Bill No + Party Name + Status Badge ── */}
-                <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border/40 pb-2">
-                  <div className="flex items-center gap-3 flex-wrap min-w-0">
-                    <span className="text-[22px] sm:text-[25px] font-black text-primary uppercase tracking-wider">{selectedBill.billNo}</span>
-                    <span className="text-[17px] sm:text-[19px] font-black text-foreground uppercase">{selectedBill.partyName}</span>
+                <div className="flex flex-wrap items-center justify-between gap-1.5 border-b border-border/40 pb-1.5">
+                  <div className="flex items-center gap-2 flex-wrap min-w-0">
+                    <span className={cn("text-[22px] sm:text-[25px] font-black text-primary uppercase tracking-wider", isDriverMode && "text-[18px] sm:text-[20px]")}>{selectedBill.billNo}</span>
+                    <span className={cn("text-[17px] sm:text-[19px] font-black text-foreground uppercase", isDriverMode && "text-[13px] sm:text-[14px]")}>{selectedBill.partyName}</span>
                   </div>
-                  <div className="flex items-center gap-2 shrink-0">
-                    <span className="text-[14px] font-bold text-amber-950 dark:text-amber-200 bg-amber-100 dark:bg-amber-950/70 border border-amber-300 dark:border-amber-700 px-2.5 py-1 rounded-xl shadow-xs shrink-0 whitespace-nowrap">
+                  <div className="flex items-center gap-1.5 shrink-0">
+                    <span className={cn("text-[14px] font-bold text-amber-950 dark:text-amber-200 bg-amber-100 dark:bg-amber-950/70 border border-amber-300 dark:border-amber-700 px-2.5 py-1 rounded-xl shadow-xs shrink-0 whitespace-nowrap", isDriverMode && "text-[10.5px] px-1.5 py-0.5 rounded-lg font-black")}>
                       {disObj2.disText}
                     </span>
-                    <span className={cn("text-[13px] sm:text-[14px] font-black px-3.5 py-1 rounded-full uppercase shrink-0 shadow-xs", statusCls2)}>{statusLabel2}</span>
+                    <span className={cn("text-[13px] sm:text-[14px] font-black px-3.5 py-1 rounded-full uppercase shrink-0 shadow-xs", statusCls2, isDriverMode && "text-[11px] px-2 py-0.5 font-black")}>{statusLabel2}</span>
                   </div>
                 </div>
 
-                {/* ── Row 2: DRIVER NAME · SALSMAN NAME · REC AMOUNT · PAYMENT MODE (Clean Badges with Option Values Only) ── */}
-                <div className="flex flex-wrap items-center gap-2 pt-0.5">
+                {/* ── Row 2: DRIVER NAME · SALESMAN NAME · REC AMOUNT · PAYMENT MODE ── */}
+                <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
                   {/* DRIVER NAME */}
                   {selectedBill.driverName && (
-                    <div className="flex items-center bg-amber-100 dark:bg-amber-950/70 border border-amber-300 dark:border-amber-700 text-amber-950 dark:text-amber-200 px-3 py-1.5 rounded-xl shadow-xs">
-                      <span className="text-[15px] sm:text-[16px] font-black uppercase">{selectedBill.driverName}</span>
+                    <div className={cn("flex items-center bg-amber-100 dark:bg-amber-950/70 border border-amber-300 dark:border-amber-700 text-amber-950 dark:text-amber-200 px-3 py-1.5 rounded-xl shadow-xs", isDriverMode && "px-2 py-0.5 rounded-lg text-[11px]")}>
+                      <span className={cn("text-[15px] sm:text-[16px] font-black uppercase", isDriverMode && "text-[11px]")}>{selectedBill.driverName}</span>
                     </div>
                   )}
 
                   {/* SALESMAN NAME */}
                   {selectedBill.salespersonName && (
-                    <div className="flex items-center bg-lime-200/90 dark:bg-lime-950/70 border border-lime-400 dark:border-lime-700 text-lime-950 dark:text-lime-200 px-3 py-1.5 rounded-xl shadow-xs">
-                      <span className="text-[15px] sm:text-[16px] font-black uppercase">{selectedBill.salespersonName}</span>
+                    <div className={cn("flex items-center bg-lime-200/90 dark:bg-lime-950/70 border border-lime-400 dark:border-lime-700 text-lime-950 dark:text-lime-200 px-3 py-1.5 rounded-xl shadow-xs", isDriverMode && "px-2 py-0.5 rounded-lg text-[11px]")}>
+                      <span className={cn("text-[15px] sm:text-[16px] font-black uppercase", isDriverMode && "text-[11px]")}>{selectedBill.salespersonName}</span>
                     </div>
                   )}
 
                   {/* REC AMOUNT */}
                   {collected2 > 0 && (
-                    <div className="flex items-center bg-emerald-100 dark:bg-emerald-950/70 border border-emerald-300 dark:border-emerald-700 text-emerald-950 dark:text-emerald-200 px-3 py-1.5 rounded-xl shadow-xs">
-                      <span className="text-[15px] sm:text-[16px] font-black">₹{collected2.toLocaleString('en-IN')}</span>
+                    <div className={cn("flex items-center bg-emerald-100 dark:bg-emerald-950/70 border border-emerald-300 dark:border-emerald-700 text-emerald-950 dark:text-emerald-200 px-3 py-1.5 rounded-xl shadow-xs", isDriverMode && "px-2 py-0.5 rounded-lg text-[11px]")}>
+                      <span className={cn("text-[15px] sm:text-[16px] font-black", isDriverMode && "text-[11px]")}>₹{collected2.toLocaleString('en-IN')}</span>
                     </div>
                   )}
 
                   {/* PAYMENT MODE */}
                   {(modeDisplay || isPaidMode2 || isFBR2 || isCredit2 || isDelPend2) && (
-                    <div className="flex items-center bg-blue-100 dark:bg-blue-950/70 border border-blue-300 dark:border-blue-700 text-blue-950 dark:text-blue-200 px-3 py-1.5 rounded-xl shadow-xs">
-                      <span className="text-[15px] sm:text-[16px] font-black uppercase">
+                    <div className={cn("flex items-center bg-blue-100 dark:bg-blue-950/70 border border-blue-300 dark:border-blue-700 text-blue-950 dark:text-blue-200 px-3 py-1.5 rounded-xl shadow-xs", isDriverMode && "px-2 py-0.5 rounded-lg text-[11px]")}>
+                      <span className={cn("text-[15px] sm:text-[16px] font-black uppercase", isDriverMode && "text-[11px]")}>
                         {modeDisplay || (isPaidMode2 ? 'PAID' : isFBR2 ? 'FBR' : isCredit2 ? 'CREDIT' : isDelPend2 ? 'DEL PEND' : 'UNPAID')}
                       </span>
                     </div>
                   )}
 
-                  {/* BILL DATE (if present) */}
+                  {/* BILL DATE */}
                   {(selectedBill.date || selectedBill.deliveryDate) && (
-                    <div className="flex items-center bg-slate-100 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 text-slate-800 dark:text-slate-200 px-2.5 py-1.5 rounded-xl shadow-xs">
-                      <span className="text-[10px] font-black uppercase text-slate-500 dark:text-slate-400 mr-1">BILL:</span>
-                      <span className="text-[14px] font-bold">{selectedBill.date || selectedBill.deliveryDate}</span>
+                    <div className={cn("flex items-center bg-slate-100 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 text-slate-800 dark:text-slate-200 px-2.5 py-1.5 rounded-xl shadow-xs", isDriverMode && "px-2 py-0.5 rounded-lg text-[10px]")}>
+                      <span className="text-[9px] font-black uppercase text-slate-500 dark:text-slate-400 mr-1">BILL:</span>
+                      <span className={cn("text-[14px] font-bold", isDriverMode && "text-[11px] font-black")}>{selectedBill.date || selectedBill.deliveryDate}</span>
                     </div>
                   )}
 
-                  {/* REC DATE (Editable Date Picker) — Displays Supabase saved date, defaults to current date */}
-                  <div className="flex items-center gap-1.5 bg-purple-100 dark:bg-purple-950/70 border border-purple-300 dark:border-purple-700 text-purple-950 dark:text-purple-200 px-2.5 py-1 rounded-xl shadow-xs">
-                    <span className="text-[10px] font-black uppercase text-purple-800 dark:text-purple-300">REC:</span>
-                    <input
-                      type="date"
-                      value={recDateInput || (selectedBill.paymentDate ? displayToIso(selectedBill.paymentDate) : dashDate)}
-                      onChange={e => {
-                        const iso = e.target.value;
-                        setRecDateInput(iso);
-                        const disp = isoToDisplay(iso);
-                        setRecDateOverride(disp);
-                      }}
-                      className="bg-transparent text-[14px] font-bold outline-none cursor-pointer uppercase text-purple-950 dark:text-purple-100"
-                    />
-                  </div>
+                  {/* REC DATE */}
+                  {isDriverMode ? (
+                    <div className="flex items-center gap-1 bg-purple-100 dark:bg-purple-950/70 border border-purple-300 dark:border-purple-700 text-purple-950 dark:text-purple-200 px-2 py-0.5 rounded-lg shadow-xs">
+                      <span className="text-[9px] font-black uppercase text-purple-800 dark:text-purple-300">REC:</span>
+                      <span className="text-[11px] font-black">{displayDate}</span>
+                    </div>
+                  ) : (
+                    <div className="flex items-center gap-1.5 bg-purple-100 dark:bg-purple-950/70 border border-purple-300 dark:border-purple-700 text-purple-950 dark:text-purple-200 px-2.5 py-1 rounded-xl shadow-xs">
+                      <span className="text-[10px] font-black uppercase text-purple-800 dark:text-purple-300">REC:</span>
+                      <input
+                        type="date"
+                        value={recDateInput || (selectedBill.paymentDate ? displayToIso(selectedBill.paymentDate) : dashDate)}
+                        onChange={e => {
+                          const iso = e.target.value;
+                          setRecDateInput(iso);
+                          const disp = isoToDisplay(iso);
+                          setRecDateOverride(disp);
+                        }}
+                        className="bg-transparent text-[14px] font-bold outline-none cursor-pointer uppercase text-purple-950 dark:text-purple-100"
+                      />
+                    </div>
+                  )}
 
-                  {/* WHATSAPP TO SALESPERSON BUTTON */}
-                  <button
-                    type="button"
-                    id="whatsapp-salesperson-btn"
-                    onClick={() => handleSendWhatsAppToSalesperson(selectedBill)}
-                    title={`Send WhatsApp pending bill reminder to ${selectedBill.salespersonName || 'Salesperson'}`}
-                    className="flex items-center gap-1.5 bg-emerald-600 hover:bg-emerald-700 active:scale-95 text-white px-3 py-1.5 rounded-xl shadow-xs font-bold text-[13px] transition-all cursor-pointer shrink-0"
-                  >
-                    <MessageCircle className="w-4 h-4 fill-white/20 text-white" />
-                    <span className="text-[12px] font-black tracking-wide uppercase">WhatsApp</span>
-                  </button>
+                  {/* WHATSAPP TO SALESPERSON BUTTON - Office/Owner only */}
+                  {!isDriverMode && (
+                    <button
+                      type="button"
+                      id="whatsapp-salesperson-btn"
+                      onClick={() => handleSendWhatsAppToSalesperson(selectedBill)}
+                      title={`Send WhatsApp pending bill reminder to ${selectedBill.salespersonName || 'Salesperson'}`}
+                      className="flex items-center gap-1.5 bg-emerald-600 hover:bg-emerald-700 active:scale-95 text-white px-3 py-1.5 rounded-xl shadow-xs font-bold text-[13px] transition-all cursor-pointer shrink-0"
+                    >
+                      <MessageCircle className="w-4 h-4 fill-white/20 text-white" />
+                      <span className="text-[12px] font-black tracking-wide uppercase">WhatsApp</span>
+                    </button>
+                  )}
 
                   {/* CHEQUE NO (if present) */}
                   {selectedBill.chequeNo && (
-                    <div className="flex items-center bg-pink-100 dark:bg-pink-950/70 border border-pink-300 dark:border-pink-700 text-pink-950 dark:text-pink-200 px-2.5 py-1.5 rounded-xl shadow-xs">
-                      <span className="text-[14px] font-bold">{selectedBill.chequeNo}</span>
+                    <div className={cn("flex items-center bg-pink-100 dark:bg-pink-950/70 border border-pink-300 dark:border-pink-700 text-pink-950 dark:text-pink-200 px-2.5 py-1.5 rounded-xl shadow-xs", isDriverMode && "px-2 py-0.5 rounded-lg text-[11px]")}>
+                      <span className={cn("text-[14px] font-bold", isDriverMode && "text-[11px] font-black")}>#{selectedBill.chequeNo}</span>
                     </div>
                   )}
                 </div>
 
                 {/* ── Row 3: Financial Summary (Bill Amt | Line Cut | O/S | Paid) ── */}
-                <div className="flex items-stretch gap-0 rounded-xl overflow-hidden border border-border mt-2">
-                  <div className="flex-1 flex flex-col items-center justify-center py-2 px-1 bg-primary/5">
-                    <span className="text-[9px] font-black text-primary/70 uppercase tracking-wide leading-none mb-0.5">Bill Amt</span>
-                    <span className="text-[16px] sm:text-[17px] font-black text-primary leading-none">
+                <div className="flex items-stretch gap-0 rounded-xl overflow-hidden border border-border mt-1.5">
+                  <div className={cn("flex-1 flex flex-col items-center justify-center py-2 px-1 bg-primary/5", isDriverMode && "py-1")}>
+                    <span className="text-[8px] sm:text-[9px] font-black text-primary/70 uppercase tracking-wide leading-none mb-0.5">Bill Amt</span>
+                    <span className={cn("text-[16px] sm:text-[17px] font-black text-primary leading-none", isDriverMode && "text-[13px] sm:text-[14px]")}>
                       ₹{(isMoc2 ? (collected2 > 0 ? collected2 : (_liveTotal > 0 ? _liveTotal : (selectedBill.billNetAmt || 0))) : (selectedBill.billNetAmt || 0)).toLocaleString('en-IN')}
                     </span>
                   </div>
                   <div className="w-px bg-border" />
-                  <div className="flex-1 flex flex-col items-center justify-center py-2 px-1 bg-red-50 dark:bg-red-950/30">
-                    <span className="text-[9px] font-black text-red-500 uppercase tracking-wide leading-none mb-0.5">Line Cut</span>
-                    <span className="text-[16px] sm:text-[17px] font-black text-red-600 leading-none">₹{lineCut2.toLocaleString('en-IN')}</span>
+                  <div className={cn("flex-1 flex flex-col items-center justify-center py-2 px-1 bg-red-50 dark:bg-red-950/30", isDriverMode && "py-1")}>
+                    <span className="text-[8px] sm:text-[9px] font-black text-red-500 uppercase tracking-wide leading-none mb-0.5">Line Cut</span>
+                    <span className={cn("text-[16px] sm:text-[17px] font-black text-red-600 leading-none", isDriverMode && "text-[13px] sm:text-[14px]")}>₹{lineCut2.toLocaleString('en-IN')}</span>
                   </div>
                   <div className="w-px bg-border" />
-                  <div className="flex-1 flex flex-col items-center justify-center py-2 px-1 bg-orange-50 dark:bg-orange-950/30">
-                    <span className="text-[9px] font-black text-orange-500 uppercase tracking-wide leading-none mb-0.5">O/S Amt</span>
-                    <span className="text-[16px] sm:text-[17px] font-black text-orange-600 leading-none">₹{(isMoc2 ? 0 : Math.max(0, net2 - collected2)).toLocaleString('en-IN')}</span>
+                  <div className={cn("flex-1 flex flex-col items-center justify-center py-2 px-1 bg-orange-50 dark:bg-orange-950/30", isDriverMode && "py-1")}>
+                    <span className="text-[8px] sm:text-[9px] font-black text-orange-500 uppercase tracking-wide leading-none mb-0.5">O/S Amt</span>
+                    <span className={cn("text-[16px] sm:text-[17px] font-black text-orange-600 leading-none", isDriverMode && "text-[13px] sm:text-[14px]")}>₹{(isMoc2 ? 0 : Math.max(0, net2 - collected2)).toLocaleString('en-IN')}</span>
                   </div>
                   <div className="w-px bg-border" />
-                  <div className="flex-1 flex flex-col items-center justify-center py-2 px-1 bg-emerald-50 dark:bg-emerald-950/30">
-                    <span className="text-[9px] font-black text-emerald-600 uppercase tracking-wide leading-none mb-0.5">Paid</span>
-                    <span className="text-[16px] sm:text-[17px] font-black text-emerald-700 leading-none">₹{collected2.toLocaleString('en-IN')}</span>
+                  <div className={cn("flex-1 flex flex-col items-center justify-center py-2 px-1 bg-emerald-50 dark:bg-emerald-950/30", isDriverMode && "py-1")}>
+                    <span className="text-[8px] sm:text-[9px] font-black text-emerald-600 uppercase tracking-wide leading-none mb-0.5">Paid</span>
+                    <span className={cn("text-[16px] sm:text-[17px] font-black text-emerald-700 leading-none", isDriverMode && "text-[13px] sm:text-[14px]")}>₹{collected2.toLocaleString('en-IN')}</span>
                   </div>
                 </div>
               </div>
 
               {/* ── Entry Form ── */}
-              <div className="bg-card border border-border rounded-2xl px-4 pt-3 pb-4 shadow-sm space-y-3">
+              <div className={cn("bg-card border border-border rounded-2xl px-4 pt-3 pb-4 shadow-sm space-y-3", isDriverMode && "p-2 rounded-xl space-y-2")}>
 
-                <div className="grid grid-cols-3 gap-2">
+                <div className="grid grid-cols-3 gap-1.5">
                   <div className="relative">
-                    <div className="absolute inset-y-0 left-0 pl-2.5 flex items-center pointer-events-none text-emerald-600"><Wallet className="w-3.5 h-3.5" /></div>
+                    <div className="absolute inset-y-0 left-0 pl-2 flex items-center pointer-events-none text-emerald-600"><Wallet className="w-3.5 h-3.5" /></div>
                     <input
                       ref={cashInputRef}
-                      type="number" inputMode="numeric" placeholder="CASH"
+                      type="number"
+                      inputMode="decimal"
+                      pattern="[0-9]*"
+                      placeholder="CASH"
                       disabled={isBillCurrentlyLocked || userCannotEditReceivedBill}
-                      value={cashAmt} onChange={e => setCashAmt(e.target.value)}
+                      value={cashAmt}
+                      onChange={e => setCashAmt(e.target.value)}
                       onKeyDown={e => {
                         if (e.key === '+' || e.code === 'NumpadAdd') { e.preventDefault(); handleReset(); }
                         else if (e.altKey && e.key === '1') { e.preventDefault(); if (isBillCurrentlyLocked || userCannotEditReceivedBill) return; clearReceivedAmounts(); setShowFbrReasonModal(true); setPaymentMode('FBR'); }
@@ -3270,17 +3331,23 @@ Kripya party se is bill ka payment collection coordinate karein.`;
                         else if (e.key === 'ArrowUp') { e.preventDefault(); billInputRef.current?.focus(); billInputRef.current?.select(); }
                         else if (e.key === 'Escape') { e.preventDefault(); handleReset(); }
                       }}
-                      className="w-full h-10 pl-8 pr-2 bg-muted/50 rounded-xl text-[13px] font-black focus:ring-2 focus:ring-emerald-500/30 uppercase outline-none disabled:opacity-50 border border-border/30"
-                      style={{ fontSize: '18px', fontFamily: 'Verdana' }}
+                      className={cn(
+                        "w-full pl-7 pr-1 bg-muted/50 rounded-xl text-[15px] font-black focus:ring-2 focus:ring-emerald-500/40 uppercase outline-none disabled:opacity-50 border border-border/40 text-center",
+                        isDriverMode ? "h-8.5 text-[15px]" : "h-10 text-[18px]"
+                      )}
                     />
                   </div>
                   <div className="relative">
-                    <div className="absolute inset-y-0 left-0 pl-2.5 flex items-center pointer-events-none text-blue-600"><Smartphone className="w-3.5 h-3.5" /></div>
+                    <div className="absolute inset-y-0 left-0 pl-2 flex items-center pointer-events-none text-blue-600"><Smartphone className="w-3.5 h-3.5" /></div>
                     <input
                       ref={upiInputRef}
-                      type="number" inputMode="numeric" placeholder="GPAY"
+                      type="number"
+                      inputMode="decimal"
+                      pattern="[0-9]*"
+                      placeholder="GPAY"
                       disabled={isBillCurrentlyLocked || userCannotEditReceivedBill}
-                      value={upiAmt} onChange={e => setUpiAmt(e.target.value)}
+                      value={upiAmt}
+                      onChange={e => setUpiAmt(e.target.value)}
                       onKeyDown={e => {
                         if (e.key === '+' || e.code === 'NumpadAdd') { e.preventDefault(); handleReset(); }
                         else if (e.altKey && e.key === '1') { e.preventDefault(); if (isBillCurrentlyLocked || userCannotEditReceivedBill) return; clearReceivedAmounts(); setShowFbrReasonModal(true); setPaymentMode('FBR'); }
@@ -3290,17 +3357,23 @@ Kripya party se is bill ka payment collection coordinate karein.`;
                         else if (e.key === 'ArrowUp') { e.preventDefault(); cashInputRef.current?.focus(); cashInputRef.current?.select(); }
                         else if (e.key === 'Escape') { e.preventDefault(); handleReset(); }
                       }}
-                      className="w-full h-10 pl-8 pr-2 bg-muted/50 rounded-xl text-[13px] font-black focus:ring-2 focus:ring-blue-500/30 uppercase outline-none disabled:opacity-50 border border-border/30"
-                      style={{ fontSize: '16px', fontFamily: 'Times New Roman' }}
+                      className={cn(
+                        "w-full pl-7 pr-1 bg-muted/50 rounded-xl text-[15px] font-black focus:ring-2 focus:ring-blue-500/40 uppercase outline-none disabled:opacity-50 border border-border/40 text-center",
+                        isDriverMode ? "h-8.5 text-[15px]" : "h-10 text-[16px]"
+                      )}
                     />
                   </div>
                   <div className="relative">
-                    <div className="absolute inset-y-0 left-0 pl-2.5 flex items-center pointer-events-none text-violet-600"><Landmark className="w-3.5 h-3.5" /></div>
+                    <div className="absolute inset-y-0 left-0 pl-2 flex items-center pointer-events-none text-violet-600"><Landmark className="w-3.5 h-3.5" /></div>
                     <input
                       ref={chqInputRef}
-                      type="number" inputMode="numeric" placeholder="CHQ"
+                      type="number"
+                      inputMode="decimal"
+                      pattern="[0-9]*"
+                      placeholder="CHQ"
                       disabled={isBillCurrentlyLocked || userCannotEditReceivedBill}
-                      value={chqAmt} onChange={e => setChqAmt(e.target.value)}
+                      value={chqAmt}
+                      onChange={e => setChqAmt(e.target.value)}
                       onKeyDown={e => {
                         if (e.key === '+' || e.code === 'NumpadAdd') { e.preventDefault(); handleReset(); }
                         else if (e.altKey && e.key === '1') { e.preventDefault(); if (isBillCurrentlyLocked || userCannotEditReceivedBill) return; clearReceivedAmounts(); setShowFbrReasonModal(true); setPaymentMode('FBR'); }
@@ -3315,8 +3388,10 @@ Kripya party se is bill ka payment collection coordinate karein.`;
                         else if (e.key === 'ArrowUp') { e.preventDefault(); upiInputRef.current?.focus(); upiInputRef.current?.select(); }
                         else if (e.key === 'Escape') { e.preventDefault(); handleReset(); }
                       }}
-                      className="w-full h-10 pl-8 pr-2 bg-muted/50 rounded-xl text-[13px] font-black focus:ring-2 focus:ring-violet-500/30 uppercase outline-none disabled:opacity-50 border border-border/30"
-                      style={{ fontSize: '17px', fontFamily: 'Times New Roman' }}
+                      className={cn(
+                        "w-full pl-7 pr-1 bg-muted/50 rounded-xl text-[15px] font-black focus:ring-2 focus:ring-violet-500/40 uppercase outline-none disabled:opacity-50 border border-border/40 text-center",
+                        isDriverMode ? "h-8.5 text-[15px]" : "h-10 text-[17px]"
+                      )}
                     />
                   </div>
                 </div>
@@ -3324,15 +3399,19 @@ Kripya party se is bill ka payment collection coordinate karein.`;
                 {Number(chqAmt) > 0 && (
                   <div className="animate-in slide-in-from-top-1 duration-150">
                     {/* CHQ NO · CHQ DATE (DD only) · BANK — all 3 in one row */}
-                    <div className="grid grid-cols-3 gap-2">
+                    <div className="grid grid-cols-3 gap-1.5">
                       {/* CHQ NO */}
                       <div className="relative">
-                        <div className="absolute inset-y-0 left-0 pl-2.5 flex items-center pointer-events-none text-muted-foreground"><Hash className="w-3.5 h-3.5" /></div>
+                        <div className="absolute inset-y-0 left-0 pl-2 flex items-center pointer-events-none text-muted-foreground"><Hash className="w-3.5 h-3.5" /></div>
                         <input
                           ref={chequeNoRef}
-                          type="text" inputMode="numeric" placeholder="CHQ NO (6 DIGIT)"
+                          type="text"
+                          inputMode="numeric"
+                          pattern="[0-9]*"
+                          placeholder={isDriverMode ? "CHQ NO *" : "CHQ NO (6 DIGIT)"}
                           maxLength={6}
-                          value={chequeNo} onChange={e => {
+                          value={chequeNo}
+                          onChange={e => {
                             const v = e.target.value.replace(/\D/g, '').slice(0, 6);
                             setChequeNo(v);
                           }}
@@ -3345,25 +3424,36 @@ Kripya party se is bill ka payment collection coordinate karein.`;
                             }
                             else if (e.key === 'Escape') { e.preventDefault(); handleReset(); }
                           }}
-                          className="w-full h-10 pl-8 pr-1 bg-muted/50 rounded-xl text-[11px] font-black uppercase outline-none disabled:opacity-50 border border-border/30 focus:ring-2 focus:ring-violet-500/30"
+                          className={cn(
+                            "w-full pl-7 pr-1 bg-muted/50 rounded-xl text-[11px] font-black uppercase outline-none disabled:opacity-50 border focus:ring-2 focus:ring-violet-500/30",
+                            isDriverMode ? "h-8.5 text-[11.5px]" : "h-10 text-[11px]",
+                            isDriverMode && chqAmt_num > 0 && !chequeNo.trim()
+                              ? "border-2 border-red-500 bg-red-50/40"
+                              : "border-border/40"
+                          )}
                         />
                       </div>
                       {/* CHQ DATE — DD only, MM/YYYY auto from current month */}
                       <div className="relative">
-                        <div className="absolute inset-y-0 left-0 pl-2.5 flex items-center pointer-events-none text-muted-foreground"><Calendar className="w-3.5 h-3.5" /></div>
+                        <div className="absolute inset-y-0 left-0 pl-2 flex items-center pointer-events-none text-muted-foreground"><Calendar className="w-3.5 h-3.5" /></div>
                         <input
                           ref={chqDateRef}
-                          type="text" inputMode="numeric" placeholder="DD/MM"
+                          type="text"
+                          inputMode="numeric"
+                          pattern="[0-9]*"
+                          placeholder={isDriverMode ? "CHQ DATE *" : "DD/MM"}
                           maxLength={5}
                           value={chqDateDD}
                           onKeyDown={e => {
                             if (e.key === '+' || e.code === 'NumpadAdd') { e.preventDefault(); handleReset(); }
-                            else if (e.key === 'Enter') { e.preventDefault(); setTimeout(() => bankInputRef.current?.focus(), 30); }
+                            else if (e.key === 'Enter') {
+                              e.preventDefault();
+                              if (isDriverMode) setTimeout(() => saveBtnRef.current?.focus(), 30);
+                              else setTimeout(() => bankInputRef.current?.focus(), 30);
+                            }
                           }}
                           onChange={e => {
-                            // Allow digits and "/" only; auto-insert "/" after 2 digits
                             let raw = e.target.value.replace(/[^\d/]/g, '');
-                            // Strip any existing slash to re-format cleanly
                             const digits = raw.replace(/\//g, '');
                             if (digits.length > 2) {
                               raw = digits.slice(0, 2) + '/' + digits.slice(2, 4);
@@ -3385,14 +3475,15 @@ Kripya party se is bill ka payment collection coordinate karein.`;
                             }
                           }}
                           className={cn(
-                            "w-full h-10 pl-8 pr-1 bg-muted/50 rounded-xl text-[11px] font-black text-center outline-none disabled:opacity-50 focus:ring-2 focus:ring-violet-500/30",
-                            chqAmt_num > 0 && !chqDateDD.trim()
-                              ? "border-2 border-red-400 bg-red-50/60"
-                              : "border border-border/30"
+                            "w-full pl-7 pr-1 bg-muted/50 rounded-xl text-[11px] font-black text-center outline-none disabled:opacity-50 focus:ring-2 focus:ring-violet-500/30",
+                            isDriverMode ? "h-8.5 text-[11.5px]" : "h-10 text-[11px]",
+                            chqAmt_num > 0 && !isChqDateFilled
+                              ? "border-2 border-red-500 bg-red-50/40"
+                              : "border border-border/40"
                           )}
                         />
                       </div>
-                      {/* BANK NAME */}
+                      {/* BANK NAME - Optional in driver mode */}
                       <BankCombobox
                         banks={getBanks()}
                         value={bankName}
@@ -3401,7 +3492,8 @@ Kripya party se is bill ka payment collection coordinate karein.`;
                         inputRef={bankInputRef}
                         onEnterKey={() => saveBtnRef.current?.focus()}
                         className={cn(
-                          "w-full h-10 px-2 bg-muted/50 rounded-xl text-[10px] font-black outline-none disabled:opacity-50 focus:ring-2 focus:ring-violet-500/30",
+                          "w-full px-2 bg-muted/50 rounded-xl text-[10px] font-black outline-none disabled:opacity-50 focus:ring-2 focus:ring-violet-500/30",
+                          isDriverMode ? "h-8.5 text-[10px]" : "h-10 text-[10px]",
                           chqAmt_num > 0 && !bankName.trim() && !isDriverMode
                             ? "border-2 border-red-400 bg-red-50/60"
                             : "border border-border/30"
@@ -3582,7 +3674,10 @@ Kripya party se is bill ka payment collection coordinate karein.`;
                       }
                     }}
                     disabled={!canSave}
-                    className="flex-[1.5] h-10 rounded-xl font-black uppercase text-[11px] p-0 shadow-lg bg-primary hover:bg-primary/90"
+                    className={cn(
+                      "font-black uppercase shadow-lg bg-primary hover:bg-primary/90",
+                      isDriverMode ? "w-full h-9 rounded-xl text-[12px] p-0" : "flex-[1.5] h-10 rounded-xl text-[11px] p-0"
+                    )}
                   >
                     {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <><Check className="w-4 h-4 mr-1.5" />Save ₹{totalCollected.toLocaleString('en-IN')}</>}
                   </Button>
