@@ -118,15 +118,24 @@ export function ConnectionStatus() {
     };
   }, [status]);
 
+  const showStatus = (newStatus: Status) => {
+    setStatus(newStatus);
+    setVisible(true);
+    if (hideTimer.current) clearTimeout(hideTimer.current);
+    if (newStatus === 'live') {
+      hideTimer.current = setTimeout(() => setVisible(false), 3000);
+    }
+  };
+
   const handleManualFlush = async () => {
-    show('syncing');
+    showStatus('syncing');
     try {
       await Promise.all([flushDirtyQueue(), flushPendingWrites()]);
       setPending((getPendingWriteCount() || 0) + (getDirtyCount() || 0));
       setLastSync(new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', second: '2-digit' }));
-      show('live');
+      showStatus('live');
     } catch {
-      show('live');
+      showStatus('live');
     }
   };
 

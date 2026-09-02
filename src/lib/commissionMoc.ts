@@ -131,12 +131,15 @@ export function formatMocSerialBillNo(mocCodeOrNum: string, srNo: number | strin
   return `MOC${mocNum}-SR${srNo}`;
 }
 
-export function isMocBill(bill: any): boolean {
-  if (!bill) return false;
+export function isMocBill(bill: any, alt?: any): boolean {
+  if (!bill) return alt ? isMocBill(alt) : false;
   if (typeof bill === 'string') {
     const clean = bill.toUpperCase().trim();
-    return clean.startsWith('MOC') || clean.includes('MOC') || clean.includes('COMMISSION');
+    const strMatch = clean.startsWith('MOC') || clean.includes('MOC') || clean.includes('COMMISSION');
+    if (strMatch) return true;
+    return alt ? isMocBill(alt) : false;
   }
+
   const bn = (bill.billNo || '').toUpperCase().trim();
   const sp = (bill.salespersonName || '').toUpperCase().trim();
   const pt = (bill.partyName || '').toUpperCase().trim();

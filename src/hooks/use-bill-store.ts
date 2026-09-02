@@ -1,6 +1,6 @@
 import { useEffect, useSyncExternalStore } from 'react';
-import { getBills, getDrivers, getBanks, getSummaries, getPartyContacts, getSalespersonContacts, setServerData, applyRealtimeBillChange, applyRealtimeTableChange, Bill, Driver, Bank, DriverDailySummary } from '@/lib/billStore';
-import { apiFetchAllData, mapBillFromSupabase } from '@/lib/apiSync';
+import { getBills, getDrivers, getBanks, getSummaries, getPartyContacts, getSalespersonContacts, setServerData, applyRealtimeBillChange, applyRealtimeTableChange, applyBillsDelta, Bill, Driver, Bank, DriverDailySummary } from '@/lib/billStore';
+import { apiFetchAllData, apiFetchBillsSince, mapBillFromSupabase, flushPendingWrites } from '@/lib/apiSync';
 import { supabase } from '@/lib/supabase';
 import { isWriteInProgress, getLastWriteAt } from '@/lib/syncState';
 import { applyDirtyPatches, isDirtyPending, flushDirtyQueue } from '@/lib/localQueue';
@@ -9,7 +9,11 @@ import { applyDirtyPatches, isDirtyPending, flushDirtyQueue } from '@/lib/localQ
 // Polling + Supabase Realtime WebSocket + BroadcastChannel multi-tab
 // guarantees instant real-time live sync across all devices.
 
-const POLL_INTERVAL_MS = 60_000;
+// Light incremental poll (only rows changed since last sync).
+const POLL_INTERVAL_MS = 25_000;
+// Heavy "download everything" refresh — rarely needed once delta sync runs.
+const FULL_SYNC_INTERVAL_MS = 15 * 60_000;
+
 
 export type StoreSnapshot = {
   bills: Bill[];
@@ -91,12 +95,41 @@ function readLocal() {
 }
 
 let lastFullSyncTime = 0;
+let deltaCursor: string | null = null;
+let deltaInFlight = false;
 
 function scheduleDebouncedFullSync(delayMs = 1500) {
   if (fullSyncDebounceTimer) clearTimeout(fullSyncDebounceTimer);
   fullSyncDebounceTimer = setTimeout(() => {
     doFullSync(true);
   }, delayMs);
+}
+
+// ─── Light incremental sync: only pull bills changed since last sync ─────────
+async function doDeltaSync() {
+  if (!deltaCursor) { void doFullSync(); return; }
+  if (deltaInFlight || syncInFlight) return;
+  const now = Date.now();
+  if (isWriteInProgress() || (now - getLastWriteAt() < 2500)) return;
+  deltaInFlight = true;
+  const cursorAt = new Date(Date.now() - 5_000).toISOString();
+  try {
+    const changed = await apiFetchBillsSince(deltaCursor);
+    deltaCursor = cursorAt;
+    if (changed.length > 0) {
+      // Never let the server overwrite rows still waiting to be pushed up
+      const safe = changed.filter(b => !isDirtyPending(b.id, b.billNo));
+      if (safe.length > 0) {
+        applyBillsDelta(safe);
+        readLocal();
+      }
+    }
+    window.dispatchEvent(new CustomEvent('sync-status', { detail: 'ok' }));
+  } catch (err) {
+    console.warn('[useBillStore] delta sync failed:', err);
+  } finally {
+    deltaInFlight = false;
+  }
 }
 
 async function doFullSync(force = false) {
@@ -111,8 +144,10 @@ async function doFullSync(force = false) {
     return;
   }
   syncInFlight = true;
+  deltaCursor = new Date(Date.now() - 60_000).toISOString();
   patch({ syncing: true });
   try {
+
     const data = await apiFetchAllData();
     lastFullSyncTime = Date.now();
     // 1. Merge any un-flushed local dirty patches on top of bills fetched from Supabase
@@ -328,16 +363,19 @@ function initGlobalSync() {
 
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'visible') {
-      doFullSync();
+      void doDeltaSync();
+      void flushDirtyQueue();
+      void flushPendingWrites();
       initSupabaseRealtime();
     }
   });
   window.addEventListener('focus', () => {
-    doFullSync();
+    void doDeltaSync();
   });
   window.addEventListener('online', () => {
-    flushDirtyQueue();
-    doFullSync();
+    void flushDirtyQueue();
+    void flushPendingWrites();
+    void doDeltaSync();
     initSupabaseRealtime();
   });
 
@@ -351,16 +389,20 @@ function initGlobalSync() {
     flushDirtyQueue();
   });
 
-  // Background dirty queue flush every 10 seconds
+  // Background flush of BOTH pending queues every 10 seconds so no local
+  // change can silently stay un-synced to the cloud.
   setInterval(() => {
-    flushDirtyQueue();
+    void flushDirtyQueue();
+    void flushPendingWrites();
   }, 10000);
 
-  // Initial full load from Supabase
+  // Initial full load from Supabase, then light incremental polling
   doFullSync();
-  pollingTimer = setInterval(doFullSync, POLL_INTERVAL_MS);
+  pollingTimer = setInterval(() => { void doDeltaSync(); }, POLL_INTERVAL_MS);
+  setInterval(() => { void doFullSync(true); }, FULL_SYNC_INTERVAL_MS);
   initSupabaseRealtime();
 }
+
 
 function subscribe(callback: () => void) {
   subs.add(callback);
