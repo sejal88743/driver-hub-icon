@@ -17,25 +17,27 @@ import {
   Phone,
   ArrowUpDown,
   ArrowUp,
-  ArrowDown
+  ArrowDown,
+  Lock,
+  RotateCcw
 } from 'lucide-react';
 import { useBillStore } from '@/hooks/use-bill-store';
 import TopNav from '@/components/TopNav';
 import { cn } from '@/lib/utils';
-import { Bill, getTodayDMY, findSalespersonContact, getSalespersonContacts, saveSalespersonContacts } from '@/lib/billStore';
+import {
+  Bill,
+  getTodayDMY,
+  findSalespersonContact,
+  getSalespersonContacts,
+  saveSalespersonContacts,
+  getCreditAssigns,
+  saveCreditAssigns,
+  CreditAssign
+} from '@/lib/billStore';
 import { Button } from '@/components/ui/button';
-
-type CreditAssign = {
-  givenTo?: string;
-  giveDate?: string;
-  giveTime?: string;
-  isGiven?: boolean;
-};
 
 type SortField = 'billNo' | 'billDate' | 'partyName' | 'billAmt' | 'delDate' | 'giveDate' | 'givenTo' | 'time';
 type SortOrder = 'asc' | 'desc';
-
-const LS_ASSIGN_KEY = 'vitratrack_credit_assigns_v2';
 
 function getInitialTime(): string {
   const now = new Date();
@@ -45,21 +47,6 @@ function getInitialTime(): string {
   h = h % 12;
   h = h ? h : 12;
   return `${String(h).padStart(2, '0')}:${m} ${ampm}`;
-}
-
-function loadAssigns(): Record<string, CreditAssign> {
-  try {
-    const raw = localStorage.getItem(LS_ASSIGN_KEY) || localStorage.getItem('vitratrack_credit_assigns');
-    return raw ? JSON.parse(raw) : {};
-  } catch {
-    return {};
-  }
-}
-
-function saveAssigns(data: Record<string, CreditAssign>) {
-  try {
-    localStorage.setItem(LS_ASSIGN_KEY, JSON.stringify(data));
-  } catch {}
 }
 
 function formatPartyName14Words(name?: string): string {
@@ -167,7 +154,7 @@ export default function OutstandingPage() {
   const { bills, loading } = useBillStore();
   const [selectedSalesperson, setSelectedSalesperson] = useState<string | null>(null);
   const [tableSearch, setTableSearch] = useState('');
-  const [assigns, setAssigns] = useState<Record<string, CreditAssign>>(loadAssigns);
+  const [assigns, setAssigns] = useState<Record<string, CreditAssign>>(getCreditAssigns);
 
   // Sorting State
   const [sortField, setSortField] = useState<SortField>('billNo');
@@ -184,8 +171,8 @@ export default function OutstandingPage() {
   const [alertNotice, setAlertNotice] = useState<string | null>(null);
 
   useEffect(() => {
-    setAssigns(loadAssigns());
-  }, []);
+    setAssigns(getCreditAssigns());
+  }, [bills]);
 
   const updateAssign = (bill: Bill, patch: Partial<CreditAssign>) => {
     const key = bill.id || bill.billNo;
@@ -198,7 +185,7 @@ export default function OutstandingPage() {
     };
     const next = { ...assigns, [key]: updated };
     setAssigns(next);
-    saveAssigns(next);
+    saveCreditAssigns(next);
   };
 
   const totals = useMemo(() => {
@@ -368,17 +355,36 @@ export default function OutstandingPage() {
     return creditBills.reduce((sum, b) => sum + Number(b.billNetAmt || 0), 0);
   }, [creditBills]);
 
-  // Selected bills objects
+  // Bills that are NOT yet given and can be selected for Give
+  const selectableBills = useMemo(() => {
+    return creditBills.filter(b => {
+      const key = b.id || b.billNo;
+      const assign = assigns[key] || {};
+      return !assign.isGiven;
+    });
+  }, [creditBills, assigns]);
+
+  // Selected bills objects (excludes already given bills)
   const selectedBillsList = useMemo(() => {
-    return creditBills.filter(b => selectedBillKeys.has(b.id || b.billNo));
-  }, [creditBills, selectedBillKeys]);
+    return creditBills.filter(b => {
+      const key = b.id || b.billNo;
+      const assign = assigns[key] || {};
+      return selectedBillKeys.has(key) && !assign.isGiven;
+    });
+  }, [creditBills, selectedBillKeys, assigns]);
 
   const selectedBillsTotalAmt = useMemo(() => {
     return selectedBillsList.reduce((sum, b) => sum + Number(b.billNetAmt || 0), 0);
   }, [selectedBillsList]);
 
-  // Toggle single bill selection
+  // Toggle single bill selection (Locked if already given)
   const toggleBillSelection = (key: string) => {
+    const assign = assigns[key] || {};
+    if (assign.isGiven) {
+      setAlertNotice(`⚠️ Bill already "${assign.givenTo || 'Salesman'}" ko ${assign.giveDate || 'date'} par diya ja chuka hai aur dobara select nahi ho sakta.`);
+      setTimeout(() => setAlertNotice(null), 3500);
+      return;
+    }
     setSelectedBillKeys(prev => {
       const next = new Set(prev);
       if (next.has(key)) {
@@ -390,20 +396,26 @@ export default function OutstandingPage() {
     });
   };
 
-  // Toggle select all visible credit bills
+  // Toggle select all visible selectable credit bills
   const toggleSelectAll = () => {
-    if (selectedBillKeys.size >= creditBills.length && creditBills.length > 0) {
+    if (selectableBills.length === 0) {
+      setAlertNotice('Sabhi visible bills already give kiye ja chuke hain.');
+      setTimeout(() => setAlertNotice(null), 3000);
+      return;
+    }
+    const allSelectableChosen = selectableBills.every(b => selectedBillKeys.has(b.id || b.billNo));
+    if (allSelectableChosen) {
       setSelectedBillKeys(new Set());
     } else {
-      const allKeys = new Set(creditBills.map(b => b.id || b.billNo));
+      const allKeys = new Set(selectableBills.map(b => b.id || b.billNo));
       setSelectedBillKeys(allKeys);
     }
   };
 
   // Open Give Modal
   const handleOpenGiveModal = () => {
-    if (selectedBillKeys.size === 0) {
-      setAlertNotice('Kripya kam se kam ek bill select karein!');
+    if (selectedBillsList.length === 0) {
+      setAlertNotice('Kripya kam se kam ek pending credit bill select karein!');
       setTimeout(() => setAlertNotice(null), 3500);
       return;
     }
@@ -428,7 +440,7 @@ export default function OutstandingPage() {
     setGiveSalesmanMobile(contact?.mobile || '');
   };
 
-  // Assign & mark bills as Given
+  // Assign & mark bills as Given (Red font in table & locked from further selection)
   const executeBillGiveAssignment = (salesmanName: string, giveDate: string) => {
     const nowTime = getInitialTime();
     const nextAssigns = { ...assigns };
@@ -444,7 +456,7 @@ export default function OutstandingPage() {
     });
 
     setAssigns(nextAssigns);
-    saveAssigns(nextAssigns);
+    saveCreditAssigns(nextAssigns);
   };
 
   // Save salesperson mobile to Supabase / store if entered/updated
@@ -482,6 +494,8 @@ export default function OutstandingPage() {
       return;
     }
 
+    const count = selectedBillsList.length;
+
     // 1. Persist mobile number
     await persistSalespersonMobile(spName, cleanDigits);
 
@@ -517,7 +531,7 @@ Kripya in credit bills ka collection coordinate karein.`;
 
     setShowGiveModal(false);
     setSelectedBillKeys(new Set());
-    setAlertNotice(`✓ ${selectedBillsList.length} Bills handed over to ${spName} successfully!`);
+    setAlertNotice(`✓ ${count} Bills handed over to ${spName} successfully!`);
     setTimeout(() => setAlertNotice(null), 4000);
   };
 
@@ -529,6 +543,8 @@ Kripya in credit bills ka collection coordinate karein.`;
       return;
     }
 
+    const count = selectedBillsList.length;
+
     if (giveSalesmanMobile.trim()) {
       await persistSalespersonMobile(spName, giveSalesmanMobile.trim());
     }
@@ -537,7 +553,7 @@ Kripya in credit bills ka collection coordinate karein.`;
 
     setShowGiveModal(false);
     setSelectedBillKeys(new Set());
-    setAlertNotice(`✓ ${selectedBillsList.length} Bills assigned to ${spName}!`);
+    setAlertNotice(`✓ ${count} Bills assigned to ${spName}!`);
     setTimeout(() => setAlertNotice(null), 4000);
   };
 
@@ -683,19 +699,21 @@ Kripya in credit bills ka collection coordinate karein.`;
                       {/* ── GIVE BUTTON NEXT TO HEADER ── */}
                       <Button
                         onClick={handleOpenGiveModal}
+                        disabled={selectableBills.length === 0}
                         className={cn(
                           "h-7 px-3 rounded-lg font-black text-[10px] uppercase flex items-center gap-1.5 shadow-sm transition-all cursor-pointer",
-                          selectedBillKeys.size > 0
+                          selectedBillsList.length > 0
                             ? "bg-emerald-600 hover:bg-emerald-700 text-white animate-pulse"
-                            : "bg-primary hover:bg-primary/90 text-primary-foreground"
+                            : "bg-primary hover:bg-primary/90 text-primary-foreground",
+                          selectableBills.length === 0 && "opacity-50 cursor-not-allowed"
                         )}
                       >
                         <Send className="w-3 h-3" />
-                        GIVE {selectedBillKeys.size > 0 ? `(${selectedBillKeys.size})` : ''}
+                        GIVE {selectedBillsList.length > 0 ? `(${selectedBillsList.length})` : ''}
                       </Button>
                     </div>
                     <p className="text-[8.5px] font-bold text-muted-foreground uppercase">
-                      Dashboard entry me Credit bills yahan show honge. Payment receive hote hi auto remove honge.
+                      Dashboard entry me Credit bills yahan show honge. Give karne par bills RED font me lock ho jayenge. Payment receive hote hi auto remove honge.
                     </p>
                   </div>
                 </div>
@@ -741,10 +759,14 @@ Kripya in credit bills ka collection coordinate karein.`;
                           <button
                             type="button"
                             onClick={toggleSelectAll}
-                            className="text-foreground hover:text-primary transition-colors cursor-pointer flex items-center justify-center mx-auto"
-                            title="Select All Bills"
+                            disabled={selectableBills.length === 0}
+                            className={cn(
+                              "transition-colors flex items-center justify-center mx-auto",
+                              selectableBills.length === 0 ? "opacity-40 cursor-not-allowed text-muted-foreground" : "text-foreground hover:text-primary cursor-pointer"
+                            )}
+                            title={selectableBills.length === 0 ? "Sabhi bills already given hain" : "Select All Pending Bills"}
                           >
-                            {selectedBillKeys.size >= creditBills.length && creditBills.length > 0 ? (
+                            {selectableBills.length > 0 && selectableBills.every(b => selectedBillKeys.has(b.id || b.billNo)) ? (
                               <CheckSquare className="w-4 h-4 text-primary" />
                             ) : (
                               <Square className="w-4 h-4 text-muted-foreground" />
@@ -859,29 +881,46 @@ Kripya in credit bills ka collection coordinate karein.`;
                             key={key}
                             className={cn(
                               "border rounded-md transition-colors shadow-2xs group select-none",
-                              isSelected
+                              isGiven
+                                ? "bg-red-50/40 dark:bg-red-950/20 border-red-200/80 dark:border-red-900/60 hover:bg-red-50/60 dark:hover:bg-red-950/30"
+                                : isSelected
                                 ? "bg-primary/10 border-primary/40 dark:bg-primary/15"
                                 : "bg-card hover:bg-accent/40 border-border/80"
                             )}
                           >
-                            {/* SELECTION CHECKBOX */}
+                            {/* SELECTION CHECKBOX (LOCKED IF GIVEN) */}
                             <td className="px-2 py-1 text-center whitespace-nowrap rounded-l-md border-y border-l border-border/60">
-                              <button
-                                type="button"
-                                onClick={() => toggleBillSelection(key)}
-                                className="text-foreground hover:text-primary transition-colors cursor-pointer flex items-center justify-center mx-auto"
-                              >
-                                {isSelected ? (
-                                  <CheckSquare className="w-4 h-4 text-primary" />
-                                ) : (
-                                  <Square className="w-4 h-4 text-muted-foreground" />
-                                )}
-                              </button>
+                              {isGiven ? (
+                                <div
+                                  className="flex items-center justify-center mx-auto text-red-600 dark:text-red-400 cursor-not-allowed group/lock"
+                                  title={`Already Given to "${givenTo || 'Salesman'}" on ${giveDate}. Dobara select nahi ho sakta.`}
+                                  onClick={() => {
+                                    setAlertNotice(`⚠️ Bill already "${givenTo || 'Salesman'}" ko ${giveDate} par diya ja chuka hai aur dobara select nahi ho sakta.`);
+                                    setTimeout(() => setAlertNotice(null), 3000);
+                                  }}
+                                >
+                                  <Lock className="w-4 h-4 text-red-600 dark:text-red-400 stroke-[2.5]" />
+                                </div>
+                              ) : (
+                                <button
+                                  type="button"
+                                  onClick={() => toggleBillSelection(key)}
+                                  className="text-foreground hover:text-primary transition-colors cursor-pointer flex items-center justify-center mx-auto"
+                                >
+                                  {isSelected ? (
+                                    <CheckSquare className="w-4 h-4 text-primary" />
+                                  ) : (
+                                    <Square className="w-4 h-4 text-muted-foreground" />
+                                  )}
+                                </button>
+                              )}
                             </td>
 
                             {/* 1. BILL NO - BOLD & BIG FONT */}
                             <td className="px-2 py-1 text-[11.5px] font-black text-foreground whitespace-nowrap border-y border-border/60">
-                              <span className="text-primary font-black">{b.billNo}</span>
+                              <span className={cn(isGiven ? "text-red-600 dark:text-red-400 font-black" : "text-primary font-black")}>
+                                {b.billNo}
+                              </span>
                             </td>
 
                             {/* 2. BILL DATE - BOLD & BIG FONT */}
@@ -906,8 +945,13 @@ Kripya in credit bills ka collection coordinate karein.`;
 
                             {/* 6. GIVE BILL DATE - BOLD & BIG FONT (RED FONT IF GIVEN) */}
                             <td className="px-2 py-1 text-[11px] font-black whitespace-nowrap border-y border-border/60">
-                              <div className="flex items-center gap-1 bg-muted/70 px-1.5 py-0.5 rounded border border-border/50">
-                                <Calendar className={cn("w-3 h-3 shrink-0", isGiven ? "text-red-600 dark:text-red-400" : "text-primary")} />
+                              <div className={cn(
+                                "flex items-center gap-1 px-1.5 py-0.5 rounded border transition-colors",
+                                isGiven 
+                                  ? "bg-red-50 dark:bg-red-950/80 border-red-300 dark:border-red-800 text-red-600 dark:text-red-400 shadow-2xs" 
+                                  : "bg-muted/70 border-border/50 text-foreground"
+                              )}>
+                                <Calendar className={cn("w-3 h-3 shrink-0", isGiven ? "text-red-600 dark:text-red-400 stroke-[2.5]" : "text-primary")} />
                                 <input
                                   type="text"
                                   value={giveDate}
@@ -915,9 +959,14 @@ Kripya in credit bills ka collection coordinate karein.`;
                                   placeholder="DD/MM/YYYY"
                                   className={cn(
                                     "w-24 bg-transparent text-[11px] font-black outline-none uppercase",
-                                    isGiven ? "text-red-600 dark:text-red-400 font-black" : "text-foreground"
+                                    isGiven ? "text-red-600 dark:text-red-400 font-black placeholder:text-red-400" : "text-foreground"
                                   )}
                                 />
+                                {isGiven && (
+                                  <span className="text-[7.5px] font-black px-1 py-0.2 rounded bg-red-600 text-white uppercase tracking-tighter shrink-0">
+                                    GIVEN
+                                  </span>
+                                )}
                               </div>
                             </td>
 
@@ -927,8 +976,10 @@ Kripya in credit bills ka collection coordinate karein.`;
                                 value={givenTo}
                                 onChange={e => updateAssign(b, { givenTo: e.target.value })}
                                 className={cn(
-                                  "bg-muted/70 px-1.5 py-0.5 rounded border border-border/50 text-[11px] font-black outline-none uppercase cursor-pointer max-w-[190px]",
-                                  isGiven ? "text-red-600 dark:text-red-400 font-black border-red-300 dark:border-red-800" : "text-foreground"
+                                  "px-1.5 py-0.5 rounded border text-[11px] font-black outline-none uppercase cursor-pointer max-w-[190px]",
+                                  isGiven 
+                                    ? "bg-red-50 dark:bg-red-950/80 border-red-300 dark:border-red-800 text-red-600 dark:text-red-400 font-black shadow-2xs" 
+                                    : "bg-muted/70 border-border/50 text-foreground"
                                 )}
                               >
                                 <option value="">Select Salesperson</option>
@@ -938,13 +989,37 @@ Kripya in credit bills ka collection coordinate karein.`;
                               </select>
                             </td>
 
-                            {/* 8. TIME - BOLD & BIG FONT (AUTO ADDED) */}
-                            <td className="px-2 py-1 text-[11px] font-black text-foreground whitespace-nowrap rounded-r-md border-y border-r border-border/60">
-                              <div className="flex items-center gap-1 bg-muted/70 px-1.5 py-0.5 rounded border border-border/50">
-                                <Clock className="w-3 h-3 text-muted-foreground shrink-0" />
-                                <span className={cn("text-[11px] font-black", isGiven ? "text-red-600 dark:text-red-400 font-black" : "text-foreground")}>
-                                  {giveTime}
-                                </span>
+                            {/* 8. TIME - BOLD & BIG FONT (RED FONT IF GIVEN + UNLOCK OPTION) */}
+                            <td className="px-2 py-1 text-[11px] font-black whitespace-nowrap rounded-r-md border-y border-r border-border/60">
+                              <div className={cn(
+                                "flex items-center gap-1 px-1.5 py-0.5 rounded border justify-between",
+                                isGiven 
+                                  ? "bg-red-50 dark:bg-red-950/80 border-red-300 dark:border-red-800 text-red-600 dark:text-red-400 font-black shadow-2xs" 
+                                  : "bg-muted/70 border-border/50 text-foreground"
+                              )}>
+                                <div className="flex items-center gap-1">
+                                  <Clock className={cn("w-3 h-3 shrink-0", isGiven ? "text-red-600 dark:text-red-400 stroke-[2.5]" : "text-muted-foreground")} />
+                                  <span className={cn("text-[11px] font-black", isGiven ? "text-red-600 dark:text-red-400 font-black" : "text-foreground")}>
+                                    {giveTime}
+                                  </span>
+                                </div>
+                                {isGiven && (
+                                  <button
+                                    type="button"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      if (window.confirm(`Kya aap Bill ${b.billNo} ka Give status unlock/reset karna chahte hain?`)) {
+                                        updateAssign(b, { isGiven: false });
+                                        setAlertNotice(`✓ Bill ${b.billNo} ka Give status reset kar diya gaya hai.`);
+                                        setTimeout(() => setAlertNotice(null), 3000);
+                                      }
+                                    }}
+                                    title="Unlock / Reset Give status"
+                                    className="p-0.5 text-red-500 hover:text-red-700 hover:bg-red-100 dark:hover:bg-red-900/50 rounded cursor-pointer transition-colors ml-1"
+                                  >
+                                    <RotateCcw className="w-3 h-3" />
+                                  </button>
+                                )}
                               </div>
                             </td>
                           </tr>

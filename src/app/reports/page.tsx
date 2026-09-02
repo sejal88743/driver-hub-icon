@@ -1,6 +1,6 @@
 
 
-import { useState, useMemo, useRef, useCallback, useDeferredValue, useEffect } from 'react';
+import { useState, useMemo, useRef, useCallback, useDeferredValue, useEffect, Fragment } from 'react';
 import { useBillStore } from '@/hooks/use-bill-store';
 import { FileText, Sheet as SheetIcon, Filter, Loader2, ChevronUp, ChevronDown, Calculator, IndianRupee } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -36,8 +36,9 @@ export default function ReportsPage() {
   const [party, setParty] = useState('');
   const [salesperson, setSalesperson] = useState('');
   const [statusFilter, setStatusFilter] = useState<'ALL' | 'PAID' | 'UNPAID' | 'CREDIT' | 'FBR' | 'DEL_PENDING'>('ALL');
+  const [selectedBeat, setSelectedBeat] = useState('');
   
-  const [viewMode, setViewMode] = useState<'detail' | 'datewise' | 'driverwise' | 'partywise' | 'salespersonwise'>('detail');
+  const [viewMode, setViewMode] = useState<'detail' | 'datewise' | 'driverwise' | 'partywise' | 'salespersonwise' | 'beatwise'>('detail');
   const [selectedRowId, setSelectedRowId] = useState<string | null>(null);
   const [editBill, setEditBill] = useState<Bill | null>(null);
   const [sort, setSort] = useState<SortConfig>({ key: 'billNo', direction: 'asc' });
@@ -146,9 +147,21 @@ export default function ReportsPage() {
     return 0;
   };
 
+  const extractBeatNumber = (beatName?: string): string | null => {
+    if (!beatName) return null;
+    const s = beatName.trim().toUpperCase();
+    const prefixMatch = s.match(/^(?:OTR|BEAT)[-\s]?([1-6])(?:[-\s]|$)/i);
+    if (prefixMatch) return prefixMatch[1];
+    const directMatch = s.match(/^([1-6])(?:[-\s]|$)/);
+    if (directMatch) return directMatch[1];
+    const midMatch = s.match(/\b(?:OTR|BEAT)[-\s]?([1-6])\b/i);
+    if (midMatch) return midMatch[1];
+    return null;
+  };
+
   const filtered = useMemo(() => {
     // Fast path: no filter selected → show nothing (avoids scanning all bills)
-    const hasAnyFilter = !!(fromDate || toDate || deliveryDate || recDate || driver || party || salesperson || statusFilter !== 'ALL');
+    const hasAnyFilter = !!(fromDate || toDate || deliveryDate || recDate || driver || party || salesperson || selectedBeat || statusFilter !== 'ALL');
     if (!hasAnyFilter) return [];
 
     const fromYMD = fromDate ? Number(fromDate.replace(/-/g, '')) : 0;
@@ -177,6 +190,10 @@ export default function ReportsPage() {
       }
       if (driver && b.driverName !== driver) return false;
       if (partyQuery && !(b.partyName || '').toLowerCase().includes(partyQuery)) return false;
+      if (selectedBeat) {
+        const bBeatNum = extractBeatNumber(b.beatName);
+        if (bBeatNum !== selectedBeat) return false;
+      }
       if (spQuery) {
         const sp = (b.salespersonName || '').toLowerCase();
         const pt = (b.partyName || '').toLowerCase();
@@ -229,6 +246,10 @@ export default function ReportsPage() {
         if (statusFilter === 'CREDIT'      && !isCredit)    return false;
         if (statusFilter === 'DEL_PENDING' && !isDelPending) return false;
         if (statusFilter === 'UNPAID'      && !isUnpaid)    return false;
+      } else if (selectedBeat || viewMode === 'beatwise') {
+        // When Beat is selected or Beat-wise view is active and status is ALL, filter credit bills
+        const isCredit = (b.paymentMode || '').toLowerCase() === 'credit';
+        if (!isCredit) return false;
       }
       return true;
     });
@@ -246,7 +267,7 @@ export default function ReportsPage() {
       return sort.direction === 'asc' ? String(va).localeCompare(String(vb)) : String(vb).localeCompare(String(va));
     });
     return result;
-  }, [bills, fromDate, toDate, deliveryDate, recDate, driver, party, salesperson, statusFilter, sort, commissionMocs]);
+  }, [bills, fromDate, toDate, deliveryDate, recDate, driver, party, salesperson, selectedBeat, statusFilter, viewMode, sort, commissionMocs]);
 
   // Expand part-payment bills into one virtual row per part payment entry.
   // When a recDate filter is active, only the matching part-payment entries are shown.
@@ -279,7 +300,7 @@ export default function ReportsPage() {
   // Reset page to 1 when any filter or view mode changes
   useEffect(() => {
     setCurrentPage(1);
-  }, [fromDate, toDate, deliveryDate, recDate, driver, party, salesperson, statusFilter, viewMode, sort]);
+  }, [fromDate, toDate, deliveryDate, recDate, driver, party, salesperson, selectedBeat, statusFilter, viewMode, sort]);
 
   // Sliced bills for super fast rendering
   const displayedBills = useMemo(() => {
@@ -426,6 +447,21 @@ export default function ReportsPage() {
           if (od !== 0) return od;
           return (a.billNo || '').localeCompare(b.billNo || '', 'en', { numeric: true });
         }),
+      }));
+  }, [expandedBills]);
+
+  const beatWiseData = useMemo(() => {
+    const map = new Map<string, Bill[]>();
+    for (const b of expandedBills) {
+      const key = (b.beatName || '(Unassigned Beat)').trim() || '(Unassigned Beat)';
+      if (!map.has(key)) map.set(key, []);
+      map.get(key)!.push(b);
+    }
+    return Array.from(map.entries())
+      .sort((a, b) => a[0].localeCompare(b[0], 'en', { numeric: true }))
+      .map(([name, grpBills]) => ({
+        name,
+        bills: [...grpBills].sort((a, b) => (a.billNo || '').localeCompare(b.billNo || '', 'en', { numeric: true })),
       }));
   }, [expandedBills]);
 
@@ -587,7 +623,59 @@ export default function ReportsPage() {
       };
 
       let viewSheetRows: any[][];
-      if (viewMode === 'driverwise') {
+      if (viewMode === 'beatwise' || selectedBeat) {
+        viewSheetRows = [];
+        let rowNum = 0;
+        for (const { name, bills: grpBills } of beatWiseData) {
+          viewSheetRows.push([`BEAT: ${name.toUpperCase()} — ${grpBills.length} BILLS`]);
+          for (const b of grpBills) {
+            rowNum++;
+            const lc = (b.lineCutAmt || 0) || Number(b.cancelLine) || 0;
+            const col = b.collectedAmount || 0;
+            const osAmt = b.outstandingAmount > 0 ? b.outstandingAmount : Math.max(0, (b.billNetAmt || 0) - lc - col);
+            viewSheetRows.push([
+              rowNum,
+              b.beatName || '-',
+              b.salespersonName || '-',
+              b.date || '-',
+              stripGST(getDisplayBillNo(b)),
+              b.partyName || '-',
+              b.billNetAmt,
+              osAmt,
+            ]);
+          }
+          const grpAmt = grpBills.reduce((s, b) => s + (b.billNetAmt || 0), 0);
+          const grpOs = grpBills.reduce((s, b) => {
+            const lc = (b.lineCutAmt || 0) || Number(b.cancelLine) || 0;
+            const col = b.collectedAmount || 0;
+            return s + (b.outstandingAmount > 0 ? b.outstandingAmount : Math.max(0, (b.billNetAmt || 0) - lc - col));
+          }, 0);
+          viewSheetRows.push(['', '', '', '', '', `SUBTOTAL: ${name.toUpperCase()} (${grpBills.length})`, grpAmt, grpOs]);
+          viewSheetRows.push([]);
+        }
+        const grandBillAmt = expandedBills.reduce((s, b) => s + (b.billNetAmt || 0), 0);
+        const grandOsAmt = expandedBills.reduce((s, b) => {
+          const lc = (b.lineCutAmt || 0) || Number(b.cancelLine) || 0;
+          const col = b.collectedAmount || 0;
+          return s + (b.outstandingAmount > 0 ? b.outstandingAmount : Math.max(0, (b.billNetAmt || 0) - lc - col));
+        }, 0);
+        const grandTotalRow = ['', '', '', '', '', `GRAND TOTAL (${expandedBills.length} BILLS)`, grandBillAmt, grandOsAmt];
+
+        const beatHeaders = ['#', 'BEAT NAME', 'SALESPERSON', 'BILL DATE', 'BILL NO', 'PARTY NAME', 'BILL AMOUNT', 'O/S AMOUNT'];
+        const wsBeat = XLSX.utils.aoa_to_sheet([
+          beatHeaders,
+          ...viewSheetRows,
+          grandTotalRow,
+        ]);
+        wsBeat['!cols'] = [6, 26, 20, 14, 16, 30, 16, 16].map(w => ({ wch: w }));
+        XLSX.utils.book_append_sheet(wb, wsBeat, 'Beat Report');
+        const _now = new Date();
+        const _dd = String(_now.getDate()).padStart(2, '0');
+        const _mm = String(_now.getMonth() + 1).padStart(2, '0');
+        const _yyyy = _now.getFullYear();
+        XLSX.writeFile(wb, `VitraTrack_Beat_${selectedBeat || 'All'}_${_dd}-${_mm}-${_yyyy}.xlsx`);
+        return;
+      } else if (viewMode === 'driverwise') {
         viewSheetRows = [];
         let rowNum = 0;
         for (const { name, bills: grpBills } of driverWiseData) {
@@ -1222,7 +1310,10 @@ export default function ReportsPage() {
 
       // ── PDF Title ────────────────────────────────────────────────────
       const isPartyOrSP = !!(party || salesperson);
-      const reportTitle = viewMode === 'partywise'
+      const isBeat = !!(viewMode === 'beatwise' || selectedBeat);
+      const reportTitle = (viewMode === 'beatwise' || selectedBeat)
+        ? `VITRATRACK — BEAT WISE CREDIT REPORT${selectedBeat ? ` (BEAT ${selectedBeat})` : ''}`
+        : viewMode === 'partywise'
         ? 'VITRATRACK — PARTY WISE REPORT'
         : viewMode === 'salespersonwise'
         ? 'VITRATRACK — SALESPERSON WISE REPORT'
@@ -1237,8 +1328,14 @@ export default function ReportsPage() {
 
       let curY = 20;
 
-      // ── Show selected party / salesperson name prominently ───────────
-      if (isPartyOrSP) {
+      // ── Show selected beat / party / salesperson name prominently ───────────
+      if (selectedBeat) {
+        doc.setFontSize(10); doc.setFont('helvetica', 'bold');
+        doc.setTextColor(88, 28, 135);
+        doc.text(`SELECTED BEAT: ${selectedBeat} (MATCHING "${selectedBeat}-..." & "OTR-${selectedBeat}-...")`, 14, curY);
+        doc.setTextColor(0, 0, 0);
+        curY += 6;
+      } else if (isPartyOrSP) {
         const nameLabel = party
           ? `PARTY: ${party.toUpperCase()}`
           : `SALESPERSON: ${salesperson.toUpperCase()}`;
@@ -1255,7 +1352,109 @@ export default function ReportsPage() {
         curY += 6;
       }
 
-      if (viewMode === 'partywise') {
+      if (isBeat) {
+        const beatTableHead = [['#', 'BEAT NAME', 'SALESPERSON NAME', 'BILL DATE', 'BILL NO', 'PARTY NAME', 'BILL AMOUNT', 'O/S AMOUNT']];
+        const beatColStyles = {
+          0: { cellWidth: 8, halign: 'center' as const },
+          1: { cellWidth: 44 },
+          2: { cellWidth: 26 },
+          3: { cellWidth: 18, halign: 'center' as const },
+          4: { cellWidth: 22, halign: 'center' as const },
+          5: { cellWidth: 42 },
+          6: { cellWidth: 20, halign: 'right' as const },
+          7: { cellWidth: 20, halign: 'right' as const },
+        };
+        for (const { name, bills: grpBills } of beatWiseData) {
+          const sorted = [...grpBills].sort((a, b) => (a.billNo || '').localeCompare(b.billNo || '', 'en', { numeric: true }));
+          const grpAmt = sorted.reduce((s, b) => s + (b.billNetAmt || 0), 0);
+          const grpOs = sorted.reduce((s, b) => {
+            const lc = (b.lineCutAmt || 0) || Number(b.cancelLine) || 0;
+            const col = b.collectedAmount || 0;
+            return s + (b.outstandingAmount > 0 ? b.outstandingAmount : Math.max(0, (b.billNetAmt || 0) - lc - col));
+          }, 0);
+
+          // Group banner header (Light background, clean dark purple text)
+          const pageW = doc.internal.pageSize.getWidth();
+          doc.setFillColor(243, 232, 255);
+          doc.setDrawColor(216, 180, 254);
+          doc.rect(5, curY, pageW - 10, 5.5, 'FD');
+          doc.setTextColor(88, 28, 135);
+          doc.setFontSize(8.5); doc.setFont('helvetica', 'bold');
+          doc.text(`BEAT: ${name.toUpperCase()}   —   ${sorted.length} BILLS (TOTAL O/S: Rs. ${grpOs.toLocaleString('en-IN')})`, 8, curY + 3.8);
+          doc.setTextColor(0, 0, 0);
+          curY += 6.5;
+
+          const bodyData = sorted.map((b, idx) => {
+            const lc = (b.lineCutAmt || 0) || Number(b.cancelLine) || 0;
+            const col = b.collectedAmount || 0;
+            const osAmt = b.outstandingAmount > 0 ? b.outstandingAmount : Math.max(0, (b.billNetAmt || 0) - lc - col);
+            return [
+              idx + 1,
+              b.beatName || '-',
+              b.salespersonName || '-',
+              b.date || '-',
+              stripGST(getDisplayBillNo(b)),
+              b.partyName || '-',
+              b.billNetAmt.toLocaleString('en-IN'),
+              osAmt.toLocaleString('en-IN'),
+            ];
+          });
+
+          const footRow = [
+            '', '', '', '', '', `TOTAL (${sorted.length})`,
+            grpAmt.toLocaleString('en-IN'),
+            grpOs.toLocaleString('en-IN'),
+          ];
+
+          autoTable(doc, {
+            startY: curY,
+            head: beatTableHead,
+            body: bodyData,
+            foot: [footRow],
+            showFoot: 'lastPage',
+            theme: 'grid',
+            styles: { fontSize: 8, font: 'helvetica', fontStyle: 'bold', cellPadding: 0.35, minCellHeight: 2.38, overflow: 'ellipsize', lineWidth: 0.15, textColor: [0, 0, 0] },
+            headStyles: { fillColor: [233, 213, 255], textColor: [59, 7, 100], fontStyle: 'bold', fontSize: 8, cellPadding: 0.35 },
+            footStyles: { fillColor: [243, 232, 255], textColor: [59, 7, 100], fontStyle: 'bold', fontSize: 8, cellPadding: 0.35 },
+            bodyStyles: { textColor: [0, 0, 0], fontStyle: 'bold' },
+            columnStyles: beatColStyles,
+            margin: { left: 5, right: 5 },
+            didParseCell: (data: any) => {
+              if (data.section === 'body' && data.row.index % 2 === 1) {
+                data.cell.styles.fillColor = [250, 245, 255];
+              }
+            }
+          });
+
+          curY = (doc as any).lastAutoTable.finalY + 6;
+          if (curY > doc.internal.pageSize.getHeight() - 40) {
+            doc.addPage();
+            curY = 12;
+          }
+        }
+
+        // Grand total banner (Light background, bold clear text)
+        const grandBillAmt = expandedBills.reduce((s, b) => s + (b.billNetAmt || 0), 0);
+        const grandOsAmt = expandedBills.reduce((s, b) => {
+          const lc = (b.lineCutAmt || 0) || Number(b.cancelLine) || 0;
+          const col = b.collectedAmount || 0;
+          return s + (b.outstandingAmount > 0 ? b.outstandingAmount : Math.max(0, (b.billNetAmt || 0) - lc - col));
+        }, 0);
+
+        if (curY > doc.internal.pageSize.getHeight() - 25) {
+          doc.addPage();
+          curY = 12;
+        }
+
+        const pageW = doc.internal.pageSize.getWidth();
+        doc.setFillColor(233, 213, 255);
+        doc.setDrawColor(192, 132, 252);
+        doc.rect(5, curY, pageW - 10, 6, 'FD');
+        doc.setTextColor(59, 7, 100);
+        doc.setFontSize(8.5); doc.setFont('helvetica', 'bold');
+        doc.text(`GRAND TOTAL: ${beatWiseData.length} BEATS (${expandedBills.length} BILLS)   |   BILL AMT: Rs. ${grandBillAmt.toLocaleString('en-IN')}   |   O/S AMT: Rs. ${grandOsAmt.toLocaleString('en-IN')}`, 8, curY + 4.2);
+        doc.setTextColor(0, 0, 0);
+      } else if (viewMode === 'partywise') {
         renderGroupedTables('PARTY', b => b.partyName || '', [16, 130, 84]);
       } else if (viewMode === 'salespersonwise') {
         renderGroupedTables('SALESPERSON', b => b.salespersonName || '', [194, 100, 20]);
@@ -1485,7 +1684,11 @@ export default function ReportsPage() {
       const _mm = String(_n.getMonth() + 1).padStart(2, '0');
       const _yy = String(_n.getFullYear()).slice(2);
       const _datePart = `${_dd}${_mm}${_yy}`;
-      const _namePart = party
+      const _namePart = selectedBeat
+        ? `_BEAT_${selectedBeat}`
+        : viewMode === 'beatwise'
+        ? '_BEAT_WISE'
+        : party
         ? ` ${party.toUpperCase().replace(/\s+/g, '_').trim().substring(0, 30)}`
         : salesperson
         ? ` ${salesperson.toUpperCase().replace(/\s+/g, '_').trim().substring(0, 30)}`
@@ -1527,7 +1730,7 @@ export default function ReportsPage() {
   };
 
   // ── No filter selected = no report ──────────────────────────────────────────
-  const hasSelection = !!(fromDate || toDate || deliveryDate || recDate || driver || party || salesperson || statusFilter !== 'ALL');
+  const hasSelection = !!(fromDate || toDate || deliveryDate || recDate || driver || party || salesperson || selectedBeat || statusFilter !== 'ALL');
 
   const ResizeHandle = ({ colKey }: { colKey: string }) => (
     <div onMouseDown={(e) => startResizing(colKey, e)} className="absolute right-0 top-0 bottom-0 w-1 cursor-col-resize hover:bg-primary/50 z-20" />
@@ -1542,7 +1745,6 @@ export default function ReportsPage() {
         <div className="flex items-center justify-between gap-2 w-full">
           <div><h1 className="text-[11px] font-black text-primary-foreground uppercase tracking-widest leading-none">Financial Audit</h1><p className="text-[8px] font-bold text-primary-foreground/60 uppercase tracking-tighter">Global Reconciliation</p></div>
           <div className="flex gap-1 flex-wrap justify-end">
-            <Button size="sm" onClick={() => setShowAutoDispatch(true)} className="h-8 px-3 bg-emerald-500 hover:bg-emerald-600 text-slate-950 font-black text-[10px] rounded-lg border-0 shadow-sm">⚡ 50 SP Auto Dispatch</Button>
             <Button size="sm" onClick={exportToHUL} className="h-8 px-3 bg-blue-700 text-white font-black text-[10px] rounded-lg border-0 shadow-sm"><SheetIcon className="w-3.5 h-3.5 mr-1" /> HUL XLS</Button>
             <Button size="sm" onClick={exportToXLS} className="h-8 px-3 bg-emerald-600 text-white font-black text-[10px] rounded-lg border-0 shadow-sm"><SheetIcon className="w-3.5 h-3.5 mr-1" /> XLS</Button>
             <Button size="sm" onClick={exportToPDF} className="h-8 px-3 bg-rose-500 text-white font-black text-[10px] rounded-lg border-0 shadow-sm"><FileText className="w-3.5 h-3.5 mr-1" /> PDF</Button>
@@ -1552,26 +1754,27 @@ export default function ReportsPage() {
 
       <div className="w-full px-0 mt-0 space-y-0">
         <div className="bg-card rounded-none p-0 border-b border-border shadow-sm space-y-1 w-full">
-          <div className="flex items-center justify-between px-1.5 pt-1"><span className="text-[9px] font-black text-muted-foreground uppercase tracking-widest flex items-center gap-1"><Filter className="w-3 h-3" /> Intelligence Filters</span><button onClick={() => { setFromDate(''); setToDate(''); setDeliveryDate(''); setRecDate(''); setDriver(''); setParty(''); setSalesperson(''); setStatusFilter('ALL'); }} className="text-[9px] font-black text-primary uppercase">Reset</button></div>
+          <div className="flex items-center justify-between px-1.5 pt-1"><span className="text-[9px] font-black text-muted-foreground uppercase tracking-widest flex items-center gap-1"><Filter className="w-3 h-3" /> Intelligence Filters</span><button onClick={() => { setFromDate(''); setToDate(''); setDeliveryDate(''); setRecDate(''); setDriver(''); setParty(''); setSalesperson(''); setSelectedBeat(''); setStatusFilter('ALL'); }} className="text-[9px] font-black text-primary uppercase">Reset</button></div>
           <div className="grid grid-cols-4 gap-0 px-1.5 pb-1">
             <div className="space-y-0.5 pr-1"><label className="text-[7.5px] font-black text-muted-foreground uppercase">From</label><input type="date" value={fromDate} onChange={e => setFromDate(e.target.value)} className="w-full h-7 px-1.5 bg-muted rounded text-[9px] font-black outline-none border-0 uppercase" /></div>
             <div className="space-y-0.5 pr-1"><label className="text-[7.5px] font-black text-muted-foreground uppercase">To</label><input type="date" value={toDate} onChange={e => setToDate(e.target.value)} className="w-full h-7 px-1.5 bg-muted rounded text-[9px] font-black outline-none border-0 uppercase" /></div>
             <div className="space-y-0.5 pr-1"><label className="text-[7.5px] font-black text-muted-foreground uppercase">Del Date</label><input type="date" value={deliveryDate} onChange={e => setDeliveryDate(e.target.value)} className="w-full h-7 px-1.5 bg-muted rounded text-[9px] font-black outline-none border-0 uppercase" /></div>
             <div className="space-y-0.5"><label className="text-[7.5px] font-black text-orange-600 uppercase font-black">Rec Date ★</label><input type="date" value={recDate} onChange={e => setRecDate(e.target.value)} className="w-full h-7 px-1.5 bg-orange-50 rounded text-[9px] font-black outline-none border border-orange-300 uppercase" /></div>
           </div>
-          <div className="grid grid-cols-5 gap-0 border-t border-border/30 px-1.5 py-1">
-            <div className="space-y-0.5 pr-1"><label className="text-[7.5px] font-black text-muted-foreground uppercase">Driver</label><select value={driver} onChange={e => setDriver(e.target.value)} className="w-full h-7 px-1 bg-muted rounded text-[9px] font-black outline-none border-0 uppercase"><option value="">ALL</option>{drivers.map(d => <option key={d.id} value={d.name}>{d.name}</option>)}</select></div>
-            <div className="space-y-0.5 pr-1">
-              <div className="flex items-center gap-1">
+          <div className="grid grid-cols-12 gap-1 border-t border-border/30 px-1.5 py-1 items-end">
+            <div className="space-y-0.5 col-span-12 sm:col-span-2"><label className="text-[7.5px] font-black text-muted-foreground uppercase">Driver</label><select value={driver} onChange={e => setDriver(e.target.value)} className="w-full h-7 px-1 bg-muted rounded text-[9px] font-black outline-none border-0 uppercase"><option value="">ALL</option>{drivers.map(d => <option key={d.id} value={d.name}>{d.name}</option>)}</select></div>
+            <div className="space-y-0.5 col-span-12 sm:col-span-3">
+              <div className="flex items-center gap-1 flex-wrap">
                 <label className="text-[7.5px] font-black text-muted-foreground uppercase">Party</label>
                 <button onClick={() => setViewMode(v => v === 'datewise' ? 'detail' : 'datewise')} className={cn("text-[6.5px] font-black uppercase px-1.5 py-0.5 rounded border leading-none", viewMode === 'datewise' ? "bg-primary text-primary-foreground border-primary" : "bg-muted text-muted-foreground border-border hover:border-primary hover:text-primary")}>DATE WISE</button>
                 <button onClick={() => setViewMode(v => v === 'driverwise' ? 'detail' : 'driverwise')} className={cn("text-[6.5px] font-black uppercase px-1.5 py-0.5 rounded border leading-none", viewMode === 'driverwise' ? "bg-indigo-600 text-white border-indigo-600" : "bg-muted text-muted-foreground border-border hover:border-indigo-500 hover:text-indigo-600")}>DRIVER WISE</button>
                 <button onClick={() => setViewMode(v => v === 'partywise' ? 'detail' : 'partywise')} className={cn("text-[6.5px] font-black uppercase px-1.5 py-0.5 rounded border leading-none", viewMode === 'partywise' ? "bg-emerald-600 text-white border-emerald-600" : "bg-muted text-muted-foreground border-border hover:border-emerald-500 hover:text-emerald-600")}>PARTY WISE</button>
                 <button onClick={() => setViewMode(v => v === 'salespersonwise' ? 'detail' : 'salespersonwise')} className={cn("text-[6.5px] font-black uppercase px-1.5 py-0.5 rounded border leading-none", viewMode === 'salespersonwise' ? "bg-orange-600 text-white border-orange-600" : "bg-muted text-muted-foreground border-border hover:border-orange-500 hover:text-orange-600")}>SP WISE</button>
+                <button onClick={() => setViewMode(v => v === 'beatwise' ? 'detail' : 'beatwise')} className={cn("text-[6.5px] font-black uppercase px-1.5 py-0.5 rounded border leading-none", viewMode === 'beatwise' ? "bg-purple-700 text-white border-purple-700" : "bg-muted text-muted-foreground border-border hover:border-purple-600 hover:text-purple-600")}>BEAT WISE</button>
               </div>
               <select value={party} onMouseDown={activateNameLists} onFocus={activateNameLists} onChange={e => setParty(e.target.value)} className="w-full h-7 px-1 bg-muted rounded text-[9px] font-black outline-none border-0 uppercase"><option value="">ALL</option>{partyList.map(p => <option key={p} value={p}>{p}</option>)}</select>
             </div>
-            <div className="space-y-0.5 pr-1">
+            <div className="space-y-0.5 col-span-6 sm:col-span-2">
               <label className="text-[7.5px] font-black text-muted-foreground uppercase">Status</label>
               <select value={statusFilter} onChange={e => setStatusFilter(e.target.value as typeof statusFilter)} className="w-full h-7 px-1 bg-muted rounded text-[9px] font-black outline-none border-0 uppercase">
                 <option value="ALL">ALL</option>
@@ -1582,7 +1785,7 @@ export default function ReportsPage() {
                 <option value="DEL_PENDING">DEL PENDING</option>
               </select>
             </div>
-            <div className="space-y-0.5 col-span-2">
+            <div className="space-y-0.5 col-span-6 sm:col-span-3">
               <div className="flex items-center justify-between">
                 <label className="text-[7.5px] font-black text-muted-foreground uppercase">Salesperson</label>
                 <div className="flex items-center gap-1">
@@ -1616,6 +1819,38 @@ export default function ReportsPage() {
               <input list="sp-list" type="text" value={salesperson} onFocus={activateNameLists} onChange={e => setSalesperson(e.target.value)} placeholder="..." className="w-full h-7 px-2 bg-muted rounded text-[9px] font-black outline-none border-0 uppercase" />
               <datalist id="sp-list">{salespersonList.map(s => <option key={s} value={s} />)}</datalist>
             </div>
+            <div className="space-y-0.5 col-span-12 sm:col-span-2">
+              <div className="flex items-center justify-between">
+                <label className="text-[7.5px] font-black text-purple-700 dark:text-purple-400 uppercase">Beat (1-6)</label>
+                {selectedBeat && (
+                  <button
+                    type="button"
+                    onClick={() => setSelectedBeat('')}
+                    className="text-[7.5px] font-black text-muted-foreground hover:text-red-500 uppercase px-0.5"
+                    title="Clear beat filter"
+                  >
+                    ✕
+                  </button>
+                )}
+              </div>
+              <select
+                value={selectedBeat}
+                onChange={e => {
+                  const val = e.target.value;
+                  setSelectedBeat(val);
+                  if (val) setViewMode('beatwise');
+                }}
+                className="w-full h-7 px-1.5 bg-purple-50 dark:bg-purple-950/40 text-purple-900 dark:text-purple-200 border border-purple-300 dark:border-purple-800 rounded text-[9px] font-black outline-none uppercase"
+              >
+                <option value="">ALL BEATS</option>
+                <option value="1">BEAT 1 (1-... & OTR-1-...)</option>
+                <option value="2">BEAT 2 (2-... & OTR-2-...)</option>
+                <option value="3">BEAT 3 (3-... & OTR-3-...)</option>
+                <option value="4">BEAT 4 (4-... & OTR-4-...)</option>
+                <option value="5">BEAT 5 (5-... & OTR-5-...)</option>
+                <option value="6">BEAT 6 (6-... & OTR-6-...)</option>
+              </select>
+            </div>
           </div>
         </div>
 
@@ -1624,7 +1859,7 @@ export default function ReportsPage() {
           <div className="flex flex-col items-center justify-center py-24 gap-3 text-muted-foreground select-none">
             <Filter className="w-8 h-8 opacity-20" />
             <p className="text-[11px] font-black uppercase tracking-widest opacity-40">Select a filter to load report</p>
-            <p className="text-[9px] font-bold uppercase tracking-wide opacity-25">Rec Date · Del Date · Driver · Party · Salesperson · Status</p>
+            <p className="text-[9px] font-bold uppercase tracking-wide opacity-25">Rec Date · Del Date · Driver · Party · Salesperson · Beat · Status</p>
           </div>
         )}
 
@@ -1723,7 +1958,7 @@ export default function ReportsPage() {
                   const grpColl = grpBills.reduce((s, b) => s + (b.collectedAmount || 0), 0);
                   const grpDiff = grpAmt - grpLine - grpColl;
                   return (
-                    <>
+                    <Fragment key={name}>
                       {/* Driver header row */}
                       <tr key={`hdr-${name}`} className="bg-indigo-100 border-t-2 border-indigo-400">
                         <td colSpan={14} className="px-2 py-1 text-[11px] font-black text-indigo-800 tracking-widest">
@@ -1745,7 +1980,7 @@ export default function ReportsPage() {
                         const labelCls = isFBR ? 'bg-red-500 text-white' : isCredit ? 'bg-green-500 text-white' : isDelPend ? 'bg-yellow-400 text-black' : isPaid ? 'bg-emerald-500 text-white' : isAsgnd ? 'bg-red-100 text-red-700' : 'bg-muted text-muted-foreground';
                         const rowCls = isFBR ? 'bg-red-50' : isCredit ? 'bg-green-50' : isDelPend ? 'bg-yellow-50' : i % 2 === 0 ? 'bg-white' : 'bg-slate-50/60';
                         return (
-                          <tr key={b.billNo} onClick={() => setEditBill(b)} className={cn("border-b border-border/20 hover:bg-indigo-50/40 cursor-pointer transition-colors", rowCls)}>
+                          <tr key={`${b.billNo}_${i}`} onClick={() => setEditBill(b)} className={cn("border-b border-border/20 hover:bg-indigo-50/40 cursor-pointer transition-colors", rowCls)}>
                             <td className="px-1.5 py-0.5 text-center text-muted-foreground">{i + 1}</td>
                             <td className="px-1.5 py-0.5">{b.date || '-'}</td>
                             <td className={cn("px-1.5 py-0.5 font-black", isFBR && "text-red-700", isCredit && "text-green-800")}>{stripGST(getDisplayBillNo(b))}</td>
@@ -1787,7 +2022,7 @@ export default function ReportsPage() {
                         <td className={cn("px-1.5 py-1 text-right font-black", grpDiff > 0 ? "text-red-300" : grpDiff < 0 ? "text-blue-300" : "text-white/50")}>₹{grpDiff.toLocaleString('en-IN')}</td>
                         <td className="px-1.5 py-1 text-center">—</td>
                       </tr>
-                    </>
+                    </Fragment>
                   );
                 })}
                 {driverWiseData.length > 0 && (() => {
@@ -1810,6 +2045,96 @@ export default function ReportsPage() {
                       <td className="px-1.5 py-1.5 text-right font-black text-amber-400">{gLine > 0 ? `₹${gLine.toLocaleString('en-IN')}` : '—'}</td>
                       <td className={cn("px-1.5 py-1.5 text-right font-black", gDiff > 0 ? "text-red-400" : gDiff < 0 ? "text-blue-400" : "text-white/50")}>₹{gDiff.toLocaleString('en-IN')}</td>
                       <td className="px-1.5 py-1.5 text-center">—</td>
+                    </tr>
+                  );
+                })()}
+              </tbody>
+            </table>
+          </div>
+        )}
+
+        {hasSelection && viewMode === 'beatwise' && (
+          <div className="bg-card border-0 overflow-hidden overflow-x-auto no-scrollbar w-full">
+            <table className="w-full border-collapse text-[10px] font-black uppercase">
+              <thead className="sticky top-0 z-10">
+                <tr className="bg-purple-700 text-white">
+                  <th className="px-2 py-1.5 text-center w-8">#</th>
+                  <th className="px-2 py-1.5 text-left">BEAT NAME</th>
+                  <th className="px-2 py-1.5 text-left text-purple-200">SALESPERSON NAME</th>
+                  <th className="px-2 py-1.5 text-center">BILL DATE</th>
+                  <th className="px-2 py-1.5 text-center">BILL NO</th>
+                  <th className="px-2 py-1.5 text-left">PARTY NAME</th>
+                  <th className="px-2 py-1.5 text-right">BILL AMOUNT</th>
+                  <th className="px-2 py-1.5 text-right text-purple-200">O/S AMOUNT</th>
+                </tr>
+              </thead>
+              <tbody>
+                {beatWiseData.length === 0 && (
+                  <tr><td colSpan={8} className="px-2 py-8 text-center text-muted-foreground text-[10px]">NO DATA — No credit bills found for the selected beat filter</td></tr>
+                )}
+                {beatWiseData.map(({ name, bills: grpBills }) => {
+                  const grpAmt = grpBills.reduce((s, b) => s + (b.billNetAmt || 0), 0);
+                  const grpOs = grpBills.reduce((s, b) => {
+                    const lc = (b.lineCutAmt || 0) || Number(b.cancelLine) || 0;
+                    const col = b.collectedAmount || 0;
+                    return s + (b.outstandingAmount > 0 ? b.outstandingAmount : Math.max(0, (b.billNetAmt || 0) - lc - col));
+                  }, 0);
+                  return (
+                    <Fragment key={name}>
+                      {/* Beat group header */}
+                      <tr key={`hdr-${name}`} className="bg-purple-100 dark:bg-purple-950/60 border-t-2 border-purple-400">
+                        <td colSpan={8} className="px-2.5 py-1.5 text-[11px] font-black text-purple-900 dark:text-purple-200 tracking-wider">
+                          📍 BEAT: {name.toUpperCase()} — {grpBills.length} BILLS &nbsp;|&nbsp; <span className="text-purple-700 dark:text-purple-300">TOTAL O/S: ₹{grpOs.toLocaleString('en-IN')}</span>
+                        </td>
+                      </tr>
+                      {/* Bill rows */}
+                      {grpBills.map((b, i) => {
+                        const lc = (b.lineCutAmt || 0) || Number(b.cancelLine) || 0;
+                        const col = b.collectedAmount || 0;
+                        const osAmt = b.outstandingAmount > 0 ? b.outstandingAmount : Math.max(0, (b.billNetAmt || 0) - lc - col);
+                        return (
+                          <tr
+                            key={`${b.billNo}_${i}`}
+                            onClick={() => setEditBill(b)}
+                            className="border-b border-border/40 hover:bg-purple-50/60 dark:hover:bg-purple-950/30 cursor-pointer transition-colors"
+                          >
+                            <td className="px-2 py-1 text-center text-muted-foreground">{i + 1}</td>
+                            <td className="px-2 py-1 text-left font-bold text-purple-800 dark:text-purple-300">{b.beatName || '—'}</td>
+                            <td className="px-2 py-1 text-left text-muted-foreground">{b.salespersonName || '—'}</td>
+                            <td className="px-2 py-1 text-center">{b.date || '—'}</td>
+                            <td className="px-2 py-1 text-center font-bold text-primary">{stripGST(getDisplayBillNo(b))}</td>
+                            <td className="px-2 py-1 text-left max-w-[240px] truncate" title={b.partyName}>{b.partyName || '—'}</td>
+                            <td className="px-2 py-1 text-right font-bold">₹{b.billNetAmt.toLocaleString('en-IN')}</td>
+                            <td className="px-2 py-1 text-right font-black text-purple-700 dark:text-purple-300">₹{osAmt.toLocaleString('en-IN')}</td>
+                          </tr>
+                        );
+                      })}
+                      {/* Subtotal row */}
+                      <tr key={`sub-${name}`} className="bg-purple-50 dark:bg-purple-950/40 border-t border-b-2 border-purple-300 font-black text-purple-900 dark:text-purple-200">
+                        <td colSpan={6} className="px-2 py-1 text-right tracking-wider">
+                          SUBTOTAL: {name.toUpperCase()} ({grpBills.length} BILLS)
+                        </td>
+                        <td className="px-2 py-1 text-right">₹{grpAmt.toLocaleString('en-IN')}</td>
+                        <td className="px-2 py-1 text-right text-purple-700 dark:text-purple-300">₹{grpOs.toLocaleString('en-IN')}</td>
+                      </tr>
+                    </Fragment>
+                  );
+                })}
+                {/* Grand Total */}
+                {beatWiseData.length > 0 && (() => {
+                  const grandBillAmt = expandedBills.reduce((s, b) => s + (b.billNetAmt || 0), 0);
+                  const grandOsAmt = expandedBills.reduce((s, b) => {
+                    const lc = (b.lineCutAmt || 0) || Number(b.cancelLine) || 0;
+                    const col = b.collectedAmount || 0;
+                    return s + (b.outstandingAmount > 0 ? b.outstandingAmount : Math.max(0, (b.billNetAmt || 0) - lc - col));
+                  }, 0);
+                  return (
+                    <tr className="bg-purple-900 text-white font-black text-[11px] border-t-2 border-purple-500">
+                      <td colSpan={6} className="px-2.5 py-2 text-right tracking-widest">
+                        GRAND TOTAL ({beatWiseData.length} BEATS — {expandedBills.length} BILLS)
+                      </td>
+                      <td className="px-2 py-2 text-right">₹{grandBillAmt.toLocaleString('en-IN')}</td>
+                      <td className="px-2 py-2 text-right text-purple-200">₹{grandOsAmt.toLocaleString('en-IN')}</td>
                     </tr>
                   );
                 })()}
