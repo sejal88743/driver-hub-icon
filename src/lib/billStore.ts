@@ -396,6 +396,44 @@ const LS_PW_SUFFIX = 'vt_pw_suffix';
 const LS_SEARCH_RESET_SEC = 'vt_search_reset_sec';
 const LS_USER_PASSWORDS = 'vt_user_passwords';
 const LS_USER_PERMS = 'vt_user_perms';
+const LS_CREDIT_ASSIGNS = 'vitratrack_credit_assigns_v2';
+
+export type CreditAssign = {
+  givenTo?: string;
+  giveDate?: string;
+  giveTime?: string;
+  isGiven?: boolean;
+};
+
+let _creditAssigns: Record<string, CreditAssign> = (() => {
+  if (typeof window === 'undefined') return {};
+  try {
+    const raw = localStorage.getItem(LS_CREDIT_ASSIGNS) || localStorage.getItem('vitratrack_credit_assigns');
+    return raw ? JSON.parse(raw) : {};
+  } catch {
+    return {};
+  }
+})();
+
+export function getCreditAssigns(): Record<string, CreditAssign> {
+  return _creditAssigns;
+}
+
+export function saveCreditAssigns(assigns: Record<string, CreditAssign>) {
+  _creditAssigns = { ...assigns };
+  if (typeof window !== 'undefined') {
+    try {
+      localStorage.setItem(LS_CREDIT_ASSIGNS, JSON.stringify(assigns));
+      localStorage.setItem('vitratrack_credit_assigns', JSON.stringify(assigns));
+    } catch {}
+  }
+  try {
+    import('./apiSync').then(({ apiPushSetting }) => {
+      void apiPushSetting('credit_assigns', JSON.stringify(assigns));
+    }).catch(() => {});
+  } catch {}
+  dispatchUpdate();
+}
 
 let _pwSuffix: string = localStorage.getItem(LS_PW_SUFFIX) || 'manoj';
 let _billSearchAutoResetSec: number = Number(localStorage.getItem(LS_SEARCH_RESET_SEC) ?? 4);
@@ -546,6 +584,16 @@ export function setServerData(data: {
       _billSearchAutoResetSec = sec;
       localStorage.setItem(LS_SEARCH_RESET_SEC, String(sec));
     }
+  }
+  if (data.settings?.['credit_assigns']) {
+    try {
+      const serverAssigns = JSON.parse(data.settings['credit_assigns']);
+      if (serverAssigns && typeof serverAssigns === 'object') {
+        _creditAssigns = { ..._creditAssigns, ...serverAssigns };
+        localStorage.setItem(LS_CREDIT_ASSIGNS, JSON.stringify(_creditAssigns));
+        localStorage.setItem('vitratrack_credit_assigns', JSON.stringify(_creditAssigns));
+      }
+    } catch { /* ignore */ }
   }
 }
 
