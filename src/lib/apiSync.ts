@@ -1684,3 +1684,27 @@ export async function rpcDashboardCounts(targetDate: string, driver: string): Pr
   const row = Array.isArray(data) ? data[0] : data;
   return (row as DashboardCountsRow) ?? null;
 }
+
+// ─── Incremental delta sync ───────────────────────────────────────────────────
+// Instead of re-downloading every bill on each poll (very slow + janky UI with
+// 15k+ rows), fetch only rows whose `updated_at` changed since the last sync.
+export async function apiFetchBillsSince(sinceIso: string): Promise<Bill[]> {
+  if (!supabase) return [];
+  const CHUNK = 1000;
+  const out: Bill[] = [];
+  let offset = 0;
+  while (true) {
+    const { data, error } = await supabase
+      .from('bills')
+      .select('*')
+      .gt('updated_at', sinceIso)
+      .order('updated_at')
+      .range(offset, offset + CHUNK - 1);
+    if (error) throw error;
+    if (!data || data.length === 0) break;
+    out.push(...(data as Record<string, unknown>[]).map(mapBillFromSupabase));
+    if (data.length < CHUNK) break;
+    offset += data.length;
+  }
+  return out;
+}

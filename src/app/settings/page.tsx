@@ -59,7 +59,9 @@ import {
   Contact,
   idbSet,
   idbGet,
-  normDateStr
+  normDateStr,
+
+  areSalespersonNamesEquivalent,
 } from '@/lib/billStore';
 import TopNav from '@/components/TopNav';
 import { ConfirmModal } from '@/components/ConfirmModal';

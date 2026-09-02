@@ -2612,3 +2612,45 @@ export function calculateBillDiscountPercent(b: Partial<Bill> | null | undefined
   };
 }
 
+
+// ─── Batched delta merge (used by incremental polling sync) ───────────────────
+// Merges many changed bills in ONE pass instead of copying the array per row.
+export function applyBillsDelta(changed: Bill[]) {
+  if (!changed || changed.length === 0) return 0;
+  const byId = new Map<string, number>();
+  const byBillNo = new Map<string, number>();
+  _bills.forEach((b, i) => {
+    if (b.id) byId.set(b.id, i);
+    const bn = (b.billNo || '').trim().toUpperCase();
+    if (bn) byBillNo.set(bn, i);
+  });
+
+  const next = [..._bills];
+  const prepend: Bill[] = [];
+  let applied = 0;
+
+  for (const raw of changed) {
+    const greenName = getGreenPartyNameByCode(raw.partyCode);
+    const cleaned: Bill = {
+      ...raw,
+      partyName: greenName || cleanPartyName(raw.partyName),
+      salespersonName: cleanSalespersonName(raw.salespersonName),
+    };
+    const bn = (cleaned.billNo || '').trim().toUpperCase();
+    const isMoc = bn.startsWith('MOC') || cleaned.collectionCode === 'MOC' || cleaned.salespersonName === 'MOC' || (cleaned.id || '').startsWith('moc_');
+    let idx = cleaned.id ? (byId.get(cleaned.id) ?? -1) : -1;
+    if (idx < 0 && !isMoc && bn) idx = byBillNo.get(bn) ?? -1;
+    if (idx >= 0) {
+      next[idx] = { ...next[idx], ...cleaned };
+    } else {
+      prepend.push(cleaned);
+      if (cleaned.id) byId.set(cleaned.id, -1);
+    }
+    applied++;
+  }
+
+  _bills = prepend.length > 0 ? [...prepend, ...next] : next;
+  dispatchUpdate();
+  persistLocalState();
+  return applied;
+}

@@ -4,7 +4,7 @@ import { Bill, Bank, savePayment } from '@/lib/billStore';
 import BankCombobox from '@/components/BankCombobox';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
-import { getLoggedInName } from '@/lib/auth';
+import { getLoggedInName, getRole } from '@/lib/auth';
 import { getTodayISO, displayToIso, isoToDisplay } from '@/lib/dateUtils';
 
 type Props = {
