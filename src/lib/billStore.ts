@@ -768,6 +768,15 @@ export function applyRealtimeTableChange(
           _billSearchAutoResetSec = sec;
           localStorage.setItem(LS_SEARCH_RESET_SEC, String(sec));
         }
+      } else if (key === 'credit_assigns') {
+        try {
+          const parsed = JSON.parse(value);
+          if (parsed && typeof parsed === 'object') {
+            _creditAssigns = { ..._creditAssigns, ...parsed };
+            localStorage.setItem(LS_CREDIT_ASSIGNS, JSON.stringify(_creditAssigns));
+            localStorage.setItem('vitratrack_credit_assigns', JSON.stringify(_creditAssigns));
+          }
+        } catch {}
       }
       dispatchUpdate();
     }
