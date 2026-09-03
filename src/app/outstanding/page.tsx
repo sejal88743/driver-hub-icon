@@ -24,6 +24,7 @@ import {
 import { useBillStore } from '@/hooks/use-bill-store';
 import TopNav from '@/components/TopNav';
 import { cn } from '@/lib/utils';
+import { apiFetchSettingsEarly } from '@/lib/apiSync';
 import {
   Bill,
   getTodayDMY,
@@ -32,6 +33,7 @@ import {
   saveSalespersonContacts,
   getCreditAssigns,
   saveCreditAssigns,
+  loadCreditAssigns,
   CreditAssign
 } from '@/lib/billStore';
 import { Button } from '@/components/ui/button';
