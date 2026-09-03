@@ -468,7 +468,7 @@ export default function OutstandingPage() {
   };
 
   // Assign & mark bills as Given (Red font in table & locked from further selection)
-  const executeBillGiveAssignment = (salesmanName: string, giveDate: string) => {
+  const executeBillGiveAssignment = async (salesmanName: string, giveDate: string): Promise<{ ok: boolean; queued?: boolean }> => {
     const nowTime = getInitialTime();
     const nextAssigns = { ...assigns };
 
@@ -483,7 +483,7 @@ export default function OutstandingPage() {
     });
 
     setAssigns(nextAssigns);
-    saveCreditAssigns(nextAssigns);
+    return await saveCreditAssigns(nextAssigns);
   };
 
   // Save salesperson mobile to Supabase / store if entered/updated
