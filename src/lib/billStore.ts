@@ -419,7 +419,7 @@ export function getCreditAssigns(): Record<string, CreditAssign> {
   return _creditAssigns;
 }
 
-export function saveCreditAssigns(assigns: Record<string, CreditAssign>) {
+export async function saveCreditAssigns(assigns: Record<string, CreditAssign>): Promise<{ ok: boolean; queued?: boolean }> {
   _creditAssigns = { ...assigns };
   if (typeof window !== 'undefined') {
     try {
@@ -427,11 +427,23 @@ export function saveCreditAssigns(assigns: Record<string, CreditAssign>) {
       localStorage.setItem('vitratrack_credit_assigns', JSON.stringify(assigns));
     } catch {}
   }
+  dispatchUpdate();
   try {
-    import('./apiSync').then(({ apiPushSetting }) => {
-      void apiPushSetting('credit_assigns', JSON.stringify(assigns));
-    }).catch(() => {});
-  } catch {}
+    const { apiPushSetting } = await import('./apiSync');
+    return await apiPushSetting('credit_assigns', JSON.stringify(assigns));
+  } catch {
+    return { ok: false, queued: true };
+  }
+}
+
+export function loadCreditAssigns(serverAssigns: Record<string, CreditAssign>) {
+  _creditAssigns = { ..._creditAssigns, ...serverAssigns };
+  if (typeof window !== 'undefined') {
+    try {
+      localStorage.setItem(LS_CREDIT_ASSIGNS, JSON.stringify(_creditAssigns));
+      localStorage.setItem('vitratrack_credit_assigns', JSON.stringify(_creditAssigns));
+    } catch {}
+  }
   dispatchUpdate();
 }
 
@@ -756,6 +768,15 @@ export function applyRealtimeTableChange(
           _billSearchAutoResetSec = sec;
           localStorage.setItem(LS_SEARCH_RESET_SEC, String(sec));
         }
+      } else if (key === 'credit_assigns') {
+        try {
+          const parsed = JSON.parse(value);
+          if (parsed && typeof parsed === 'object') {
+            _creditAssigns = { ..._creditAssigns, ...parsed };
+            localStorage.setItem(LS_CREDIT_ASSIGNS, JSON.stringify(_creditAssigns));
+            localStorage.setItem('vitratrack_credit_assigns', JSON.stringify(_creditAssigns));
+          }
+        } catch {}
       }
       dispatchUpdate();
     }

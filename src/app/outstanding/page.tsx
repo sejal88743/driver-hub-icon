@@ -24,6 +24,7 @@ import {
 import { useBillStore } from '@/hooks/use-bill-store';
 import TopNav from '@/components/TopNav';
 import { cn } from '@/lib/utils';
+import { apiFetchSettingsEarly } from '@/lib/apiSync';
 import {
   Bill,
   getTodayDMY,
@@ -32,6 +33,7 @@ import {
   saveSalespersonContacts,
   getCreditAssigns,
   saveCreditAssigns,
+  loadCreditAssigns,
   CreditAssign
 } from '@/lib/billStore';
 import { Button } from '@/components/ui/button';
@@ -170,11 +172,36 @@ export default function OutstandingPage() {
   const [giveSalesmanMobile, setGiveSalesmanMobile] = useState('');
   const [alertNotice, setAlertNotice] = useState<string | null>(null);
 
+  // Load shared credit-assign state from Supabase once on mount
+  useEffect(() => {
+    let mounted = true;
+    apiFetchSettingsEarly().then((settings) => {
+      if (!mounted) return;
+      if (settings?.credit_assigns) {
+        try {
+          const parsed = JSON.parse(settings.credit_assigns);
+          if (parsed && typeof parsed === 'object') {
+            loadCreditAssigns(parsed);
+            setAssigns(getCreditAssigns());
+          }
+        } catch {}
+      }
+    }).catch(() => {});
+    return () => { mounted = false; };
+  }, []);
+
+  // Keep local assigns in sync with store updates (realtime / other tabs)
   useEffect(() => {
     setAssigns(getCreditAssigns());
   }, [bills]);
 
-  const updateAssign = (bill: Bill, patch: Partial<CreditAssign>) => {
+  useEffect(() => {
+    const handler = () => setAssigns(getCreditAssigns());
+    window.addEventListener('bill-store-update', handler);
+    return () => window.removeEventListener('bill-store-update', handler);
+  }, []);
+
+  const updateAssign = async (bill: Bill, patch: Partial<CreditAssign>) => {
     const key = bill.id || bill.billNo;
     const current = assigns[key] || {};
     const updated: CreditAssign = {
@@ -185,7 +212,7 @@ export default function OutstandingPage() {
     };
     const next = { ...assigns, [key]: updated };
     setAssigns(next);
-    saveCreditAssigns(next);
+    await saveCreditAssigns(next);
   };
 
   const totals = useMemo(() => {
@@ -441,7 +468,7 @@ export default function OutstandingPage() {
   };
 
   // Assign & mark bills as Given (Red font in table & locked from further selection)
-  const executeBillGiveAssignment = (salesmanName: string, giveDate: string) => {
+  const executeBillGiveAssignment = async (salesmanName: string, giveDate: string): Promise<{ ok: boolean; queued?: boolean }> => {
     const nowTime = getInitialTime();
     const nextAssigns = { ...assigns };
 
@@ -456,7 +483,7 @@ export default function OutstandingPage() {
     });
 
     setAssigns(nextAssigns);
-    saveCreditAssigns(nextAssigns);
+    return await saveCreditAssigns(nextAssigns);
   };
 
   // Save salesperson mobile to Supabase / store if entered/updated
