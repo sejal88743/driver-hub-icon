@@ -172,9 +172,34 @@ export default function OutstandingPage() {
   const [giveSalesmanMobile, setGiveSalesmanMobile] = useState('');
   const [alertNotice, setAlertNotice] = useState<string | null>(null);
 
+  // Load shared credit-assign state from Supabase once on mount
+  useEffect(() => {
+    let mounted = true;
+    apiFetchSettingsEarly().then((settings) => {
+      if (!mounted) return;
+      if (settings?.credit_assigns) {
+        try {
+          const parsed = JSON.parse(settings.credit_assigns);
+          if (parsed && typeof parsed === 'object') {
+            loadCreditAssigns(parsed);
+            setAssigns(getCreditAssigns());
+          }
+        } catch {}
+      }
+    }).catch(() => {});
+    return () => { mounted = false; };
+  }, []);
+
+  // Keep local assigns in sync with store updates (realtime / other tabs)
   useEffect(() => {
     setAssigns(getCreditAssigns());
   }, [bills]);
+
+  useEffect(() => {
+    const handler = () => setAssigns(getCreditAssigns());
+    window.addEventListener('bill-store-update', handler);
+    return () => window.removeEventListener('bill-store-update', handler);
+  }, []);
 
   const updateAssign = (bill: Bill, patch: Partial<CreditAssign>) => {
     const key = bill.id || bill.billNo;
