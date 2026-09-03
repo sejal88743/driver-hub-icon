@@ -2262,7 +2262,6 @@ export default function Dashboard() {
     setPaymentMode('');
     setConfirmInput('');
     setDelPendingDriver('');
-    setDriverKeypadTarget('cash');
     setEditLocked(true);
     setRecDateInput(dashDate);
     setRecDateOverride(isoToDisplay(dashDate));
