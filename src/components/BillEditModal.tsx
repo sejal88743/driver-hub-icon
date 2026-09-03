@@ -61,7 +61,7 @@ export default function BillEditModal({ bill, banks, onClose, onSaved }: Props) 
 
   const isDriverRole = getRole() === 'driver';
   const isSpecialMode = payMode === 'FBR' || payMode === 'Credit' || payMode === 'Del Pending' || payMode === 'Unpaid';
-  const chqOk = chq <= 0 || (chequeNo.trim().length >= 3 && (isDriverRole || !!bankName.trim()));
+  const chqOk = chq <= 0 || (chequeNo.trim().length === 6 && (isDriverRole || !!bankName.trim()));
   const canSave = !saving && chqOk && (
     (total > 0) ||
     isSpecialMode
