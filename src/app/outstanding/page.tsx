@@ -201,7 +201,7 @@ export default function OutstandingPage() {
     return () => window.removeEventListener('bill-store-update', handler);
   }, []);
 
-  const updateAssign = (bill: Bill, patch: Partial<CreditAssign>) => {
+  const updateAssign = async (bill: Bill, patch: Partial<CreditAssign>) => {
     const key = bill.id || bill.billNo;
     const current = assigns[key] || {};
     const updated: CreditAssign = {
@@ -212,7 +212,7 @@ export default function OutstandingPage() {
     };
     const next = { ...assigns, [key]: updated };
     setAssigns(next);
-    saveCreditAssigns(next);
+    await saveCreditAssigns(next);
   };
 
   const totals = useMemo(() => {
