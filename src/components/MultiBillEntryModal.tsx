@@ -566,7 +566,7 @@ export default function MultiBillEntryModal({ bills, banks, selectedDriver, disp
     }
 
     if (paymentMode === 'Cheque') {
-      if (!chequeNo.trim())  { newErrors['_cheque'] = 'Cheque no required'; }
+      if (chequeNo.trim().length !== 6)  { newErrors['_cheque'] = 'Cheque no 6 digit compulsory'; }
       if (!bankName.trim() && getRole() !== 'driver')  { newErrors['_bank']   = 'Bank name required'; }
       if (!chequeDate.trim()){ newErrors['_chqdate'] = 'Cheque date required'; }
     }

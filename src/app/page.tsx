@@ -2164,8 +2164,8 @@ export default function Dashboard() {
 
     // Driver mode Cheque validation: Cheque No and Cheque Date are compulsory when Cheque Amount > 0
     if (isDriverRole && Number(chqAmt) > 0) {
-      if (!chequeNo.trim()) {
-        setSaveError('Cheque No compulsory hai!');
+      if (chequeNo.trim().length !== 6) {
+        setSaveError('Cheque No 6 digit ka compulsory hai!');
         setTimeout(() => chequeNoRef.current?.focus(), 40);
         return;
       }
@@ -2205,8 +2205,8 @@ export default function Dashboard() {
   function handleSaveClick() {
     if (getRole() === 'driver' || isDriverMode) {
       if (Number(chqAmt) > 0) {
-        if (!chequeNo.trim()) {
-          setSaveError('Cheque No compulsory hai!');
+        if (chequeNo.trim().length !== 6) {
+          setSaveError('Cheque No 6 digit ka compulsory hai!');
           setTimeout(() => chequeNoRef.current?.focus(), 40);
           return;
         }
@@ -2262,7 +2262,6 @@ export default function Dashboard() {
     setPaymentMode('');
     setConfirmInput('');
     setDelPendingDriver('');
-    setDriverKeypadTarget('cash');
     setEditLocked(true);
     setRecDateInput(dashDate);
     setRecDateOverride(isoToDisplay(dashDate));
@@ -2543,16 +2542,16 @@ Kripya party se is bill ka payment collection coordinate karein.`;
   // Paid/Protected-bill editing follows Admin > Users > Edit. Back Date remains date-only.
   const userCannotEditReceivedBill = isUserRole && isProtectedBill && !userPerms.canEdit;
 
-  // Cheque valid:
-  // Driver mode: Cheque No (>=1) and Cheque Date (DD/MM >= 2) are COMPULSORY; Bank is OPTIONAL
-  // Owner/User mode: Cheque No (>=3) and Bank Name are COMPULSORY
+  // Cheque valid: Cheque No MUST be exactly 6 digits (compulsory)
+  // Driver mode: Cheque No (6 digits) and Cheque Date (DD/MM >= 2) are COMPULSORY; Bank is OPTIONAL
+  // Owner/User mode: Cheque No (6 digits) and Bank Name are COMPULSORY
   const chqAmt_num = Number(chqAmt);
   const isChqDateFilled = chqDateDD.trim().length >= 2 || (!!chequeDate && chequeDate.trim().length >= 4);
-  const isChqNoFilled = chequeNo.trim().length >= 1;
+  const isChqNoFilled = chequeNo.trim().length === 6;
   const chqValid = chqAmt_num <= 0 || (
     isDriverMode
       ? (isChqNoFilled && isChqDateFilled)
-      : (chequeNo.trim().length >= 3 && !!bankName.trim())
+      : (isChqNoFilled && !!bankName.trim())
   );
 
 
