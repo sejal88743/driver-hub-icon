@@ -2376,8 +2376,9 @@ export async function savePayment(
   // Preserve existing driver assignment — once a bill is assigned to a driver,
   // payment entry (by OWNER or any user) must not clear or overwrite that assignment.
   // Only the Driver page's explicit remove/reassign action should change driverName.
+  // For MOC commission entries: whoever enters it (or selected driver) owns the entry.
   const existingDriver = _bills[index].driverName?.trim();
-  const finalDriverName = existingDriver ? existingDriver : driverName;
+  const finalDriverName = isMocBill ? (driverName || existingDriver || 'OWNER') : (existingDriver ? existingDriver : driverName);
 
   // PaymentDate & PaymentTime:
   // User explicitly requested: when Credit, Del Pending, or Unpaid is selected without collected money, NO paid/rec date should be added!
@@ -2388,12 +2389,12 @@ export async function savePayment(
     ? forceRecDate
     : (existingPaymentDate || (customDate ? excelSerialToDate(customDate) : paymentDate));
   const normalizedPaymentDate = rawRecDate ? excelSerialToDate(rawRecDate) : '';
-  const shouldSetPaymentDate = !isNoPaymentDateMode && (hasCollection || isFBR || finalPaymentMode === 'Paid' || (!!forceRecDate && forceRecDate.trim() !== '' && !isCredit && !isDelPend && !isUnpaid));
+  const shouldSetPaymentDate = isMocBill || (!isNoPaymentDateMode && (hasCollection || isFBR || finalPaymentMode === 'Paid' || (!!forceRecDate && forceRecDate.trim() !== '' && !isCredit && !isDelPend && !isUnpaid)));
   const finalPaymentDate = shouldSetPaymentDate
     ? normalizedPaymentDate
     : '';
   const finalPaymentTime = shouldSetPaymentDate
-    ? (paymentTime || _bills[index].paymentTime || '')
+    ? (paymentTime || _bills[index].paymentTime || (isMocBill ? (driverName || 'OWNER') : ''))
     : '';
 
   const patch: Partial<Bill> = {
@@ -2433,6 +2434,14 @@ export async function savePayment(
     patch.beatName = 'COMMISSION';
     patch.billNetAmt = collected;
     patch.lineCutAmt = 0;
+    const finalRecDate = finalPaymentDate || normalizedPaymentDate || paymentDate;
+    if (finalRecDate) {
+      patch.paymentDate = finalRecDate;
+      patch.date = finalRecDate;
+      patch.deliveryDate = finalRecDate;
+    }
+    patch.driverName = finalDriverName;
+    patch.paymentTime = finalPaymentTime;
   }
   // Save chequeDate immediately with payment data when provided
   if (chequeDate) patch.chequeDate = excelSerialToDate(chequeDate);

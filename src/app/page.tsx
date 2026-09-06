@@ -612,10 +612,17 @@ export default function Dashboard() {
           }
         }
       }
-      dbills = bills.filter(b =>
-        (b.driverName?.trim().toUpperCase() === selUpper && b.deliveryDate === displayDate) ||
-        snapshotBillNos.has(b.billNo)
-      );
+      dbills = bills.filter(b => {
+        const isMoc = (b.billNo || '').toUpperCase().startsWith('MOC') || b.collectionCode === 'MOC' || b.salespersonName === 'MOC';
+        const dName = (b.driverName || '').trim().toUpperCase();
+        const pTime = (b.paymentTime || '').trim().toUpperCase();
+        if (isMoc) {
+          const isUserMatch = dName === selUpper || pTime === selUpper || pTime.startsWith(selUpper + ':');
+          const isDateMatch = b.paymentDate === displayDate || b.date === displayDate || b.deliveryDate === displayDate;
+          return isUserMatch && isDateMatch;
+        }
+        return (dName === selUpper && b.deliveryDate === displayDate) || snapshotBillNos.has(b.billNo);
+      });
     }
 
     const totalCount = dbills.length;
@@ -676,13 +683,14 @@ export default function Dashboard() {
 
     const getPersonRole = (name: string): { role: 'driver' | 'user' | 'owner'; cleanName: string } => {
       const u = (name || '').trim().toUpperCase();
-      if (!u || u === 'OWNER' || u === '👑 OWNER') return { role: 'owner', cleanName: 'OWNER' };
-      const d = drivers.find(drv => (drv.name || '').trim().toUpperCase() === u);
-      if (d?.role === 'owner') return { role: 'owner', cleanName: d.name || u };
-      if (d?.role === 'user' || u === 'PRATIXA' || u === 'KHUSHI' || u === 'TARACHAND' || u === 'SEJAL') {
-        return { role: 'user', cleanName: d?.name || u };
+      const base = u.includes(':') ? u.split(':')[0].trim() : (u.includes(' ') ? u.split(' ')[0].trim() : u);
+      if (!base || base === 'OWNER' || base === '👑 OWNER') return { role: 'owner', cleanName: 'OWNER' };
+      const d = drivers.find(drv => (drv.name || '').trim().toUpperCase() === base || (drv.name || '').trim().toUpperCase() === u);
+      if (d?.role === 'owner') return { role: 'owner', cleanName: d.name || base };
+      if (d?.role === 'user' || base === 'PRATIXA' || base === 'KHUSHI' || base === 'TARACHAND' || base === 'SEJAL') {
+        return { role: 'user', cleanName: d?.name || base };
       }
-      return { role: 'driver', cleanName: d?.name || u };
+      return { role: 'driver', cleanName: d?.name || base };
     };
 
     const addPersonRecord = (name: string, amt: number) => {
@@ -839,19 +847,22 @@ export default function Dashboard() {
       const pDate = b.paymentDate || '';
       const dDate = b.deliveryDate || '';
 
+      const isMoc = (b.billNo || '').toUpperCase().startsWith('MOC') || b.collectionCode === 'MOC' || b.salespersonName === 'MOC';
+
       if (isOwner) {
         // Owner must be explicit payment date matching displayDate and entered by OWNER
         // Exclude bills that were assigned to a driver on deliveryDate
-        if (dDate === displayDate && dName && dName !== 'OWNER') continue;
+        if (!isMoc && dDate === displayDate && dName && dName !== 'OWNER') continue;
         const isOtherStaff = drivers.some(d => d.role === 'user' && (d.name || '').trim().toUpperCase() !== 'OWNER' && (pTime === (d.name || '').trim().toUpperCase() || pTime.startsWith((d.name || '').trim().toUpperCase() + ':')));
         if (isOtherStaff) continue;
 
-        const isOwnerPaid = pDate === displayDate && (
+        const isOwnerPaid = (pDate === displayDate || (isMoc && (b.date === displayDate || dDate === displayDate))) && (
           pTime === 'OWNER' ||
           pTime.startsWith('OWNER:') ||
           pTime.startsWith('OWNER ') ||
           dName === 'OWNER' ||
           (Array.isArray(ownerSavedBillNos) && ownerSavedBillNos.includes(b.billNo)) ||
+          (isMoc && (!pTime || dName === 'OWNER')) ||
           (!pTime && getRole() === 'owner') ||
           /^\d{1,2}:\d{2}/.test(pTime)
         );
@@ -865,15 +876,17 @@ export default function Dashboard() {
         }
       } else if (isUserStaff) {
         // Must be genuinely entered by this specific user and paymentDate === displayDate
-        // Exclude any deliveryDate === displayDate entry from user table cash stats
-        if (dDate === displayDate) continue;
+        // Exclude any deliveryDate === displayDate entry from user table cash stats (except MOC)
+        if (!isMoc && dDate === displayDate) continue;
 
         const isThisUser = (
           pTime === selUpper ||
           pTime.startsWith(selUpper + ':') ||
-          pTime.startsWith(selUpper + ' ')
+          pTime.startsWith(selUpper + ' ') ||
+          (isMoc && (dName === selUpper || pTime === selUpper))
         );
-        if (isThisUser && pDate === displayDate) {
+        const matchesDate = pDate === displayDate || (isMoc && (b.date === displayDate || dDate === displayDate));
+        if (isThisUser && matchesDate) {
           const c = getEffCash(b);
           if (c > 0) {
             seenBillNos.add(normBillNo);
@@ -883,7 +896,14 @@ export default function Dashboard() {
         }
       } else {
         // Driver view (e.g. DINESH PATIL, MANOHAR)
-        const isDriverBill = dName === selUpper && (dDate === displayDate || (!dDate && b.date === displayDate));
+        const isDriverBill = (
+          (dName === selUpper && (
+            dDate === displayDate ||
+            (!dDate && b.date === displayDate) ||
+            (isMoc && (pDate === displayDate || b.date === displayDate || dDate === displayDate))
+          )) ||
+          (isMoc && (pTime === selUpper || pTime.startsWith(selUpper + ':')) && (pDate === displayDate || b.date === displayDate || dDate === displayDate))
+        );
         if (isDriverBill) {
           const c = getEffCash(b);
           if (c > 0) {
@@ -938,6 +958,7 @@ export default function Dashboard() {
       const allCurrentBills = getBills();
       const nextSr = getNextMocSrNo(mocNum, allCurrentBills);
       const serialBillNo = formatMocSerialBillNo(mocNum, nextSr);
+      const effectiveUserOrDriver = selectedDriver || (getRole() === 'user' ? getLoggedInName() : '') || 'OWNER';
       const newMocBill: Bill = {
         id: `moc_${mocNum}_${nextSr}_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
         srNo: String(nextSr),
@@ -954,7 +975,9 @@ export default function Dashboard() {
         collectedAmount: 0,
         outstandingAmount: 0,
         billAgeing: 0,
-        driverName: selectedDriver || 'OWNER',
+        driverName: effectiveUserOrDriver,
+        paymentTime: effectiveUserOrDriver,
+        paymentDate: displayDate,
         paymentMode: 'Cash',
       };
       addBillsToMemoryOnly([newMocBill]);
@@ -1860,9 +1883,9 @@ export default function Dashboard() {
       drivers.some(d => (d.name || '').trim().toUpperCase() === selectedDriver.trim().toUpperCase() && (d.role === 'user' || d.role === 'owner'))
     );
 
-    const effectivePaymentTime = (selectedDriver === 'OWNER' || getRole() === 'owner')
+    const effectivePaymentTime = (selectedDriver === 'OWNER' || (getRole() === 'owner' && !selectedDriver))
       ? 'OWNER'
-      : (getLoggedInName() || (isSelectedStaffOrOwner ? selectedDriver : (isDiffRecDate ? 'PRATIXA' : selectedDriver)));
+      : (selectedDriver || getLoggedInName() || (getRole() === 'owner' ? 'OWNER' : (isDiffRecDate ? 'PRATIXA' : 'OWNER')));
 
     const ok = await savePayment(
       selectedBill?.billNo || selectedBillNo, finalMode, null, totalCollected,

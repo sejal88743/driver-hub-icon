@@ -3,10 +3,11 @@ import { useState, useMemo, useEffect, useRef } from "react";
 import { Bill, CashBreakdown, saveSummaries, getSummaries, DriverDailySummary, getDrivers } from "@/lib/billStore";
 import { getRole } from "@/lib/auth";
 import { cn } from "@/lib/utils";
-import { ChevronUp, ChevronDown, Calculator, X, Check, Save, Square, FileText, Trash2 } from "lucide-react";
+import { ChevronUp, ChevronDown, Calculator, X, Check, Save, Square, FileText, Trash2, MessageCircle, AlertCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { isGreenParty } from "@/lib/greenParties";
 import { getDisplayBillNo } from "@/lib/commissionMoc";
+import WhatsAppSalesmanModal from "./WhatsAppSalesmanModal";
 
 type Props = {
   bills: Bill[];
@@ -30,6 +31,20 @@ function parseDDMMYYYY(d: string): number {
   const [dd, mm, yyyy] = d.split('/');
   if (!dd || !mm || !yyyy) return 0;
   return Number(`${yyyy}${mm}${dd}`);
+}
+
+function getEffectiveAmounts(b: Bill) {
+  const cash = Number(b.cashAmount) || 0;
+  const upi  = Number(b.upiAmount)  || 0;
+  const chq  = Number(b.chequeAmount) || 0;
+  const collected = Number(b.collectedAmount) || 0;
+  if (cash === 0 && upi === 0 && chq === 0 && collected > 0) {
+    const mode = (b.paymentMode || '').toLowerCase();
+    if (mode === 'upi') return { cash: 0, upi: collected, chq: 0 };
+    if (mode === 'cheque') return { cash: 0, upi: 0, chq: collected };
+    return { cash: collected, upi: 0, chq: 0 };
+  }
+  return { cash, upi, chq };
 }
 
 export default function DriverDayTable({ bills, selectedDriver, displayDate, onSelectBill, ownerSavedBillNos, isDriverMode, selectedDriverIsOwnerOrUser, enteredByFilter }: Props) {
@@ -160,16 +175,16 @@ export default function DriverDayTable({ bills, selectedDriver, displayDate, onS
         if (_bm === 'assigned') return false;
         if (!hasMoneyRec && !isFBR && !isCredit && !isPaid) return false;
         // If bill was assigned to a driver on deliveryDate = displayDate, do not show in owner view
-        if (b.deliveryDate === displayDate && b.driverName && b.driverName.trim().toUpperCase() !== 'OWNER') return false;
+        if (!isMoc && b.deliveryDate === displayDate && b.driverName && b.driverName.trim().toUpperCase() !== 'OWNER') return false;
         // If bill does not have paymentDate, do not show in owner view
-        if (!b.paymentDate) return false;
+        if (!b.paymentDate && !(isMoc && (b.date === displayDate || b.deliveryDate === displayDate))) return false;
 
         const isSavedByOwnerList = Array.isArray(ownerSavedBillNos) && (ownerSavedBillNos.includes(b.billNo) || ownerSavedBillNos.includes(b.id));
         const pTime = (b.paymentTime || '').trim().toUpperCase();
         const dName = (b.driverName || '').trim().toUpperCase();
 
         // Check if payment/received date matches displayDate
-        let matchesDate = b.paymentDate === displayDate;
+        let matchesDate = b.paymentDate === displayDate || (isMoc && (b.date === displayDate || b.deliveryDate === displayDate));
         if (pTime.startsWith('OWNER:') && pTime.includes(':')) {
           const entryDate = pTime.split(':')[1];
           if (entryDate === displayDate) matchesDate = true;
@@ -194,6 +209,7 @@ export default function DriverDayTable({ bills, selectedDriver, displayDate, onS
           pTime.startsWith('OWNER ') ||
           isSavedByOwnerList ||
           dName === 'OWNER' ||
+          (isMoc && (!pTime || dName === 'OWNER' || pTime === 'OWNER')) ||
           !pTime ||
           /^\d{1,2}:\d{2}/.test(pTime) // regular timestamp e.g. 14:30
         );
@@ -231,24 +247,26 @@ export default function DriverDayTable({ bills, selectedDriver, displayDate, onS
         // Assigned bills belong only to the driver's table — never in owner/user view
         if (_bm === 'assigned') return false;
         if (!hasMoneyRec && !isFBR && !isCredit && !isPaid) return false;
-        // SAME DEL DATE WALA KOI BHI ENTRY USER TABLE ME SHOW NAHI HONA CHAHIYE
-        if (b.deliveryDate === displayDate) return false;
+        // SAME DEL DATE WALA KOI BHI ENTRY USER TABLE ME SHOW NAHI HONA CHAHIYE (EXCEPT MOC)
+        if (!isMoc && b.deliveryDate === displayDate) return false;
         // If bill does not have paymentDate, do not show in user view
-        if (!b.paymentDate) return false;
+        if (!b.paymentDate && !(isMoc && (b.date === displayDate || b.deliveryDate === displayDate))) return false;
 
         const pTime = (b.paymentTime || '').trim().toUpperCase();
+        const dName = (b.driverName || '').trim().toUpperCase();
 
-        // Must strictly be entered by this user (pTime === USER_NAME or starts with USER_NAME: / USER_NAME )
+        // Must strictly be entered by this user (pTime === USER_NAME or starts with USER_NAME: / USER_NAME or for MOC dName === USER_NAME)
         const isThisUserPayment = (
           pTime === selUpper ||
           pTime.startsWith(selUpper + ':') ||
           pTime.startsWith(selUpper + ' ') ||
+          (isMoc && (dName === selUpper || pTime === selUpper)) ||
           (Boolean(enteredByFilter) && enteredByFilter!.trim().toUpperCase() === selUpper && (pTime === selUpper || pTime.startsWith(selUpper + ':') || pTime.startsWith(selUpper + ' ')))
         );
 
         if (!isThisUserPayment) return false;
 
-        let matchesDate = b.paymentDate === displayDate;
+        let matchesDate = b.paymentDate === displayDate || (isMoc && (b.date === displayDate || b.deliveryDate === displayDate));
         if (pTime.includes(':')) {
           const entryDate = pTime.split(':')[1];
           if (entryDate === displayDate) matchesDate = true;
@@ -263,7 +281,7 @@ export default function DriverDayTable({ bills, selectedDriver, displayDate, onS
         return false;
       });
     } else {
-      // Driver view: strictly show bills assigned to this driver whose deliveryDate matches the selected date (or snapshots)
+      // Driver view: strictly show bills assigned to this driver whose deliveryDate matches the selected date (or snapshots, or MOC entered under this driver)
       const seenDriverBills = new Set<string>();
       result = bills.filter(b => {
         if (!b.billNo) return false;
@@ -271,8 +289,18 @@ export default function DriverDayTable({ bills, selectedDriver, displayDate, onS
         const normNo = isMoc ? (b.id || b.billNo || '') : (b.billNo || '').trim().toUpperCase();
         if (seenDriverBills.has(normNo)) return false;
 
-        const isMatch = ((b.driverName || '').trim().toUpperCase() === selUpper && (b.deliveryDate === displayDate || (!b.deliveryDate && b.date === displayDate))) ||
-          (b.billNo && snapshotBillNos.has(b.billNo));
+        const dName = (b.driverName || '').trim().toUpperCase();
+        const pTime = (b.paymentTime || '').trim().toUpperCase();
+
+        const isMatch = (
+          (dName === selUpper && (
+            b.deliveryDate === displayDate ||
+            (!b.deliveryDate && b.date === displayDate) ||
+            (isMoc && (b.paymentDate === displayDate || b.date === displayDate || b.deliveryDate === displayDate))
+          )) ||
+          (isMoc && (pTime === selUpper || pTime.startsWith(selUpper + ':') || pTime.startsWith(selUpper + ' ')) && (b.paymentDate === displayDate || b.date === displayDate || b.deliveryDate === displayDate)) ||
+          (b.billNo && snapshotBillNos.has(b.billNo))
+        );
 
         if (isMatch) {
           seenDriverBills.add(normNo);
@@ -330,6 +358,49 @@ export default function DriverDayTable({ bills, selectedDriver, displayDate, onS
     return groupedResult;
   }, [bills, selectedDriver, displayDate, sort, ownerSavedBillNos, snapshotBillNos, enteredByFilter, selectedDriverIsOwnerOrUser]);
 
+  const [waModalOpen, setWaModalOpen] = useState(false);
+  const [waWarning, setWaWarning] = useState<string | null>(null);
+
+  const allVisibleKeys = useMemo(() => rows.map(b => b.id || b.billNo), [rows]);
+  const allVisibleSelected = allVisibleKeys.length > 0 && allVisibleKeys.every(k => selectedRows.has(k));
+
+  function handleToggleAllRows() {
+    if (allVisibleSelected) {
+      setSelectedRows(new Set());
+    } else {
+      setSelectedRows(new Set(allVisibleKeys));
+    }
+  }
+
+  const selectedPaidBills = useMemo(() => {
+    return rows.filter(b => {
+      if (!selectedRows.has(b.id || b.billNo)) return false;
+      const isSnap = snapshotBillNos.has(b.billNo);
+      const _bm = (b.paymentMode || '').toLowerCase();
+      const eff = getEffectiveAmounts(b);
+      const hasMoneyRec = eff.cash > 0 || eff.upi > 0 || eff.chq > 0 || (Number(b.collectedAmount) || 0) > 0;
+      const isFBR = !isSnap && (_bm === 'fbr' || _bm === 'cancel') && !hasMoneyRec;
+      const isDelPend = !isSnap && (_bm === 'del pending' || _bm === 'pending') && !hasMoneyRec;
+      const isCredit = !isSnap && _bm === 'credit';
+      if (isFBR || isDelPend || isCredit) return false;
+      return hasMoneyRec;
+    });
+  }, [rows, selectedRows, snapshotBillNos]);
+
+  function handleOpenWhatsAppModal() {
+    if (selectedRows.size === 0) {
+      setWaWarning("Kripya pehle table me checkbox se bills select karein.");
+      setTimeout(() => setWaWarning(null), 3500);
+      return;
+    }
+    if (selectedPaidBills.length === 0) {
+      setWaWarning("Select kiye gaye bills me se koi bhi PAID bill nahi hai. Sirf PAID bills hi WhatsApp par send honge.");
+      setTimeout(() => setWaWarning(null), 4000);
+      return;
+    }
+    setWaModalOpen(true);
+  }
+
   if (!rows.length) {
     const isStaffOrOwner = selectedDriver === 'OWNER' || Boolean(selectedDriverIsOwnerOrUser);
     return (
@@ -341,24 +412,15 @@ export default function DriverDayTable({ bills, selectedDriver, displayDate, onS
     );
   }
 
-  function getEffectiveAmounts(b: Bill) {
-    const cash = Number(b.cashAmount) || 0;
-    const upi  = Number(b.upiAmount)  || 0;
-    const chq  = Number(b.chequeAmount) || 0;
-    const collected = Number(b.collectedAmount) || 0;
-    if (cash === 0 && upi === 0 && chq === 0 && collected > 0) {
-      const mode = (b.paymentMode || '').toLowerCase();
-      if (mode === 'upi') return { cash: 0, upi: collected, chq: 0 };
-      if (mode === 'cheque') return { cash: 0, upi: 0, chq: collected };
-      return { cash: collected, upi: 0, chq: 0 };
-    }
-    return { cash, upi, chq };
-  }
-
   // Bills excluded from totals: currently Credit, OR collected on a different date
   function isExcludedFromTotals(b: Bill): boolean {
     const _bm = (b.paymentMode || '').toLowerCase();
     if (_bm === 'credit') return true;
+    const isMoc = (b.billNo || '').toUpperCase().startsWith('MOC') || b.collectionCode === 'MOC' || b.salespersonName === 'MOC';
+    if (isMoc) {
+      const matchesDate = b.paymentDate === displayDate || b.date === displayDate || b.deliveryDate === displayDate;
+      return !matchesDate;
+    }
     if (b.paymentDate && b.paymentDate !== displayDate && (b.collectedAmount || 0) > 0) return true;
     return false;
   }
@@ -1085,10 +1147,36 @@ export default function DriverDayTable({ bills, selectedDriver, displayDate, onS
       </div>
 
       <div className="overflow-x-auto no-scrollbar">
+        {waWarning && (
+          <div className="bg-amber-500 text-white text-[11px] font-bold px-3 py-1.5 flex items-center justify-between animate-in fade-in shadow-xs mb-1 rounded-md">
+            <div className="flex items-center gap-1.5">
+              <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+              <span>{waWarning}</span>
+            </div>
+            <button type="button" onClick={() => setWaWarning(null)}>
+              <X className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        )}
         <table className="w-full border-collapse">
           <thead className="bg-primary text-primary-foreground text-[10px] uppercase font-black">
             <tr>
-              <th className="px-1 py-1.5 text-center w-8">#</th>
+              <th className="px-1 py-1 text-center w-9 select-none">
+                <div className="flex items-center justify-center">
+                  <button
+                    type="button"
+                    onClick={handleToggleAllRows}
+                    title={allVisibleSelected ? "Deselect All" : "Select All"}
+                    className="p-0.5 rounded hover:bg-white/20 transition-colors"
+                  >
+                    {allVisibleSelected ? (
+                      <Check className="w-3 h-3 text-white" />
+                    ) : (
+                      <Square className="w-3 h-3 text-white/60" />
+                    )}
+                  </button>
+                </div>
+              </th>
               {([
                 { key: 'billNo', label: 'Bill No', align: 'left' },
                 { key: 'partyName', label: 'Party', align: 'left' },
@@ -1115,8 +1203,33 @@ export default function DriverDayTable({ bills, selectedDriver, displayDate, onS
                     )
                   }
                 >
-                  <span className="inline-flex items-center gap-0.5">
-                    {col.label}
+                  <span className="inline-flex items-center gap-1">
+                    <span>{col.label}</span>
+                    {col.key === 'billNo' && (
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleOpenWhatsAppModal();
+                        }}
+                        title="Send selected paid bills to Salesman on WhatsApp"
+                        className="inline-flex items-center justify-center p-0.5 rounded-full bg-emerald-500 hover:bg-emerald-400 text-white shadow-xs transition-transform active:scale-95 ml-0.5"
+                      >
+                        <MessageCircle className="w-3 h-3 fill-current" />
+                      </button>
+                    )}
+                    {col.key === 'billNo' && selectedRows.size > 0 && (
+                      <span 
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleOpenWhatsAppModal();
+                        }}
+                        title={`${selectedRows.size} bills selected - Click to send WhatsApp`}
+                        className="bg-emerald-400 text-emerald-950 font-black text-[8px] px-1 rounded-full cursor-pointer hover:bg-emerald-300"
+                      >
+                        {selectedRows.size}
+                      </span>
+                    )}
                     {sort.key === col.key ? (
                       sort.direction === 'asc' ? <ChevronUp className="w-2.5 h-2.5" /> : <ChevronDown className="w-2.5 h-2.5" />
                     ) : (
@@ -1129,7 +1242,8 @@ export default function DriverDayTable({ bills, selectedDriver, displayDate, onS
           </thead>
           <tbody className="text-[10px] font-black uppercase">
             {rows.map((b, i) => {
-              const isChecked = selectedRows.has(b.id);
+              const rowKey = b.id || b.billNo;
+              const isChecked = selectedRows.has(rowKey);
               // A bill is a snapshot (historical Del Pending) only if it is NOT currently
               // assigned to this driver for this date. If it IS currently assigned with a
               // payment, show its actual payment status (PAID/FBR/etc.), not ASSIGNED.
@@ -1174,7 +1288,7 @@ export default function DriverDayTable({ bills, selectedDriver, displayDate, onS
                     (i % 2 === 0 ? "bg-white hover:bg-primary/5" : "bg-slate-50/40 hover:bg-primary/5")
                   )}
                 >
-                  <td className="px-0.5 py-0 text-center" onClick={e => toggleRow(e, b.id)}>
+                  <td className="px-0.5 py-0 text-center" onClick={e => toggleRow(e, rowKey)}>
                     <div className={cn(
                       "w-4 h-4 rounded flex items-center justify-center mx-auto transition-colors",
                       isChecked
@@ -1339,6 +1453,14 @@ export default function DriverDayTable({ bills, selectedDriver, displayDate, onS
           </div>
         </div>
       )}
+
+      {/* WhatsApp Modal for Selected Paid Bills */}
+      <WhatsAppSalesmanModal
+        isOpen={waModalOpen}
+        onClose={() => setWaModalOpen(false)}
+        selectedBills={selectedPaidBills}
+        displayDate={displayDate}
+      />
     </div>
   );
 }

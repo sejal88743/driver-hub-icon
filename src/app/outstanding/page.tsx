@@ -526,13 +526,8 @@ export default function OutstandingPage() {
     // 1. Persist mobile number
     await persistSalespersonMobile(spName, cleanDigits);
 
-    // 2. Assign bills & mark as Given (Red font in table) — wait for cloud confirm
-    const saveRes = await executeBillGiveAssignment(spName, giveDateInput);
-    if (!saveRes.ok && !saveRes.queued) {
-      alert('Save nahi hua! Internet check karke dubara try karein.');
-      return;
-    }
-
+    // 2. Assign bills & mark as Given (Red font in table)
+    executeBillGiveAssignment(spName, giveDateInput);
 
     // 3. Format WhatsApp Message for batch handover
     const phone = cleanDigits.length === 10 ? `91${cleanDigits}` : cleanDigits;
@@ -581,17 +576,12 @@ Kripya in credit bills ka collection coordinate karein.`;
       await persistSalespersonMobile(spName, giveSalesmanMobile.trim());
     }
 
-    const saveRes = await executeBillGiveAssignment(spName, giveDateInput);
-    if (!saveRes.ok && !saveRes.queued) {
-      alert('Save nahi hua! Internet check karke dubara try karein.');
-      return;
-    }
+    executeBillGiveAssignment(spName, giveDateInput);
 
     setShowGiveModal(false);
     setSelectedBillKeys(new Set());
-    setAlertNotice(`✓ ${count} Bills assigned to ${spName}${saveRes.queued ? ' (sync pending)' : ''}!`);
+    setAlertNotice(`✓ ${count} Bills assigned to ${spName}!`);
     setTimeout(() => setAlertNotice(null), 4000);
-
   };
 
   // Render Sort Header Indicator
