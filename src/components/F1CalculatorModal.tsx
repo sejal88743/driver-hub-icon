@@ -136,7 +136,7 @@ export default function F1CalculatorModal({ isOpen, onClose }: Props) {
 
   return (
     <div
-      className="fixed inset-0 bg-black/60 z-[400] flex items-center justify-center p-3 sm:p-4 backdrop-blur-sm animate-in fade-in-50 duration-150"
+      className="fixed inset-0 bg-black/60 z-[400] flex items-start justify-center pt-4 sm:pt-6 p-3 sm:p-4 backdrop-blur-sm animate-in fade-in-50 duration-150 overflow-y-auto"
       onClick={e => { if (e.target === e.currentTarget) onClose(); }}
     >
       <div

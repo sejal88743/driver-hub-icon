@@ -32,7 +32,7 @@ export function ConfirmModal({
   return (
     <div
       id="confirm-modal-overlay"
-      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs animate-in fade-in duration-150"
+      className="fixed inset-0 z-[300] flex items-start justify-center pt-4 sm:pt-6 p-4 bg-black/60 backdrop-blur-xs animate-in fade-in duration-150 overflow-y-auto"
       onClick={onCancel}
     >
       <div

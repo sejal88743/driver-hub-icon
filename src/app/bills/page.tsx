@@ -54,7 +54,7 @@ export default function BillsPage() {
   const [filterSP, setFilterSP] = useState('');
   const [filterParty, setFilterParty] = useState('');
   const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(50);
+  const [pageSize, setPageSize] = useState(250);
 
   // WhatsApp template selection popup
   const [waPopup, setWaPopup] = useState<{ bill: Bill; target: 'party' | 'sales' } | null>(null);
@@ -550,10 +550,12 @@ export default function BillsPage() {
                 onChange={(e) => setPageSize(Number(e.target.value))}
                 className="h-7 px-1.5 rounded-lg border border-border bg-card text-[9px] font-black text-foreground focus:outline-none"
               >
+                <option value={250}>250 (Default)</option>
                 <option value={50}>50</option>
                 <option value={100}>100</option>
                 <option value={200}>200</option>
                 <option value={500}>500</option>
+                <option value={1000}>1000</option>
               </select>
               <span className="text-[9px] font-black text-muted-foreground uppercase ml-1">{filtered.length} total</span>
             </div>
@@ -609,7 +611,7 @@ export default function BillsPage() {
 
       {/* WhatsApp Template Selection Popup */}
       {waPopup && (
-        <div className="fixed inset-0 bg-black/70 z-[200] flex items-start sm:items-center justify-center pt-6 sm:pt-0 px-4 backdrop-blur-sm">
+        <div className="fixed inset-0 bg-black/70 z-[200] flex items-start justify-center pt-4 sm:pt-6 px-4 backdrop-blur-sm overflow-y-auto">
           <div className="bg-card rounded-3xl p-5 w-full max-w-xs shadow-2xl border border-border animate-in zoom-in-95">
             <div className="flex items-center justify-between mb-1">
               <h3 className="font-black text-sm uppercase text-primary flex items-center gap-2">

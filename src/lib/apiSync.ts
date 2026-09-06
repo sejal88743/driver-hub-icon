@@ -211,6 +211,19 @@ function billToSupabase(b: Partial<Bill>): Record<string, unknown> {
   if ('editDate'          in b) out.edit_date           = b.editDate ?? null;
   if ('user'              in b) out.user                = b.user ?? null;
   if ('owner'             in b) out.owner               = b.owner ?? null;
+
+  // Always stamp updated_at so all devices detect real-time incremental changes instantly
+  out.updated_at = new Date().toISOString();
+
+  // Forward any extra custom columns from the bill object (e.g. from custom Excel sheets)
+  for (const [key, val] of Object.entries(b)) {
+    if (key.startsWith('_')) continue;
+    const snakeKey = key.replace(/([A-Z])/g, '_$1').toLowerCase();
+    if (!(snakeKey in out)) {
+      out[snakeKey] = val;
+    }
+  }
+
   return cleanRowForSupabase(out);
 }
 
@@ -387,32 +400,42 @@ async function fetchAllBills(): Promise<Bill[]> {
   const CHUNK_SIZE = 1000;
   
   try {
-    const { count, error: countErr } = await supabase.from('bills').select('id', { count: 'exact', head: true });
-    if (!countErr && typeof count === 'number' && count >= 0) {
-      if (count === 0) return [];
-      const totalPages = Math.ceil(count / CHUNK_SIZE);
-      const BATCH_SIZE = 8;
-      const allRows: Record<string, unknown>[] = [];
+    // 1-request optimization: fetch page 0 AND count together in a single request
+    const { data: firstPage, count, error: countErr } = await supabase
+      .from('bills')
+      .select('*', { count: 'exact' })
+      .order('id')
+      .range(0, CHUNK_SIZE - 1);
 
-      for (let i = 0; i < totalPages; i += BATCH_SIZE) {
-        const promises = [];
-        for (let j = i; j < Math.min(i + BATCH_SIZE, totalPages); j++) {
-          const start = j * CHUNK_SIZE;
-          promises.push(
-            supabase!.from('bills').select('*').order('id').range(start, start + CHUNK_SIZE - 1)
-          );
-        }
-        const resList = await Promise.all(promises);
-        for (const res of resList) {
-          if (res.data && res.data.length > 0) {
-            allRows.push(...(res.data as Record<string, unknown>[]));
-          }
-        }
-      }
-      return allRows.map(mapBillFromSupabase);
+    if (countErr) throw countErr;
+    if (!firstPage || firstPage.length === 0) return [];
+
+    const allRows: Record<string, unknown>[] = [...(firstPage as Record<string, unknown>[])];
+    const totalCount = typeof count === 'number' ? count : allRows.length;
+
+    // If all rows fit in page 0, return immediately with zero extra roundtrips
+    if (totalCount <= allRows.length) {
+      return dedupeBillsByBillNo(allRows.map(mapBillFromSupabase));
     }
+
+    // Fetch remaining pages in parallel
+    const totalPages = Math.ceil(totalCount / CHUNK_SIZE);
+    const promises = [];
+    for (let p = 1; p < totalPages; p++) {
+      const start = p * CHUNK_SIZE;
+      promises.push(
+        supabase!.from('bills').select('*').order('id').range(start, start + CHUNK_SIZE - 1)
+      );
+    }
+    const resList = await Promise.all(promises);
+    for (const res of resList) {
+      if (res.data && res.data.length > 0) {
+        allRows.push(...(res.data as Record<string, unknown>[]));
+      }
+    }
+    return dedupeBillsByBillNo(allRows.map(mapBillFromSupabase));
   } catch (err) {
-    console.warn('[apiSync] Parallel fetchAllBills failed, falling back to sequential:', err);
+    console.warn('[apiSync] Fast fetchAllBills failed, falling back to sequential:', err);
   }
 
   // Fallback sequential loop
@@ -430,59 +453,53 @@ async function fetchAllBills(): Promise<Bill[]> {
       break;
     }
   }
-  return all;
+  return dedupeBillsByBillNo(all);
 }
 
-// Generic paginated fetch — parallel count-based batching for fast table sync
+// Ultra-fast table fetch: directly fetches small/medium tables in 1 single request
 async function fetchAllRows(table: string, orderCol = 'id', selectCols = '*'): Promise<any[]> {
   if (!supabase) return [];
-  const CHUNK_SIZE = 1000;
+  const LIMIT = 2000;
 
   try {
-    const headCol = orderCol ? (orderCol.includes(',') ? orderCol.split(',')[0].trim() : orderCol) : '*';
-    const { count, error: countErr } = await supabase.from(table).select(headCol, { count: 'exact', head: true });
-    if (!countErr && typeof count === 'number' && count >= 0) {
-      if (count === 0) return [];
-      const totalPages = Math.ceil(count / CHUNK_SIZE);
-      const BATCH_SIZE = 6;
-      const allRows: any[] = [];
+    let query = supabase.from(table).select(selectCols);
+    if (orderCol) query = query.order(orderCol);
+    const { data, error } = await query.limit(LIMIT);
 
-      for (let i = 0; i < totalPages; i += BATCH_SIZE) {
-        const promises = [];
-        for (let j = i; j < Math.min(i + BATCH_SIZE, totalPages); j++) {
-          const start = j * CHUNK_SIZE;
-          let query = supabase!.from(table).select(selectCols);
-          if (orderCol) query = query.order(orderCol);
-          promises.push(query.range(start, start + CHUNK_SIZE - 1));
-        }
-        const resList = await Promise.all(promises);
-        for (const res of resList) {
-          if (res.data && res.data.length > 0) {
-            allRows.push(...res.data);
-          }
-        }
+    if (!error && Array.isArray(data)) {
+      if (data.length < LIMIT) {
+        // Table fits in 1 single quick request (99.9% of drivers, banks, settings, summaries)
+        return data;
+      }
+      // If table has more than 2000 rows, paginate remaining in batches
+      const allRows = [...data];
+      let offset = LIMIT;
+      while (true) {
+        let pQuery = supabase.from(table).select(selectCols);
+        if (orderCol) pQuery = pQuery.order(orderCol);
+        const { data: pageData, error: pageErr } = await pQuery.range(offset, offset + LIMIT - 1);
+        if (pageErr || !pageData || pageData.length === 0) break;
+        allRows.push(...pageData);
+        if (pageData.length < LIMIT) break;
+        offset += pageData.length;
       }
       return allRows;
     }
   } catch (err) {
-    console.warn(`[apiSync] Parallel fetchAllRows failed for '${table}', falling back:`, err);
+    console.warn(`[apiSync] fetchAllRows fast path error for '${table}':`, err);
   }
 
-  // Fallback sequential loop — if ordering by orderCol fails (e.g. column absent),
-  // we switch to no-order mode for ALL subsequent pages so we never lose page 2+.
+  // Fallback sequential loop
   const all: any[] = [];
   let offset = 0;
-  let useNoOrder = false; // set to true once we detect ordering doesn't work
+  let useNoOrder = false;
   while (true) {
     try {
       let query = supabase.from(table).select(selectCols);
-      if (orderCol && !useNoOrder) {
-        query = query.order(orderCol);
-      }
-      const { data, error } = await query.range(offset, offset + CHUNK_SIZE - 1);
+      if (orderCol && !useNoOrder) query = query.order(orderCol);
+      const { data, error } = await query.range(offset, offset + 999);
       if (error) {
         if (orderCol && !useNoOrder) {
-          // Order column may not exist — switch to no-order mode and retry this page
           useNoOrder = true;
           continue;
         }
@@ -491,7 +508,7 @@ async function fetchAllRows(table: string, orderCol = 'id', selectCols = '*'): P
       }
       if (!data || data.length === 0) break;
       all.push(...data);
-      if (data.length < CHUNK_SIZE) break;
+      if (data.length < 1000) break;
       offset += data.length;
     } catch (err) {
       console.warn(`[apiSync] fetchAllRows exception for '${table}':`, err);
@@ -503,15 +520,16 @@ async function fetchAllRows(table: string, orderCol = 'id', selectCols = '*'): P
 
 function dedupeBillsByBillNo(bills: Bill[]): Bill[] {
   return Array.from(new Map(bills.map(b => {
-    const isMoc = (b.billNo || '').toUpperCase().startsWith('MOC') || b.collectionCode === 'MOC' || b.salespersonName === 'MOC';
-    const key = isMoc ? (b.id || b.billNo) : (b.billNo || b.id).trim();
+    const bn = (b.billNo || '').trim().toUpperCase();
+    const isMoc = bn.startsWith('MOC') || b.collectionCode === 'MOC' || b.salespersonName === 'MOC' || (b.id && b.id.startsWith('moc_'));
+    const key = isMoc ? (b.id ? b.id.trim() : bn) : (bn || (b.id ? b.id.trim() : ''));
     return [key, b];
   })).values());
 }
 
 export async function apiFetchAllData() {
   try {
-    await probePaymentMethodColumn();
+    void probePaymentMethodColumn();
     const [bills, driversRaw, banksRaw, summariesRaw, settingsRaw, contactsRaw] = await Promise.all([
       fetchAllBills(),
       fetchAllRows('drivers', 'id'),
@@ -821,8 +839,12 @@ export async function apiPushDrivers(drivers: Driver[]) {
   if (drivers.length === 0) return { count: 0 };
   try {
     const rows = drivers.map(({ id, name }) => ({ id, name }));
-    const { error } = await supabase!.from('drivers').upsert(rows, { onConflict: 'id' });
-    if (error) throw error;
+    const CHUNK = 200;
+    for (let i = 0; i < rows.length; i += CHUNK) {
+      const slice = rows.slice(i, i + CHUNK);
+      const { error } = await supabase!.from('drivers').upsert(slice, { onConflict: 'id' });
+      if (error) throw error;
+    }
     return { count: drivers.length };
   } catch (err) {
     console.error('[apiSync] apiPushDrivers error:', err);
@@ -848,8 +870,12 @@ export async function apiDeleteBank(id?: string, name?: string) {
 export async function apiPushBanks(banks: Bank[]) {
   if (banks.length === 0) return { count: 0 };
   try {
-    const { error } = await supabase!.from('banks').upsert(banks, { onConflict: 'id' });
-    if (error) throw error;
+    const CHUNK = 200;
+    for (let i = 0; i < banks.length; i += CHUNK) {
+      const slice = banks.slice(i, i + CHUNK);
+      const { error } = await supabase!.from('banks').upsert(slice, { onConflict: 'id' });
+      if (error) throw error;
+    }
     return { count: banks.length };
   } catch (err) {
     console.error('[apiSync] apiPushBanks error:', err);
@@ -988,8 +1014,12 @@ export async function apiPushSummaries(summaries: DriverDailySummary[]) {
   if (summaries.length === 0) return { count: 0 };
   try {
     const rows = summaries.map(summaryToSupabase);
-    const { error } = await supabase!.from('driver_summaries').upsert(rows, { onConflict: 'id' });
-    if (error) throw error;
+    const CHUNK = 200;
+    for (let i = 0; i < rows.length; i += CHUNK) {
+      const slice = rows.slice(i, i + CHUNK);
+      const { error } = await supabase!.from('driver_summaries').upsert(slice, { onConflict: 'id' });
+      if (error) throw error;
+    }
     return { count: summaries.length };
   } catch (err) {
     console.error('[apiSync] apiPushSummaries error:', err);

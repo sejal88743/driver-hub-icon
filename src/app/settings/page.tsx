@@ -29,7 +29,8 @@ import {
   saveBillSearchAutoResetSec,
   addBillsToMemoryOnly,
   mergeBillsInMemoryOnly,
-  getSystemPassword, 
+  getSystemPassword,
+  getOwnerPassword,
   saveSystemPasswordSuffix,
   getPwSuffix,
   getUserPerm,
@@ -60,7 +61,7 @@ import {
   idbSet,
   idbGet,
   normDateStr,
-
+  setServerData,
   areSalespersonNamesEquivalent,
 } from '@/lib/billStore';
 import TopNav from '@/components/TopNav';
@@ -181,27 +182,49 @@ export default function SettingsPage() {
   const [leveredgeSheet3Aoa, setLeveredgeSheet3Aoa] = useState<any[][]>([]);
   const leveredgeFileRef = useRef<HTMLInputElement>(null);
 
+  function findWorkbookSheet(wb: any, ...aliases: string[]): { name: string; sheet: any } | null {
+    if (!wb || !wb.SheetNames || !Array.isArray(wb.SheetNames)) return null;
+    const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, '');
+    for (const a of aliases) {
+      const target = norm(a);
+      const match = wb.SheetNames.find((sn: string) => norm(sn) === target);
+      if (match && wb.Sheets[match]) {
+        return { name: match, sheet: wb.Sheets[match] };
+      }
+    }
+    return null;
+  }
 
   async function runAutoBackupBeforeRestore(): Promise<boolean> {
     try {
       const XLSX = await import('xlsx');
       const { apiFetchAllData } = await import('@/lib/apiSync');
-      const serverData = await apiFetchAllData();
+      let serverData: any;
+      try {
+        serverData = await apiFetchAllData();
+      } catch (e) {
+        console.warn('[Auto Pre-Restore Backup] apiFetchAllData failed, using local store data:', e);
+        serverData = {
+          bills: getBills(),
+          drivers: getDrivers(),
+          banks: getBanks(),
+          summaries: getSummaries(),
+          partyContacts: getPartyContacts(),
+          salespersonContacts: getSalespersonContacts(),
+          settings: {},
+        };
+      }
       
       const wb = XLSX.utils.book_new();
-      
-      // Bills
-      const allBills: Bill[] = serverData.bills.length > 0 ? serverData.bills : getBills();
+      const allBills: Bill[] = (serverData?.bills && serverData.bills.length > 0) ? serverData.bills : getBills();
       XLSX.utils.book_append_sheet(wb, buildBillsSheet(XLSX, allBills), 'Bills');
-      
-      // Other sheets
       appendSharedSheets(XLSX, wb, serverData);
       
       downloadWb(XLSX, wb, `VitraTrack_Auto_PreRestore_Backup_${getStamp()}.xlsx`);
       return true;
     } catch (err) {
-      console.error('[Auto Pre-Restore Backup Failed]', err);
-      return false;
+      console.warn('[Auto Pre-Restore Backup Warning]', err);
+      return true;
     }
   }
 
@@ -209,17 +232,21 @@ export default function SettingsPage() {
     setRestoreStatus({ status: 'loading', message: 'Creating automatic pre-restore backup...' });
     setPendingRestore(null);
     try {
-      const backupOk = await runAutoBackupBeforeRestore();
-      if (!backupOk) {
-        setRestoreStatus({ status: 'error', message: 'Restore aborted: Automated pre-restore backup failed. Data must be backed up first for protection.' });
-        return;
-      }
+      await runAutoBackupBeforeRestore();
 
-      setRestoreStatus({ status: 'loading', message: 'Auto-backup complete. Executing transaction-safe restore...' });
+      setRestoreStatus({ status: 'loading', message: 'Auto-backup complete. Processing sheets for Supabase table-wise update...' });
       const XLSX = await import('xlsx');
       const stats: string[] = [];
 
-      // Normalise a date value to dd/mm/yyyy
+      // Helper: parse numbers safely
+      const num = (v: any, fallback = 0): number => {
+        if (v === null || v === undefined || v === '') return fallback;
+        if (typeof v === 'number') return isNaN(v) ? fallback : v;
+        const parsed = parseFloat(String(v).replace(/,/g, '').trim());
+        return isNaN(parsed) ? fallback : parsed;
+      };
+
+      // Helper: normalise a date value to dd/mm/yyyy
       const normDate = (v: any): string => {
         if (!v && v !== 0) return '';
         if (typeof v === 'number' && v > 1000) {
@@ -231,8 +258,8 @@ export default function SettingsPage() {
         }
         const s = String(v).trim();
         if (!s) return '';
-        if (/^\d{4}-\d{2}-\d{2}$/.test(s)) {
-          const [y, m, d] = s.split('-');
+        if (/^\d{4}-\d{2}-\d{2}/.test(s)) {
+          const [y, m, d] = s.split('T')[0].split('-');
           return `${d}/${m}/${y}`;
         }
         if (/^\d{2}-\d{2}-\d{4}$/.test(s)) return s.replace(/-/g, '/');
@@ -240,168 +267,400 @@ export default function SettingsPage() {
         return s;
       };
 
-      if (wb.SheetNames.includes('Bills')) {
-        const rows: Bill[] = XLSX.utils.sheet_to_json(wb.Sheets['Bills'], { defval: '' });
-        const incoming = rows
-          .filter(r => r.billNo)
-          .map(b => ({
-            ...b,
-            id: b.id || Math.random().toString(36).substr(2, 9),
-            salespersonName: cleanSalespersonName(b.salespersonName),
-            partyName:       cleanPartyName(b.partyName),
-            date:         normDate((b as any).date),
-            paymentDate:  normDate(b.paymentDate),
-            deliveryDate: normDate(b.deliveryDate),
-          }));
-        if (incoming.length > 0) {
-          const currentBillMap2 = new Map<string, Bill>(getBills().map(b => [b.billNo, b]));
-          const toMerge = incoming.filter(b => {
-            const cur = currentBillMap2.get(b.billNo);
-            return !cur || !billHasPaymentData(cur);
-          });
-          const protectedCnt = incoming.length - toMerge.length;
-          if (toMerge.length > 0) {
-            mergeBillsInMemoryOnly(toMerge);
-            setRestoreStatus({ status: 'loading', message: `Server me save ho raha hai... 0 / ${toMerge.length}` });
-            const { apiBulkUpsertWithProgress } = await import('@/lib/apiSync');
-            await apiBulkUpsertWithProgress(toMerge, (saved, total) => {
-              setRestoreStatus({ status: 'loading', message: `Server me save ho raha hai... ${saved} / ${total}` });
+      // Helper: parse JSON safely
+      const parseJsonField = (v: any, def: any = null) => {
+        if (v === null || v === undefined || v === '') return def;
+        if (typeof v === 'object') return v;
+        if (typeof v === 'string') {
+          const trimmed = v.trim();
+          if ((trimmed.startsWith('{') && trimmed.endsWith('}')) || (trimmed.startsWith('[') && trimmed.endsWith(']'))) {
+            try {
+              return JSON.parse(trimmed);
+            } catch {
+              return def;
+            }
+          }
+        }
+        return def;
+      };
+
+      // Helper: normalize header string to alphanumeric lowercase
+      const cleanHeader = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, '');
+
+      // Helper: flexible row field extractor that matches any alias or normalized variant
+      const getField = (row: Record<string, any>, usedKeys: Set<string>, ...aliases: string[]): any => {
+        // 1. Direct key match
+        for (const a of aliases) {
+          if (a in row && row[a] !== '' && row[a] !== null && row[a] !== undefined) {
+            usedKeys.add(a);
+            return row[a];
+          }
+        }
+        // 2. Normalized match (strip punctuation, spaces, lowercase)
+        const targetClean = new Set(aliases.map(cleanHeader));
+        for (const [k, v] of Object.entries(row)) {
+          if (v === '' || v === null || v === undefined) continue;
+          if (targetClean.has(cleanHeader(k))) {
+            usedKeys.add(k);
+            return v;
+          }
+        }
+        return undefined;
+      };
+
+      // ─────────────────────────────────────────────────────────────
+      // 1. BILLS TABLE
+      // ─────────────────────────────────────────────────────────────
+      const billsSheetInfo = findWorkbookSheet(wb, 'Bills', 'Bill', 'Ledger', 'all_bills', 'Bills_Data', 'PaidFBR', 'Other');
+      if (billsSheetInfo) {
+        setRestoreStatus({ status: 'loading', message: `Sheet "${billsSheetInfo.name}": Preparing bills for Supabase table [bills]...` });
+        const rows: any[] = XLSX.utils.sheet_to_json(billsSheetInfo.sheet, { defval: '' });
+        
+        const existingBills = getBills();
+        const currentBillMap = new Map<string, Bill>(existingBills.map(b => [b.billNo.trim(), b]));
+        
+        let updatedCount = 0;
+        let addedCount = 0;
+        const toUpsert: Bill[] = [];
+
+        for (const r of rows) {
+          const usedKeys = new Set<string>();
+
+          const rawBillNo = String(
+            getField(r, usedKeys, 'billNo', 'bill_no', 'Bill No', 'Bill No.', 'Bill Number', 'BillRefNo', 'billRefNo', 'Invoice No', 'Invoice Number', 'Doc No', 'Ref No', 'Bill') || ''
+          ).trim();
+          if (!rawBillNo || isSummaryRow(rawBillNo)) continue;
+
+          const cur = currentBillMap.get(rawBillNo);
+          const billId = cur?.id || getField(r, usedKeys, 'id', 'ID', 'bill_id', 'billId') || `b_${Date.now()}_${Math.random().toString(36).substr(2, 7)}`;
+          
+          if (cur) updatedCount++;
+          else addedCount++;
+
+          const billNetAmt = num(getField(r, usedKeys, 'billNetAmt', 'bill_net_amt', 'Bill Net Amt', 'Net Amt', 'Net Amount', 'amount', 'netAmount', 'Total Amount', 'Grand Total', 'Total', 'Invoice Amount'), cur?.billNetAmt || 0);
+          const collectedAmount = num(getField(r, usedKeys, 'collectedAmount', 'collected_amount', 'Collected Amount', 'Collection Amount', 'Paid Amount', 'Received Amount', 'Recd Amt'), cur?.collectedAmount || 0);
+          const outstandingAmount = num(getField(r, usedKeys, 'outstandingAmount', 'outstanding_amount', 'Outstanding Amount', 'Balance Amount', 'Balance', 'Pending Amount', 'Due Amount'), cur?.outstandingAmount || (billNetAmt - collectedAmount));
+          const cashAmount = num(getField(r, usedKeys, 'cashAmount', 'cash_amount', 'Cash Amount', 'Cash', 'Cash Amt'), cur?.cashAmount || 0);
+          const upiAmount = num(getField(r, usedKeys, 'upiAmount', 'upi_amount', 'UPI Amount', 'UPI', 'Online', 'GPay', 'PhonePe', 'Paytm'), cur?.upiAmount || 0);
+          const chequeAmount = num(getField(r, usedKeys, 'chequeAmount', 'cheque_amount', 'Cheque Amount', 'Cheque Amt', 'Cheque'), cur?.chequeAmount || 0);
+          const lineCutAmt = num(getField(r, usedKeys, 'lineCutAmt', 'line_cut_amt', 'Line Cut Amt', 'Line Cut Amount', 'Shortage'), cur?.lineCutAmt || 0);
+          const billAgeing = num(getField(r, usedKeys, 'billAgeing', 'bill_ageing', 'Bill Ageing', 'Ageing', 'Aging', 'Days'), cur?.billAgeing || 0);
+
+          const rawDate = getField(r, usedKeys, 'date', 'Date', 'Bill Date', 'Invoice Date', 'Doc Date');
+          const rawPayDate = getField(r, usedKeys, 'paymentDate', 'payment_date', 'Payment Date', 'Pay Date', 'Paid Date');
+          const rawDelDate = getField(r, usedKeys, 'deliveryDate', 'delivery_date', 'Delivery Date', 'Del Date', 'Delivered Date');
+          const rawChqDate = getField(r, usedKeys, 'chequeDate', 'cheque_date', 'Cheque Date', 'Chq Date');
+
+          const constructedBill: Bill & Record<string, any> = {
+            id: billId,
+            billNo: rawBillNo,
+            srNo: String(getField(r, usedKeys, 'srNo', 'sr_no', 'Sr No', 'Sr. No.', 'Serial No', 'SNo') ?? cur?.srNo ?? ''),
+            date: normDate(rawDate ?? cur?.date ?? ''),
+            salespersonName: cleanSalespersonName(String(getField(r, usedKeys, 'salespersonName', 'salesperson_name', 'Salesperson Name', 'salesman', 'Salesman Name', 'Sales Rep', 'Executive', 'DSM') ?? cur?.salespersonName ?? '')),
+            partyName: cleanPartyName(String(getField(r, usedKeys, 'partyName', 'party_name', 'Party Name', 'party', 'Customer Name', 'Retailer Name', 'Outlet Name', 'Shop Name') ?? cur?.partyName ?? '')),
+            partyCode: String(getField(r, usedKeys, 'partyCode', 'party_code', 'Party Code', 'Customer Code', 'Retailer Code', 'Outlet Code') ?? cur?.partyCode ?? ''),
+            partyHulCode: String(getField(r, usedKeys, 'partyHulCode', 'party_hul_code', 'Party HUL Code', 'HUL Code', 'HUL Party Code') ?? cur?.partyHulCode ?? ''),
+            beatName: String(getField(r, usedKeys, 'beatName', 'beat_name', 'Beat Name', 'beat', 'Route Name', 'Route', 'Area') ?? cur?.beatName ?? ''),
+            billNetAmt,
+            collectedAmount,
+            outstandingAmount,
+            billAgeing,
+            paymentMode: (getField(r, usedKeys, 'paymentMode', 'payment_mode', 'Payment Mode', 'Pay Mode', 'Payment Status', 'Status') || cur?.paymentMode || '') as any,
+            paymentMethod: getField(r, usedKeys, 'paymentMethod', 'payment_method', 'Payment Method', 'Pay Method') || cur?.paymentMethod || undefined,
+            paymentDate: normDate(rawPayDate || cur?.paymentDate || ''),
+            deliveryDate: normDate(rawDelDate || cur?.deliveryDate || ''),
+            paymentTime: getField(r, usedKeys, 'paymentTime', 'payment_time', 'Payment Time', 'Pay Time', 'Time') || cur?.paymentTime || undefined,
+            driverName: getField(r, usedKeys, 'driverName', 'driver_name', 'Driver Name', 'Driver', 'Delivery Boy') || cur?.driverName || undefined,
+            cashAmount: cashAmount || undefined,
+            upiAmount: upiAmount || undefined,
+            chequeAmount: chequeAmount || undefined,
+            chequeNo: getField(r, usedKeys, 'chequeNo', 'cheque_no', 'Cheque No', 'Cheque Number', 'Chq No') || cur?.chequeNo || undefined,
+            chequeDate: normDate(rawChqDate || cur?.chequeDate || ''),
+            bankName: (getField(r, usedKeys, 'bankName', 'bank_name', 'Bank Name', 'Bank') || cur?.bankName || undefined)?.toString().trim().toUpperCase(),
+            collectionCode: String(getField(r, usedKeys, 'collectionCode', 'collection_code', 'Collection Code') ?? cur?.collectionCode ?? ''),
+            discrepancyReason: getField(r, usedKeys, 'discrepancyReason', 'discrepancy_reason', 'Discrepancy Reason', 'Remarks', 'Remark', 'Reason', 'Note', 'Notes', 'Narration') || cur?.discrepancyReason || undefined,
+            nextBillNo: getField(r, usedKeys, 'nextBillNo', 'next_bill_no', 'Next Bill No', 'Next Bill') || cur?.nextBillNo || undefined,
+            cancelLine: getField(r, usedKeys, 'cancelLine', 'cancel_line', 'Cancel Line', 'Cancel Reason') || cur?.cancelLine || undefined,
+            lineCutAmt: lineCutAmt || undefined,
+            delPendingHistory: parseJsonField(getField(r, usedKeys, 'delPendingHistory', 'del_pending_history', 'Del Pending History'), cur?.delPendingHistory),
+            editHistory: parseJsonField(getField(r, usedKeys, 'editHistory', 'edit_history', 'Edit History'), cur?.editHistory || []),
+            partPayments: parseJsonField(getField(r, usedKeys, 'partPayments', 'part_payments', 'Part Payments'), cur?.partPayments),
+            user: getField(r, usedKeys, 'user', 'User', 'Created By', 'Updated By') || cur?.user || undefined,
+            owner: getField(r, usedKeys, 'owner', 'Owner', 'Admin') || cur?.owner || undefined,
+          };
+
+          // Capture ANY and ALL remaining columns in this row that were not matched to standard fields
+          const extraColumns: Record<string, any> = {};
+          for (const [key, val] of Object.entries(r)) {
+            if (val === '' || val === null || val === undefined) continue;
+            if (!usedKeys.has(key)) {
+              extraColumns[key] = val;
+              // Also attach directly onto constructedBill
+              constructedBill[key] = val;
+              const snake = key.replace(/([A-Z])/g, '_$1').toLowerCase().replace(/[^a-z0-9_]/g, '_');
+              if (snake && !constructedBill[snake]) {
+                constructedBill[snake] = val;
+              }
+            }
+          }
+
+          if (Object.keys(extraColumns).length > 0) {
+            if (!Array.isArray(constructedBill.editHistory)) {
+              constructedBill.editHistory = [];
+            }
+            constructedBill.editHistory.push({
+              timestamp: Date.now(),
+              user: 'Restore-Excel-FullCols',
+              changes: { extraColumns },
             });
-          }
-          stats.push(`Bills: ${toMerge.length} merged${protectedCnt > 0 ? ` · ${protectedCnt} protected (payment data preserved)` : ''} (no deletions)`);
-        }
-      }
-
-      if (wb.SheetNames.includes('Drivers')) {
-        const rows: Driver[] = XLSX.utils.sheet_to_json(wb.Sheets['Drivers'], { defval: '' });
-        const incoming = rows.filter(r => r.id && r.name);
-        if (incoming.length > 0) {
-          const existing = getDrivers();
-          const merged = new Map<string, Driver>(existing.map(d => [d.name.trim().toLowerCase(), d]));
-          let added = 0;
-          for (const d of incoming) {
-            const key = d.name.trim().toLowerCase();
-            if (!merged.has(key)) { merged.set(key, d); added++; }
-          }
-          saveDrivers(Array.from(merged.values()));
-          stats.push(`Drivers: ${added} new added (${existing.length} kept)`);
-        }
-      }
-
-      if (wb.SheetNames.includes('Banks')) {
-        const rows: Bank[] = XLSX.utils.sheet_to_json(wb.Sheets['Banks'], { defval: '' });
-        const incoming = rows.filter(r => r.id && r.name);
-        if (incoming.length > 0) {
-          const existing = getBanks();
-          const merged = new Map<string, Bank>(existing.map(b => [b.name.trim().toLowerCase(), b]));
-          let added = 0;
-          for (const b of incoming) {
-            const key = b.name.trim().toLowerCase();
-            if (!merged.has(key)) { merged.set(key, b); added++; }
-          }
-          saveBanks(Array.from(merged.values()));
-          stats.push(`Banks: ${added} new added (${existing.length} kept)`);
-        }
-      }
-
-      if (wb.SheetNames.includes('Summaries')) {
-        const rows = XLSX.utils.sheet_to_json(wb.Sheets['Summaries'], { defval: '' }) as any[];
-        const incoming = rows.filter(r => r.id && r.driverName);
-        if (incoming.length > 0) {
-          const existing = getSummaries();
-          const merged = new Map<string, any>(existing.map(s => [s.id, s]));
-          let added = 0;
-          for (const s of incoming) { if (!merged.has(s.id)) added++; merged.set(s.id, s); }
-          saveSummaries(Array.from(merged.values()));
-          stats.push(`Summaries: ${added} new added (${existing.length} kept)`);
-        }
-      }
-
-      if (wb.SheetNames.includes('Party_Contacts')) {
-        const rows: Contact[] = XLSX.utils.sheet_to_json(wb.Sheets['Party_Contacts'], { defval: '' });
-        const incoming = rows
-          .filter(r => r.name && r.mobile)
-          .map(c => ({ ...c, name: cleanPartyName(c.name) }));
-        if (incoming.length > 0) {
-          const existing = getPartyContacts();
-          const merged = new Map<string, Contact>(existing.map(c => [c.name.toLowerCase(), c]));
-          let added = 0, updated = 0;
-          for (const c of incoming) {
-            const key = c.name.toLowerCase();
-            if (merged.has(key)) {
-              // Do NOT change the stored name — only update mobile (and keep id)
-              const prev = merged.get(key)!;
-              if (prev.mobile !== c.mobile) {
-                merged.set(key, { ...prev, mobile: c.mobile });
-                updated++;
-              }
-            } else {
-              merged.set(key, c);
-              added++;
+            // If discrepancyReason is empty and there's extra remarks/note, preserve it
+            if (!constructedBill.discrepancyReason && (extraColumns['Remarks'] || extraColumns['Remark'] || extraColumns['Note'])) {
+              constructedBill.discrepancyReason = String(extraColumns['Remarks'] || extraColumns['Remark'] || extraColumns['Note']);
             }
           }
-          savePartyContacts(Array.from(merged.values()));
-          stats.push(`Party Contacts: ${added} new + ${updated} mobiles updated (no name changes)`);
+
+          toUpsert.push(constructedBill);
+        }
+
+        if (toUpsert.length > 0) {
+          mergeBillsInMemoryOnly(toUpsert);
+          setRestoreStatus({ status: 'loading', message: `Supabase Table [bills]: 0 / ${toUpsert.length} syncing...` });
+          const { apiBulkUpsertWithProgress } = await import('@/lib/apiSync');
+          await apiBulkUpsertWithProgress(toUpsert, (saved, total) => {
+            setRestoreStatus({ status: 'loading', message: `Supabase Table [bills]: ${saved} / ${total} updated/added` });
+          });
+          stats.push(`Bills: ${updatedCount} updated, ${addedCount} added in Supabase [bills] table (${toUpsert.length} total)`);
         }
       }
 
-      if (wb.SheetNames.includes('Salesperson_Contacts')) {
-        const rows: Contact[] = XLSX.utils.sheet_to_json(wb.Sheets['Salesperson_Contacts'], { defval: '' });
-        const incoming = rows
-          .filter(r => r.name && r.mobile)
-          .map(c => ({ ...c, name: cleanSalespersonName(c.name) }));
-        if (incoming.length > 0) {
-          const existing = getSalespersonContacts();
-          const merged = new Map<string, Contact>(existing.map(c => [cleanSalespersonName(c.name || '').trim().toLowerCase(), c]));
-          let added = 0, updated = 0;
-          for (const c of incoming) {
-            const clean = cleanSalespersonName(c.name || '').trim();
-            if (!clean) continue;
-            let matchKey = '';
-            for (const [key, prev] of merged) {
-              if (key === clean.toLowerCase() || areSalespersonNamesEquivalent(prev.name, clean)) {
-                matchKey = key;
-                break;
-              }
-            }
-            if (matchKey) {
-              const prev = merged.get(matchKey)!;
-              const cleanDigits = String(c.mobile || '').replace(/\D/g, '').slice(-10);
-              if (cleanDigits && prev.mobile !== cleanDigits) {
-                merged.set(matchKey, { ...prev, name: cleanSalespersonName(prev.name || clean), mobile: cleanDigits });
-                updated++;
-              }
-            } else {
-              const cleanDigits = String(c.mobile || '').replace(/\D/g, '').slice(-10);
-              merged.set(clean.toLowerCase(), { ...c, name: clean, mobile: cleanDigits });
-              added++;
-            }
-          }
-          saveSalespersonContacts(Array.from(merged.values()));
-          stats.push(`Salesperson Contacts: ${added} new + ${updated} mobiles updated (no name changes)`);
+      // ─────────────────────────────────────────────────────────────
+      // 2. DRIVERS TABLE
+      // ─────────────────────────────────────────────────────────────
+      const driversSheetInfo = findWorkbookSheet(wb, 'Drivers', 'Driver', 'drivers');
+      if (driversSheetInfo) {
+        setRestoreStatus({ status: 'loading', message: `Processing sheet "${driversSheetInfo.name}" for table [drivers]...` });
+        const rows: any[] = XLSX.utils.sheet_to_json(driversSheetInfo.sheet, { defval: '' });
+        const existingDrivers = getDrivers();
+        const driverMap = new Map<string, Driver>(existingDrivers.map(d => [d.name.trim().toLowerCase(), d]));
+        let drvAdded = 0;
+        let drvUpdated = 0;
+
+        for (const r of rows) {
+          const usedKeys = new Set<string>();
+          const name = String(getField(r, usedKeys, 'name', 'Name', 'driverName', 'driver_name', 'Driver Name', 'driver', 'Driver') || '').trim();
+          if (!name) continue;
+          const key = name.toLowerCase();
+          const existing = driverMap.get(key);
+          const id = existing?.id || getField(r, usedKeys, 'id', 'ID', 'driver_id', 'driverId') || `drv_${name.toLowerCase().replace(/[^a-z0-9]/g, '_').slice(0, 44)}`;
+          const rawRole = getField(r, usedKeys, 'role', 'Role', 'user_role');
+          const role = (rawRole || existing?.role || (id.startsWith('own_') ? 'owner' : id.startsWith('usr_') ? 'user' : 'driver')) as any;
+          if (existing) drvUpdated++;
+          else drvAdded++;
+          driverMap.set(key, { id, name, role });
         }
+
+        const finalDrivers = Array.from(driverMap.values());
+        await saveDrivers(finalDrivers);
+        const { apiPushDrivers } = await import('@/lib/apiSync');
+        await apiPushDrivers(finalDrivers);
+        stats.push(`Drivers: ${drvUpdated} updated, ${drvAdded} added in Supabase [drivers] table (${finalDrivers.length} total)`);
       }
 
-      if (wb.SheetNames.includes('Settings')) {
-        const rows = XLSX.utils.sheet_to_json(wb.Sheets['Settings'], { defval: '' }) as Array<{ key: string; value: string }>;
-        const valid = rows.filter(r => r.key && r.value);
-        if (valid.length > 0) {
-          const { apiPushSetting } = await import('@/lib/apiSync');
-          for (const r of valid) {
-            await apiPushSetting(r.key, r.value);
-            if (r.key === 'pw_suffix') { const { saveSystemPasswordSuffix } = await import('@/lib/billStore'); saveSystemPasswordSuffix(r.value); }
-            if (r.key === 'wa_templates') { try { const { saveWhatsAppTemplates } = await import('@/lib/billStore'); saveWhatsAppTemplates(JSON.parse(r.value)); } catch {} }
-          }
-          stats.push(`Settings: ${valid.length} keys restored`);
+      // ─────────────────────────────────────────────────────────────
+      // 3. BANKS TABLE
+      // ─────────────────────────────────────────────────────────────
+      const banksSheetInfo = findWorkbookSheet(wb, 'Banks', 'Bank', 'banks');
+      if (banksSheetInfo) {
+        setRestoreStatus({ status: 'loading', message: `Processing sheet "${banksSheetInfo.name}" for table [banks]...` });
+        const rows: any[] = XLSX.utils.sheet_to_json(banksSheetInfo.sheet, { defval: '' });
+        const existingBanks = getBanks();
+        const bankMap = new Map<string, Bank>(existingBanks.map(b => [b.name.trim().toUpperCase(), b]));
+        let bnkAdded = 0;
+        let bnkUpdated = 0;
+
+        for (const r of rows) {
+          const usedKeys = new Set<string>();
+          const name = String(getField(r, usedKeys, 'name', 'Name', 'bankName', 'bank_name', 'Bank Name', 'bank', 'Bank') || '').trim().toUpperCase();
+          if (!name) continue;
+          const existing = bankMap.get(name);
+          const id = existing?.id || getField(r, usedKeys, 'id', 'ID', 'bank_id') || `bnk_${name.toLowerCase().replace(/[^a-z0-9]/g, '_').slice(0, 44)}`;
+          if (existing) bnkUpdated++;
+          else bnkAdded++;
+          bankMap.set(name, { id, name });
         }
+
+        const finalBanks = Array.from(bankMap.values());
+        await saveBanks(finalBanks);
+        const { apiPushBanks } = await import('@/lib/apiSync');
+        await apiPushBanks(finalBanks);
+        stats.push(`Banks: ${bnkUpdated} updated, ${bnkAdded} added in Supabase [banks] table (${finalBanks.length} total)`);
+      }
+
+      // ─────────────────────────────────────────────────────────────
+      // 4. DRIVER_SUMMARIES TABLE
+      // ─────────────────────────────────────────────────────────────
+      const summariesSheetInfo = findWorkbookSheet(wb, 'Summaries', 'Driver_Summaries', 'Driver Summaries', 'DriverSummaries', 'summaries');
+      if (summariesSheetInfo) {
+        setRestoreStatus({ status: 'loading', message: `Processing sheet "${summariesSheetInfo.name}" for table [driver_summaries]...` });
+        const rows: any[] = XLSX.utils.sheet_to_json(summariesSheetInfo.sheet, { defval: '' });
+        const existingSummaries = getSummaries();
+        const sumMap = new Map<string, DriverDailySummary>(existingSummaries.map(s => [s.id, s]));
+        let sumAdded = 0;
+        let sumUpdated = 0;
+
+        for (const r of rows) {
+          const usedKeys = new Set<string>();
+          const driverName = String(getField(r, usedKeys, 'driverName', 'driver_name', 'Driver Name', 'driver', 'Driver') || '').trim();
+          const rawDate = getField(r, usedKeys, 'date', 'Date', 'summary_date');
+          const date = normDate(rawDate || '');
+          if (!driverName) continue;
+          const id = String(getField(r, usedKeys, 'id', 'ID') || `${driverName.toLowerCase().replace(/[^a-z0-9]/g, '_')}_${date.replace(/[^0-9]/g, '')}`);
+          const totalBillCount = num(getField(r, usedKeys, 'totalBillCount', 'total_bill_count', 'Total Bills', 'Bill Count', 'total_bills'), 0);
+          const totalAmount = num(getField(r, usedKeys, 'totalAmount', 'total_amount', 'Total Amount', 'Amount', 'total'), 0);
+          const cashBreakdown = parseJsonField(getField(r, usedKeys, 'cashBreakdown', 'cash_breakdown', 'Cash Breakdown'));
+
+          if (sumMap.has(id)) sumUpdated++;
+          else sumAdded++;
+
+          sumMap.set(id, {
+            id,
+            driverName,
+            date,
+            totalBillCount,
+            totalAmount,
+            cashBreakdown,
+          });
+        }
+
+        const finalSummaries = Array.from(sumMap.values());
+        await saveSummaries(finalSummaries);
+        const { apiPushSummaries } = await import('@/lib/apiSync');
+        await apiPushSummaries(finalSummaries);
+        stats.push(`Driver Summaries: ${sumUpdated} updated, ${sumAdded} added in Supabase [driver_summaries] table (${finalSummaries.length} total)`);
+      }
+
+      // ─────────────────────────────────────────────────────────────
+      // 5. CONTACTS TABLE (TYPE = PARTY)
+      // ─────────────────────────────────────────────────────────────
+      const partySheetInfo = findWorkbookSheet(wb, 'Party_Contacts', 'Party Contacts', 'PartyContacts', 'Parties', 'party_contacts');
+      if (partySheetInfo) {
+        setRestoreStatus({ status: 'loading', message: `Processing sheet "${partySheetInfo.name}" for table [contacts:party]...` });
+        const rows: any[] = XLSX.utils.sheet_to_json(partySheetInfo.sheet, { defval: '' });
+        const existingParty = getPartyContacts();
+        const partyMap = new Map<string, Contact>(existingParty.map(c => [c.name.toLowerCase(), c]));
+        let ptyAdded = 0;
+        let ptyUpdated = 0;
+
+        for (const r of rows) {
+          const usedKeys = new Set<string>();
+          const name = cleanPartyName(String(getField(r, usedKeys, 'name', 'Name', 'partyName', 'party_name', 'Party Name', 'party', 'Customer Name') || '').trim());
+          const mobile = String(getField(r, usedKeys, 'mobile', 'Mobile', 'phone', 'Phone', 'contact', 'Contact', 'mobile_no', 'Mobile No') || '').replace(/\D/g, '').slice(-10);
+          if (!name || !mobile) continue;
+          const key = name.toLowerCase();
+          const existing = partyMap.get(key);
+          const id = existing?.id || getField(r, usedKeys, 'id', 'ID') || `pty_${name.toLowerCase().replace(/[^a-z0-9]/g, '_').slice(0, 44)}`;
+          if (existing) {
+            partyMap.set(key, { ...existing, mobile });
+            ptyUpdated++;
+          } else {
+            partyMap.set(key, { id, name, mobile });
+            ptyAdded++;
+          }
+        }
+
+        const finalParty = Array.from(partyMap.values());
+        await savePartyContacts(finalParty);
+        const { apiPushPartyContacts } = await import('@/lib/apiSync');
+        await apiPushPartyContacts(finalParty);
+        stats.push(`Party Contacts: ${ptyUpdated} updated, ${ptyAdded} added in Supabase [contacts] table (${finalParty.length} total)`);
+      }
+
+      // ─────────────────────────────────────────────────────────────
+      // 6. CONTACTS TABLE (TYPE = SALESPERSON)
+      // ─────────────────────────────────────────────────────────────
+      const salesSheetInfo = findWorkbookSheet(wb, 'Salesperson_Contacts', 'Salesperson Contacts', 'SalespersonContacts', 'Sales Contacts', 'Sales_Contacts', 'salesperson_contacts');
+      if (salesSheetInfo) {
+        setRestoreStatus({ status: 'loading', message: `Processing sheet "${salesSheetInfo.name}" for table [contacts:salesperson]...` });
+        const rows: any[] = XLSX.utils.sheet_to_json(salesSheetInfo.sheet, { defval: '' });
+        const existingSales = getSalespersonContacts();
+        const salesMap = new Map<string, Contact>(existingSales.map(c => [cleanSalespersonName(c.name || '').toLowerCase(), c]));
+        let spAdded = 0;
+        let spUpdated = 0;
+
+        for (const r of rows) {
+          const usedKeys = new Set<string>();
+          const clean = cleanSalespersonName(String(getField(r, usedKeys, 'name', 'Name', 'salespersonName', 'salesperson_name', 'Salesperson Name', 'salesman', 'Salesman Name', 'Sales Rep') || '').trim());
+          const mobile = String(getField(r, usedKeys, 'mobile', 'Mobile', 'phone', 'Phone', 'contact', 'Contact', 'mobile_no') || '').replace(/\D/g, '').slice(-10);
+          if (!clean || !mobile) continue;
+          const key = clean.toLowerCase();
+          let matchKey = '';
+          for (const [k, prev] of salesMap) {
+            if (k === key || areSalespersonNamesEquivalent(prev.name, clean)) {
+              matchKey = k;
+              break;
+            }
+          }
+          if (matchKey) {
+            const prev = salesMap.get(matchKey)!;
+            salesMap.set(matchKey, { ...prev, name: clean, mobile });
+            spUpdated++;
+          } else {
+            const id = getField(r, usedKeys, 'id', 'ID') || `sp_${clean.toLowerCase().replace(/[^a-z0-9]/g, '_').slice(0, 44)}`;
+            salesMap.set(key, { id, name: clean, mobile });
+            spAdded++;
+          }
+        }
+
+        const finalSales = Array.from(salesMap.values());
+        await saveSalespersonContacts(finalSales);
+        const { apiPushSalespersonContacts } = await import('@/lib/apiSync');
+        await apiPushSalespersonContacts(finalSales);
+        stats.push(`Salesperson Contacts: ${spUpdated} updated, ${spAdded} added in Supabase [contacts] table (${finalSales.length} total)`);
+      }
+
+      // ─────────────────────────────────────────────────────────────
+      // 7. SETTINGS TABLE
+      // ─────────────────────────────────────────────────────────────
+      const settingsSheetInfo = findWorkbookSheet(wb, 'Settings', 'settings', 'Setting', 'Config', 'config');
+      if (settingsSheetInfo) {
+        setRestoreStatus({ status: 'loading', message: `Processing sheet "${settingsSheetInfo.name}" for table [settings]...` });
+        const rows: any[] = XLSX.utils.sheet_to_json(settingsSheetInfo.sheet, { defval: '' });
+        const { apiPushSetting } = await import('@/lib/apiSync');
+        let setCnt = 0;
+
+        for (const r of rows) {
+          const usedKeys = new Set<string>();
+          const key = String(getField(r, usedKeys, 'key', 'Key', 'Setting Key', 'setting_key', 'name', 'Name') || '').trim();
+          const rawVal = getField(r, usedKeys, 'value', 'Value', 'setting_value', 'val');
+          const value = rawVal !== undefined ? String(rawVal) : '';
+          if (!key) continue;
+          await apiPushSetting(key, value);
+          if (key === 'pw_suffix') {
+            const { saveSystemPasswordSuffix } = await import('@/lib/billStore');
+            saveSystemPasswordSuffix(value);
+          }
+          if (key === 'wa_templates') {
+            try {
+              const { saveWhatsAppTemplates } = await import('@/lib/billStore');
+              saveWhatsAppTemplates(JSON.parse(value));
+            } catch {}
+          }
+          setCnt++;
+        }
+        stats.push(`Settings: ${setCnt} keys updated/added in Supabase [settings] table`);
       }
 
       if (stats.length === 0) {
-        setRestoreStatus({ status: 'error', message: 'No valid data sheets found in backup file.' });
+        setRestoreStatus({ status: 'error', message: 'No valid database sheets (Bills, Drivers, Banks, Summaries, Contacts, Settings) found in backup file.' });
       } else {
-        setRestoreStatus({ status: 'success', message: 'Backup restored successfully!', details: stats });
+        setRestoreStatus({ status: 'loading', message: 'Refreshing all application state from Supabase...' });
+        const { apiFetchAllData } = await import('@/lib/apiSync');
+        const freshData = await apiFetchAllData();
+        setServerData(freshData);
+        setRestoreStatus({ status: 'success', message: 'Full XLS restore completed successfully! All sheets data updated/added in Supabase table-wise.', details: stats });
       }
     } catch (err: any) {
+      console.error('[executeRestore error]', err);
       setRestoreStatus({ status: 'error', message: `Restore failed: ${err?.message || 'Unknown error'}` });
     }
   }
@@ -1978,7 +2237,7 @@ export default function SettingsPage() {
 
   async function handleRestoreFile(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0]; if (!file) return;
-    setRestoreStatus({ status: 'loading', message: 'Reading and validating backup...' });
+    setRestoreStatus({ status: 'loading', message: 'Reading and validating backup file...' });
     const fName = file.name;
     e.target.value = '';
     try {
@@ -1993,44 +2252,51 @@ export default function SettingsPage() {
             const statsList: { label: string; count: number }[] = [];
             let isValid = false;
 
-            if (wb.SheetNames.includes('Bills')) {
-              const rows = XLSX.utils.sheet_to_json(wb.Sheets['Bills'], { defval: '' });
-              statsList.push({ label: 'Bills', count: rows.length });
+            const billsSheet = findWorkbookSheet(wb, 'Bills', 'Bill', 'Ledger', 'all_bills', 'Bills_Data', 'PaidFBR', 'Other');
+            if (billsSheet) {
+              const rows = XLSX.utils.sheet_to_json(billsSheet.sheet, { defval: '' });
+              statsList.push({ label: `Bills (${billsSheet.name}) → [bills]`, count: rows.length });
               isValid = true;
             }
-            if (wb.SheetNames.includes('Drivers')) {
-              const rows = XLSX.utils.sheet_to_json(wb.Sheets['Drivers'], { defval: '' });
-              statsList.push({ label: 'Drivers', count: rows.length });
+            const driversSheet = findWorkbookSheet(wb, 'Drivers', 'Driver', 'drivers');
+            if (driversSheet) {
+              const rows = XLSX.utils.sheet_to_json(driversSheet.sheet, { defval: '' });
+              statsList.push({ label: `Drivers (${driversSheet.name}) → [drivers]`, count: rows.length });
               isValid = true;
             }
-            if (wb.SheetNames.includes('Banks')) {
-              const rows = XLSX.utils.sheet_to_json(wb.Sheets['Banks'], { defval: '' });
-              statsList.push({ label: 'Banks', count: rows.length });
+            const banksSheet = findWorkbookSheet(wb, 'Banks', 'Bank', 'banks');
+            if (banksSheet) {
+              const rows = XLSX.utils.sheet_to_json(banksSheet.sheet, { defval: '' });
+              statsList.push({ label: `Banks (${banksSheet.name}) → [banks]`, count: rows.length });
               isValid = true;
             }
-            if (wb.SheetNames.includes('Summaries')) {
-              const rows = XLSX.utils.sheet_to_json(wb.Sheets['Summaries'], { defval: '' });
-              statsList.push({ label: 'Driver Summaries', count: rows.length });
+            const sumSheet = findWorkbookSheet(wb, 'Summaries', 'Driver_Summaries', 'Driver Summaries', 'DriverSummaries', 'summaries');
+            if (sumSheet) {
+              const rows = XLSX.utils.sheet_to_json(sumSheet.sheet, { defval: '' });
+              statsList.push({ label: `Driver Summaries (${sumSheet.name}) → [driver_summaries]`, count: rows.length });
               isValid = true;
             }
-            if (wb.SheetNames.includes('Party_Contacts')) {
-              const rows = XLSX.utils.sheet_to_json(wb.Sheets['Party_Contacts'], { defval: '' });
-              statsList.push({ label: 'Party Contacts', count: rows.length });
+            const partySheet = findWorkbookSheet(wb, 'Party_Contacts', 'Party Contacts', 'PartyContacts', 'Parties', 'party_contacts');
+            if (partySheet) {
+              const rows = XLSX.utils.sheet_to_json(partySheet.sheet, { defval: '' });
+              statsList.push({ label: `Party Contacts (${partySheet.name}) → [contacts:party]`, count: rows.length });
               isValid = true;
             }
-            if (wb.SheetNames.includes('Salesperson_Contacts')) {
-              const rows = XLSX.utils.sheet_to_json(wb.Sheets['Salesperson_Contacts'], { defval: '' });
-              statsList.push({ label: 'Salesperson Contacts', count: rows.length });
+            const salesSheet = findWorkbookSheet(wb, 'Salesperson_Contacts', 'Salesperson Contacts', 'SalespersonContacts', 'Sales Contacts', 'Sales_Contacts', 'salesperson_contacts');
+            if (salesSheet) {
+              const rows = XLSX.utils.sheet_to_json(salesSheet.sheet, { defval: '' });
+              statsList.push({ label: `Salesperson Contacts (${salesSheet.name}) → [contacts:salesperson]`, count: rows.length });
               isValid = true;
             }
-            if (wb.SheetNames.includes('Settings')) {
-              const rows = XLSX.utils.sheet_to_json(wb.Sheets['Settings'], { defval: '' });
-              statsList.push({ label: 'Settings Keys', count: rows.length });
+            const settingsSheet = findWorkbookSheet(wb, 'Settings', 'settings', 'Setting', 'Config', 'config');
+            if (settingsSheet) {
+              const rows = XLSX.utils.sheet_to_json(settingsSheet.sheet, { defval: '' });
+              statsList.push({ label: `Settings (${settingsSheet.name}) → [settings]`, count: rows.length });
               isValid = true;
             }
 
             if (!isValid || statsList.length === 0) {
-              setRestoreStatus({ status: 'error', message: 'Validation failed: No valid database sheets (Bills, Drivers, etc.) found in the backup file. Aborting restore.' });
+              setRestoreStatus({ status: 'error', message: 'Validation failed: No recognized sheets (Bills, Drivers, Banks, Summaries, Contacts, Settings) found in the backup file.' });
               setPendingRestore(null);
             } else {
               setRestoreStatus(null);
@@ -2792,10 +3058,16 @@ export default function SettingsPage() {
         {/* Row 4: Password + Data Purge */}
         <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
           <div className="bg-card rounded-xl p-3 border border-border shadow-sm">
-            <h2 className="text-[12px] font-black uppercase mb-2 flex items-center gap-2 text-primary"><ShieldCheck className="w-4 h-4" /> System Password</h2>
-            <div className="bg-primary/5 p-2 rounded-xl border border-primary/10 mb-2">
-               <p className="text-[9px] font-black text-primary uppercase tracking-widest leading-none mb-0.5">Live Password</p>
-               <p className="text-lg font-black text-primary leading-tight">{getSystemPassword()}</p>
+            <h2 className="text-[12px] font-black uppercase mb-2 flex items-center gap-2 text-primary"><ShieldCheck className="w-4 h-4" /> Passwords</h2>
+            <div className="grid grid-cols-2 gap-2 mb-2">
+              <div className="bg-primary/5 p-2 rounded-xl border border-primary/10">
+                <p className="text-[9px] font-black text-primary uppercase tracking-widest leading-none mb-0.5">Live System PW</p>
+                <p className="text-base font-black text-primary leading-tight">{getSystemPassword()}</p>
+              </div>
+              <div className="bg-indigo-500/10 p-2 rounded-xl border border-indigo-500/20">
+                <p className="text-[9px] font-black text-indigo-500 uppercase tracking-widest leading-none mb-0.5">Live Owner PW</p>
+                <p className="text-base font-black text-indigo-500 leading-tight">{getOwnerPassword()}</p>
+              </div>
             </div>
             <div className="flex gap-2">
                <input type="text" inputMode="numeric" placeholder="PASSWORD SUFFIX" value={pwSuffix} onChange={e => setPwSuffix(e.target.value)} className="flex-1 h-9 px-3 bg-muted rounded-xl text-xs font-black uppercase outline-none border-0 focus:ring-2 focus:ring-primary/20" />

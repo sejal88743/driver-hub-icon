@@ -178,7 +178,7 @@ export default function WhatsAppSalesmanModal({ isOpen, onClose, selectedBills, 
   const allSent = totalSalespersonsCount > 0 && sentCount === totalSalespersonsCount;
 
   return (
-    <div className="fixed inset-0 bg-black/60 z-[250] flex items-center justify-center p-3 sm:p-4 backdrop-blur-xs animate-in fade-in">
+    <div className="fixed inset-0 bg-black/60 z-[250] flex items-start justify-center pt-4 sm:pt-6 p-3 sm:p-4 backdrop-blur-xs animate-in fade-in overflow-y-auto">
       <div className="bg-card rounded-2xl w-full max-w-2xl max-h-[90vh] flex flex-col shadow-2xl border border-border overflow-hidden">
         
         {/* Modal Header */}

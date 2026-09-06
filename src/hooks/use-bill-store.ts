@@ -10,9 +10,9 @@ import { applyDirtyPatches, isDirtyPending, flushDirtyQueue } from '@/lib/localQ
 // guarantees instant real-time live sync across all devices.
 
 // Light incremental poll (only rows changed since last sync).
-const POLL_INTERVAL_MS = 25_000;
-// Heavy "download everything" refresh — rarely needed once delta sync runs.
-const FULL_SYNC_INTERVAL_MS = 15 * 60_000;
+const POLL_INTERVAL_MS = 3_000;
+// Periodic "download everything" refresh — runs in background.
+const FULL_SYNC_INTERVAL_MS = 3 * 60_000;
 
 
 export type StoreSnapshot = {
@@ -285,6 +285,14 @@ function initSupabaseRealtime() {
       )
       .on(
         'postgres_changes',
+        { event: '*', schema: 'public', table: 'driver_summaries' },
+        (payload) => {
+          applyRealtimeTableChange('driver_summaries', payload.eventType as any, payload.new, payload.old);
+          readLocal();
+        }
+      )
+      .on(
+        'postgres_changes',
         { event: '*', schema: 'public', table: 'drivers' },
         (payload) => {
           applyRealtimeTableChange('drivers', payload.eventType as any, payload.new, payload.old);
@@ -319,13 +327,15 @@ function initSupabaseRealtime() {
         if (status === 'SUBSCRIBED') {
           console.log('[Supabase Realtime] Connected and listening live across all devices.');
           window.dispatchEvent(new CustomEvent('sync-status', { detail: 'ok' }));
-        } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
+          void doDeltaSync();
+        } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') {
           console.warn('[Supabase Realtime] Channel status:', status, err);
           if (navigator.onLine && !realtimeReconnectTimer) {
             realtimeReconnectTimer = setTimeout(() => {
               realtimeReconnectTimer = null;
               initSupabaseRealtime();
-            }, 10000);
+              void doDeltaSync();
+            }, 2500);
           }
         }
       });

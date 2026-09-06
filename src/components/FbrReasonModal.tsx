@@ -91,7 +91,7 @@ export default function FbrReasonModal({ isOpen, onClose, onSelectReason, saving
 
   return (
     <div 
-      className="fixed inset-0 bg-black/70 z-[300] flex items-center justify-center p-4 backdrop-blur-sm" 
+      className="fixed inset-0 bg-black/70 z-[300] flex items-start justify-center pt-4 sm:pt-6 p-4 backdrop-blur-sm overflow-y-auto" 
       onClick={onClose}
       id="fbr-reason-modal-overlay"
     >

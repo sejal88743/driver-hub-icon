@@ -724,7 +724,7 @@ export default function MultiBillEntryModal({ bills, banks, selectedDriver, disp
 
         {/* ── Disambiguation Confirmation Modal for Multiple Matches ── */}
         {disambigModal && (
-          <div className="fixed inset-0 bg-black/60 z-[400] flex items-center justify-center p-4 backdrop-blur-xs">
+          <div className="fixed inset-0 bg-black/60 z-[400] flex items-start justify-center pt-4 sm:pt-6 p-4 backdrop-blur-xs overflow-y-auto">
             <div className="bg-card rounded-2xl p-4 w-full max-w-xs shadow-2xl border-2 border-primary animate-in zoom-in-95">
               <div className="flex items-center justify-between mb-2 pb-1.5 border-b border-border">
                 <div>

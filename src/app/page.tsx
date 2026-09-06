@@ -3747,7 +3747,7 @@ Kripya party se is bill ka payment collection coordinate karein.`;
       )}
 
       {showRecDateConfirm && (
-        <div className="fixed inset-0 bg-black/60 z-[200] flex items-center justify-center p-4 backdrop-blur-sm">
+        <div className="fixed inset-0 bg-black/60 z-[200] flex items-start justify-center pt-4 sm:pt-6 p-4 backdrop-blur-sm overflow-y-auto">
           <div className="bg-card rounded-3xl p-6 w-full max-w-sm shadow-2xl animate-in zoom-in-95 text-center border border-border">
             <div className="flex items-center justify-center gap-2 mb-2 text-primary">
               <Calendar className="w-5 h-5" />
@@ -3943,7 +3943,7 @@ Kripya party se is bill ka payment collection coordinate karein.`;
 
       {/* ── MOC Commission Code Picker Modal ── */}
       {showMocModal && (
-        <div className="fixed inset-0 bg-black/60 z-[280] flex items-center justify-center p-4 backdrop-blur-xs">
+        <div className="fixed inset-0 bg-black/60 z-[280] flex items-start justify-center pt-4 sm:pt-6 p-4 backdrop-blur-xs overflow-y-auto">
           <div className="bg-card rounded-3xl p-5 w-full max-w-md shadow-2xl border-2 border-emerald-500/40 animate-in zoom-in-95 duration-150">
             <div className="flex items-center justify-between pb-3 border-b border-border mb-4">
               <div>
@@ -4003,7 +4003,7 @@ Kripya party se is bill ka payment collection coordinate karein.`;
 
       {/* ── Salesperson Mobile Number Input Modal (for WhatsApp direct message) ── */}
       {showSalespersonPhoneModal && (
-        <div className="fixed inset-0 bg-black/60 z-[290] flex items-center justify-center p-4 backdrop-blur-xs">
+        <div className="fixed inset-0 bg-black/60 z-[290] flex items-start justify-center pt-4 sm:pt-6 p-4 backdrop-blur-xs overflow-y-auto">
           <div className="bg-card rounded-3xl p-6 w-full max-w-sm shadow-2xl border-2 border-emerald-500/40 animate-in zoom-in-95 duration-150">
             <div className="flex items-center justify-between pb-3 border-b border-border mb-4">
               <div className="flex items-center gap-2">

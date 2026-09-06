@@ -87,7 +87,7 @@ export default function GreenPartyManagerModal({ isOpen, onClose }: Props) {
   };
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-3">
+    <div className="fixed inset-0 z-[250] bg-black/60 backdrop-blur-xs flex items-start justify-center pt-4 sm:pt-6 p-3 overflow-y-auto">
       <div className="bg-card text-card-foreground border border-emerald-500/30 rounded-2xl shadow-2xl w-full max-w-2xl max-h-[90vh] flex flex-col overflow-hidden animate-in fade-in zoom-in-95 duration-150">
         {/* Header */}
         <div className="bg-emerald-950 text-emerald-100 p-4 flex items-center justify-between border-b border-emerald-800">

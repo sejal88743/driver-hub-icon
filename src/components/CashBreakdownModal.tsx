@@ -36,7 +36,7 @@ export default function CashBreakdownModal({
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 bg-black/60 z-[280] flex items-center justify-center p-4 backdrop-blur-xs animate-in fade-in duration-150">
+    <div className="fixed inset-0 bg-black/60 z-[280] flex items-start justify-center pt-4 sm:pt-6 p-4 backdrop-blur-xs animate-in fade-in duration-150 overflow-y-auto">
       <div className="bg-card rounded-3xl p-5 w-full max-w-lg shadow-2xl border-2 border-emerald-500/40 animate-in zoom-in-95 duration-150 flex flex-col max-h-[90vh]">
         {/* Modal Header */}
         <div className="flex items-center justify-between pb-3 border-b border-border mb-3 shrink-0">

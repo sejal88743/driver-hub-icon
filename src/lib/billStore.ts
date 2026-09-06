@@ -258,6 +258,17 @@ export async function idbGet<T>(key: string): Promise<T | null> {
   });
 }
 
+// ─── Deduplication key helper (guarantees zero duplicate bills across the app) ───
+export function getBillDedupeKey(b: Partial<Bill> | null | undefined): string {
+  if (!b) return '';
+  const bn = (b.billNo || '').trim().toUpperCase();
+  const isMoc = bn.startsWith('MOC') || b.collectionCode === 'MOC' || b.salespersonName === 'MOC' || (b.id && b.id.startsWith('moc_'));
+  if (isMoc) {
+    return (b.id && b.id.trim()) || (bn || 'moc_unknown');
+  }
+  return bn || (b.id ? b.id.trim() : '');
+}
+
 let persistTimer: ReturnType<typeof setTimeout> | null = null;
 
 export function persistLocalState(immediate = false) {
@@ -273,45 +284,48 @@ export function persistLocalState(immediate = false) {
   persistTimer = setTimeout(() => {
     persistTimer = null;
     if (typeof window !== 'undefined' && 'requestIdleCallback' in window) {
-      window.requestIdleCallback(() => doPersistLocalState(), { timeout: 1500 });
+      window.requestIdleCallback(() => doPersistLocalState(), { timeout: 800 });
     } else {
       doPersistLocalState();
     }
-  }, 1000);
+  }, 200);
 }
 
 function doPersistLocalState() {
   const idbPayload: Record<string, any> = {};
   try {
+    idbPayload['cached_bills_full'] = _bills;
     if (_bills.length > 0) {
       localStorage.setItem(LS_BILLS_KEY, JSON.stringify(_bills.slice(0, 400)));
-      idbPayload['cached_bills_full'] = _bills;
     }
+    idbPayload['cached_drivers'] = _drivers;
     if (_drivers.length > 0) {
       localStorage.setItem(LS_DRIVERS_KEY, JSON.stringify(_drivers));
-      idbPayload['cached_drivers'] = _drivers;
     }
+    idbPayload['cached_banks'] = _banks;
     if (_banks.length > 0) {
       localStorage.setItem(LS_BANKS_KEY, JSON.stringify(_banks));
-      idbPayload['cached_banks'] = _banks;
     }
+    idbPayload['cached_summaries'] = _summaries;
     if (_summaries.length > 0) {
       localStorage.setItem(LS_SUMMARIES_KEY, JSON.stringify(_summaries));
-      idbPayload['cached_summaries'] = _summaries;
     }
+    idbPayload['cached_party_contacts'] = _partyContacts;
     if (_partyContacts.length > 0) {
       localStorage.setItem(LS_PARTY_CONTACTS_KEY, JSON.stringify(_partyContacts));
-      idbPayload['cached_party_contacts'] = _partyContacts;
     }
+    idbPayload['cached_salesperson_contacts'] = _salespersonContacts;
     if (_salespersonContacts.length > 0) {
       localStorage.setItem(LS_SALESPERSON_CONTACTS_KEY, JSON.stringify(_salespersonContacts));
-      idbPayload['cached_salesperson_contacts'] = _salespersonContacts;
     }
   } catch (err) {
     console.warn('[billStore] localStorage quota limit, offloading to IndexedDB', err);
-    if (_bills.length > 0) idbPayload['cached_bills_full'] = _bills;
-    if (_salespersonContacts.length > 0) idbPayload['cached_salesperson_contacts'] = _salespersonContacts;
-    if (_partyContacts.length > 0) idbPayload['cached_party_contacts'] = _partyContacts;
+    idbPayload['cached_bills_full'] = _bills;
+    idbPayload['cached_salesperson_contacts'] = _salespersonContacts;
+    idbPayload['cached_party_contacts'] = _partyContacts;
+    idbPayload['cached_drivers'] = _drivers;
+    idbPayload['cached_banks'] = _banks;
+    idbPayload['cached_summaries'] = _summaries;
   }
 
   if (Object.keys(idbPayload).length > 0) {
@@ -364,17 +378,58 @@ if (typeof window !== 'undefined') {
     console.warn('[billStore] Sync hydration error', e);
   }
 
-  // Check IndexedDB for cached contacts and full bills list asynchronously
+  // Fast load full database from IndexedDB asynchronously (loads all bills instantly)
   idbGet<Bill[]>('cached_bills_full').then((fullBills) => {
-    if (fullBills && Array.isArray(fullBills) && fullBills.length > _bills.length) {
-      _bills = fullBills;
+    if (fullBills && Array.isArray(fullBills) && fullBills.length > 0) {
+      const mergedMap = new Map<string, Bill>();
+      // 1. First index all bills from IndexedDB
+      for (const b of fullBills) {
+        const k = getBillDedupeKey(b);
+        if (k) mergedMap.set(k, b);
+      }
+      // 2. Overlay any in-memory bills that have more recent local edits
+      for (const b of _bills) {
+        const k = getBillDedupeKey(b);
+        if (!k) continue;
+        const existing = mergedMap.get(k);
+        if (!existing) {
+          mergedMap.set(k, b);
+        } else {
+          const lHist = b.editHistory?.length || 0;
+          const eHist = existing.editHistory?.length || 0;
+          if (lHist >= eHist) {
+            mergedMap.set(k, { ...existing, ...b });
+          }
+        }
+      }
+      _bills = Array.from(mergedMap.values());
+      dispatchUpdate();
+    }
+  }).catch(() => {});
+
+  idbGet<Driver[]>('cached_drivers').then((cached) => {
+    if (cached && Array.isArray(cached) && cached.length > _drivers.length) {
+      _drivers = cached;
+      dispatchUpdate();
+    }
+  }).catch(() => {});
+
+  idbGet<Bank[]>('cached_banks').then((cached) => {
+    if (cached && Array.isArray(cached) && cached.length > _banks.length) {
+      _banks = cached;
+      dispatchUpdate();
+    }
+  }).catch(() => {});
+
+  idbGet<DriverDailySummary[]>('cached_summaries').then((cached) => {
+    if (cached && Array.isArray(cached) && cached.length > _summaries.length) {
+      _summaries = cached;
       dispatchUpdate();
     }
   }).catch(() => {});
 
   idbGet<Contact[]>('cached_salesperson_contacts').then((cached) => {
     if (cached && Array.isArray(cached) && cached.length > 0) {
-      // Merge with in-memory contacts
       const localMap = new Map(_salespersonContacts.map(c => [(c.name || '').trim().toLowerCase(), c]));
       let changed = false;
       for (const c of cached) {
@@ -503,9 +558,8 @@ export function setServerData(data: {
         partyName: greenName || cleanPartyName(b.partyName),
         salespersonName: cleanSalespersonName(b.salespersonName),
       };
-      const isMoc = (b.billNo || '').toUpperCase().startsWith('MOC') || b.collectionCode === 'MOC' || b.salespersonName === 'MOC' || (b.id && b.id.startsWith('moc_'));
-      const key = isMoc ? (b.id || b.billNo) : (b.billNo || b.id);
-      seen.set(key, cleaned);
+      const key = getBillDedupeKey(cleaned);
+      if (key) seen.set(key, cleaned);
     }
     _bills = Array.from(seen.values());
   }
@@ -650,13 +704,11 @@ export function applyRealtimeBillChange(
     salespersonName: cleanSalespersonName(newBill.salespersonName),
   };
 
-  const normBn = (cleaned.billNo || '').trim().toUpperCase();
-  const isMoc = normBn.startsWith('MOC') || cleaned.collectionCode === 'MOC' || cleaned.salespersonName === 'MOC' || (cleaned.id && cleaned.id.startsWith('moc_'));
+  const targetKey = getBillDedupeKey(cleaned);
 
   const idx = _bills.findIndex(b => {
     if (cleaned.id && b.id === cleaned.id) return true;
-    if (!isMoc && normBn && (b.billNo || '').trim().toUpperCase() === normBn) return true;
-    return false;
+    return getBillDedupeKey(b) === targetKey;
   });
 
   if (idx >= 0) {
@@ -668,7 +720,7 @@ export function applyRealtimeBillChange(
   }
 
   dispatchUpdate();
-  persistLocalState();
+  persistLocalState(true);
 }
 
 export function applyRealtimeTableChange(
@@ -679,6 +731,28 @@ export function applyRealtimeTableChange(
 ) {
   if (table === 'bills') {
     return; // Handled by applyRealtimeBillChange
+  }
+
+  if (table === 'driver_summaries') {
+    const id = record?.id || oldRecord?.id;
+    if (eventType === 'DELETE') {
+      _summaries = _summaries.filter(s => s.id !== id);
+    } else if (record) {
+      const summary: DriverDailySummary = {
+        id: String(record.id ?? ''),
+        driverName: String(record.driver_name ?? record.driverName ?? ''),
+        date: String(record.date ?? ''),
+        totalBillCount: Number(record.total_bill_count ?? record.totalBillCount ?? 0),
+        totalAmount: Number(record.total_amount ?? record.totalAmount ?? 0),
+        cashBreakdown: (record.cash_breakdown ?? record.cashBreakdown) as DriverDailySummary['cashBreakdown'] ?? undefined,
+      };
+      const idx = _summaries.findIndex(s => s.id === summary.id);
+      if (idx >= 0) _summaries[idx] = summary;
+      else _summaries.push(summary);
+    }
+    dispatchUpdate();
+    persistLocalState();
+    return;
   }
 
   if (table === 'drivers') {
@@ -886,14 +960,13 @@ function dispatchUpdate() {
 export async function saveBills(bills: Bill[]): Promise<boolean> {
   const seen = new Map<string, Bill>();
   for (const b of bills) {
-    const isMoc = (b.billNo || '').toUpperCase().startsWith('MOC') || b.collectionCode === 'MOC' || b.salespersonName === 'MOC';
-    const key = isMoc ? (b.id || b.billNo) : (b.billNo || b.id);
-    seen.set(key, b);
+    const key = getBillDedupeKey(b);
+    if (key) seen.set(key, b);
   }
   const deduped = Array.from(seen.values());
   _bills = deduped;
   dispatchUpdate();
-  persistLocalState();
+  persistLocalState(true);
   if (deduped.length === 0) return true;
   markWriteStart();
   try {
@@ -1265,18 +1338,15 @@ export async function saveSalespersonContacts(contacts: Contact[]): Promise<bool
 // ─── Bulk merge bills (update existing + add new — no delete, no individual API calls) ─
 export function bulkMergeBillsInStore(mergedBills: Bill[]) {
   if (mergedBills.length === 0) return;
-  const billMap = new Map(_bills.map(b => {
-    const isMoc = (b.billNo || '').toUpperCase().startsWith('MOC') || b.collectionCode === 'MOC' || b.salespersonName === 'MOC' || (b.id && b.id.startsWith('moc_'));
-    return [isMoc ? (b.id || b.billNo) : b.billNo, b];
-  }));
+  const billMap = new Map(_bills.map(b => [getBillDedupeKey(b), b]));
   for (const b of mergedBills) {
-    const isMoc = (b.billNo || '').toUpperCase().startsWith('MOC') || b.collectionCode === 'MOC' || b.salespersonName === 'MOC' || (b.id && b.id.startsWith('moc_'));
-    billMap.set(isMoc ? (b.id || b.billNo) : b.billNo, b);
+    const k = getBillDedupeKey(b);
+    if (k) billMap.set(k, b);
   }
   _bills = Array.from(billMap.values());
   dispatchUpdate();
-  persistLocalState();
-  const deduped = Array.from(new Map(mergedBills.map(b => [b.id, b])).values());
+  persistLocalState(true);
+  const deduped = Array.from(new Map(mergedBills.map(b => [getBillDedupeKey(b), b])).values());
   markWriteStart();
   import('@/lib/apiSync')
     .then(m => m.apiBulkUpsertBills(deduped))
@@ -1287,15 +1357,11 @@ export function bulkMergeBillsInStore(mergedBills: Bill[]) {
 // ─── Add new bills (from XLS import — no delete) ─────────────────────────────
 export function addBillsToStore(newBills: Bill[]) {
   if (newBills.length === 0) return;
-  const existingKeys = new Set(_bills.map(b => {
-    const isMoc = (b.billNo || '').toUpperCase().startsWith('MOC') || b.collectionCode === 'MOC' || b.salespersonName === 'MOC' || (b.id && b.id.startsWith('moc_'));
-    return isMoc ? (b.id || b.billNo) : b.billNo;
-  }));
+  const existingKeys = new Set(_bills.map(b => getBillDedupeKey(b)));
   const toAdd: Bill[] = [];
   for (const b of newBills) {
-    const isMoc = (b.billNo || '').toUpperCase().startsWith('MOC') || b.collectionCode === 'MOC' || b.salespersonName === 'MOC' || (b.id && b.id.startsWith('moc_'));
-    const key = isMoc ? (b.id || b.billNo) : b.billNo;
-    if (!existingKeys.has(key)) {
+    const key = getBillDedupeKey(b);
+    if (key && !existingKeys.has(key)) {
       existingKeys.add(key);
       toAdd.push(b);
     }
@@ -1303,7 +1369,7 @@ export function addBillsToStore(newBills: Bill[]) {
   if (toAdd.length === 0) return;
   _bills = [..._bills, ...toAdd];
   dispatchUpdate();
-  persistLocalState();
+  persistLocalState(true);
   markWriteStart();
   import('@/lib/apiSync')
     .then(m => m.apiInsertBills(toAdd))
@@ -1314,15 +1380,11 @@ export function addBillsToStore(newBills: Bill[]) {
 // ─── Add bills to memory only — no API call; caller handles Supabase save ────
 export function addBillsToMemoryOnly(newBills: Bill[]): Bill[] {
   if (newBills.length === 0) return [];
-  const existingKeys = new Set(_bills.map(b => {
-    const isMoc = (b.billNo || '').toUpperCase().startsWith('MOC') || b.collectionCode === 'MOC' || b.salespersonName === 'MOC' || (b.id && b.id.startsWith('moc_'));
-    return isMoc ? (b.id || b.billNo) : b.billNo;
-  }));
+  const existingKeys = new Set(_bills.map(b => getBillDedupeKey(b)));
   const toAdd: Bill[] = [];
   for (const b of newBills) {
-    const isMoc = (b.billNo || '').toUpperCase().startsWith('MOC') || b.collectionCode === 'MOC' || b.salespersonName === 'MOC' || (b.id && b.id.startsWith('moc_'));
-    const key = isMoc ? (b.id || b.billNo) : b.billNo;
-    if (!existingKeys.has(key)) {
+    const key = getBillDedupeKey(b);
+    if (key && !existingKeys.has(key)) {
       existingKeys.add(key);
       toAdd.push(b);
     }
@@ -1330,24 +1392,21 @@ export function addBillsToMemoryOnly(newBills: Bill[]): Bill[] {
   if (toAdd.length === 0) return [];
   _bills = [..._bills, ...toAdd];
   dispatchUpdate();
-  persistLocalState();
+  persistLocalState(true);
   return toAdd;
 }
 
 // ─── Merge bills in memory only — no API call; caller handles Supabase save ──
 export function mergeBillsInMemoryOnly(mergedBills: Bill[]): void {
   if (mergedBills.length === 0) return;
-  const billMap = new Map(_bills.map(b => {
-    const isMoc = (b.billNo || '').toUpperCase().startsWith('MOC') || b.collectionCode === 'MOC' || b.salespersonName === 'MOC' || (b.id && b.id.startsWith('moc_'));
-    return [isMoc ? (b.id || b.billNo) : b.billNo, b];
-  }));
+  const billMap = new Map(_bills.map(b => [getBillDedupeKey(b), b]));
   for (const b of mergedBills) {
-    const isMoc = (b.billNo || '').toUpperCase().startsWith('MOC') || b.collectionCode === 'MOC' || b.salespersonName === 'MOC' || (b.id && b.id.startsWith('moc_'));
-    billMap.set(isMoc ? (b.id || b.billNo) : b.billNo, b);
+    const k = getBillDedupeKey(b);
+    if (k) billMap.set(k, b);
   }
   _bills = Array.from(billMap.values());
   dispatchUpdate();
-  persistLocalState();
+  persistLocalState(true);
 }
 
 // ─── Merge duplicate bill nos (keep the bill with the most payment data) ─────
@@ -1367,8 +1426,8 @@ export function deduplicateBills(): number {
     (b.cancelLine ? 1 : 0);
   const best = new Map<string, Bill>();
   for (const b of _bills) {
-    const isMoc = (b.billNo || '').toUpperCase().startsWith('MOC') || b.collectionCode === 'MOC' || b.salespersonName === 'MOC' || (b.id && b.id.startsWith('moc_'));
-    const key = isMoc ? (b.id || b.billNo) : (b.billNo || b.id);
+    const key = getBillDedupeKey(b);
+    if (!key) continue;
     const cur = best.get(key);
     if (!cur || score(b) > score(cur)) best.set(key, b);
   }
@@ -1376,6 +1435,7 @@ export function deduplicateBills(): number {
   const removed = before - _bills.length;
   if (removed > 0) {
     dispatchUpdate();
+    persistLocalState(true);
     markWriteStart();
     import('@/lib/apiSync')
       .then(m => m.apiPushBills(_bills))
@@ -1776,8 +1836,9 @@ export async function consolidateSimilarPartyAndSalespersons(customBills?: Bill[
   return { updatedCount: changed, mergedParties: mergedPartiesCount, mergedSPs: mergedSPCount };
 }
 export async function patchBillInMemory(billNo: string, patch: Partial<Bill>): Promise<boolean> {
+  const normKey = getBillDedupeKey({ billNo, id: billNo });
   const norm = (billNo || '').trim().toLowerCase();
-  const idx = _bills.findIndex(b => (b.billNo || '').trim().toLowerCase() === norm || b.id === billNo);
+  const idx = _bills.findIndex(b => (normKey && getBillDedupeKey(b) === normKey) || (b.billNo || '').trim().toLowerCase() === norm || b.id === billNo);
   if (idx === -1) return false;
   if (!('editHistory' in patch)) {
     patch = {
@@ -1795,7 +1856,7 @@ export async function patchBillInMemory(billNo: string, patch: Partial<Bill>): P
   nextBills[idx] = { ...nextBills[idx], ...patch };
   _bills = nextBills;
   dispatchUpdate();
-  persistLocalState();
+  persistLocalState(true);
   const bill = _bills[idx];
   markWriteStart();
   let confirmed = false;
@@ -1824,7 +1885,9 @@ export async function patchBillInMemory(billNo: string, patch: Partial<Bill>): P
 export async function patchBillsInMemory(patches: Array<{ billNo: string; patch: Partial<Bill> }>): Promise<boolean> {
   const toSync: Array<{ id: string; patch: Partial<Bill>; billNo: string }> = [];
   for (const { billNo, patch } of patches) {
-    const idx = _bills.findIndex(b => b.billNo === billNo);
+    const normKey = getBillDedupeKey({ billNo, id: billNo });
+    const norm = (billNo || '').trim().toLowerCase();
+    const idx = _bills.findIndex(b => (normKey && getBillDedupeKey(b) === normKey) || (b.billNo || '').trim().toLowerCase() === norm || b.id === billNo);
     if (idx === -1) continue;
     const withHist: Partial<Bill> = ('editHistory' in patch) ? patch : {
       ...patch,
@@ -1841,7 +1904,7 @@ export async function patchBillsInMemory(patches: Array<{ billNo: string; patch:
   }
   if (toSync.length === 0) return false;
   dispatchUpdate();
-  persistLocalState();
+  persistLocalState(true);
   markWriteStart();
   let allSuccess = true;
   try {
@@ -1972,12 +2035,12 @@ export function getSystemPassword(): string {
   return `${dd}${mm}${_pwSuffix}`;
 }
 
-// Owner password = suffix+DDMM (parts swapped)
+// Owner password = "S" + DDMM (e.g. S0609)
 export function getOwnerPassword(): string {
   const now = new Date();
   const dd = String(now.getDate()).padStart(2, '0');
   const mm = String(now.getMonth() + 1).padStart(2, '0');
-  return `${_pwSuffix}${dd}${mm}`;
+  return `S${dd}${mm}`;
 }
 
 // ─── User permissions (canEdit, canAdd, canBackDate) — stored in settings table ───────────
@@ -2147,12 +2210,13 @@ export function applyPaymentRules(bill: Bill): Bill {
 // ── patchBillDirect: update memory + Supabase immediately (bypasses dirty queue) ──
 // Use for cheque metadata saves and sibling propagation where instant sync matters.
 export async function patchBillDirect(billNo: string, patch: Partial<Bill>): Promise<boolean> {
+  const targetKey = getBillDedupeKey({ billNo, id: billNo });
   const normBillNo = (billNo || '').trim().toUpperCase();
-  const idx = _bills.findIndex(b => (b.billNo || '').trim().toUpperCase() === normBillNo || b.id === billNo);
+  const idx = _bills.findIndex(b => getBillDedupeKey(b) === targetKey || b.id === billNo || (b.billNo || '').trim().toUpperCase() === normBillNo);
   if (idx === -1) return false;
   _bills[idx] = { ..._bills[idx], ...patch };
   dispatchUpdate();
-  persistLocalState();
+  persistLocalState(true);
   const bill = _bills[idx];
 
   markWriteStart();
@@ -2233,17 +2297,19 @@ export async function savePayment(
 
   const normBillNo = (billNo || '').trim().toUpperCase();
   const isMocBn = normBillNo.startsWith('MOC') || normBillNo.includes('MOC') || (billId && billId.startsWith('moc_'));
+  const targetKey = getBillDedupeKey({ billNo, id: billId || undefined });
 
   let index = -1;
   if (billId) {
     index = _bills.findIndex(b => b.id === billId);
   }
-  if (index === -1 && billNo) {
-    if (!isMocBn) {
-      index = _bills.findIndex(b => (b.billNo || '').trim().toUpperCase() === normBillNo);
-      if (index === -1) {
-        index = _bills.findIndex(b => b.id === billNo || (b.billNo || '').trim() === billNo.trim());
-      }
+  if (index === -1 && targetKey) {
+    index = _bills.findIndex(b => getBillDedupeKey(b) === targetKey);
+  }
+  if (index === -1 && billNo && !isMocBn) {
+    index = _bills.findIndex(b => (b.billNo || '').trim().toUpperCase() === normBillNo);
+    if (index === -1) {
+      index = _bills.findIndex(b => b.id === billNo || (b.billNo || '').trim() === billNo.trim());
     }
   }
 
@@ -2306,7 +2372,7 @@ export async function savePayment(
     };
     _bills.push(stubBill);
     dispatchUpdate();
-    persistLocalState();
+    persistLocalState(true);
 
     // Async background sync
     markWriteStart();
@@ -2479,7 +2545,7 @@ export async function savePayment(
   // Update in-memory and local storage immediately for 0ms UI responsiveness
   _bills[index] = { ..._bills[index], ...patch };
   dispatchUpdate();
-  persistLocalState();
+  persistLocalState(true);
 
   const targetBillId = _bills[index].id;
 
@@ -2511,8 +2577,9 @@ export async function savePayment(
 
 // ─── resetBill: clears all payment fields, keeps billNetAmt unchanged ──────────
 export async function resetBill(billNo: string) {
+  const normKey = getBillDedupeKey({ billNo, id: billNo });
   const normBillNo = (billNo || '').trim().toUpperCase();
-  const index = _bills.findIndex(b => (b.billNo || '').trim().toUpperCase() === normBillNo || b.id === billNo);
+  const index = _bills.findIndex(b => (normKey && getBillDedupeKey(b) === normKey) || (b.billNo || '').trim().toUpperCase() === normBillNo || b.id === billNo);
   if (index === -1) return;
   const patch: Partial<Bill> = {
     paymentMode: '',
@@ -2531,7 +2598,7 @@ export async function resetBill(billNo: string) {
   };
   _bills[index] = { ..._bills[index], ...patch };
   dispatchUpdate();
-  persistLocalState();
+  persistLocalState(true);
   const billId = _bills[index].id;
   
   import('@/lib/localQueue').then(({ enqueueDirty }) => {

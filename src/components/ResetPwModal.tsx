@@ -36,7 +36,7 @@ export default function ResetPwModal({ isOpen, onClose, onSuccess, billNo }: Pro
 
   const handleConfirmReset = () => {
     const ownerPw = (getOwnerPassword() || '').trim();
-    if (passwordInput.trim() === ownerPw) {
+    if (passwordInput.trim().toUpperCase() === ownerPw.toUpperCase()) {
       onSuccess();
       setPasswordInput('');
       setError(false);

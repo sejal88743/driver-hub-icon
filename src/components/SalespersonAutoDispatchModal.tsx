@@ -392,7 +392,7 @@ if __name__ == "__main__":
   };
 
   return (
-    <div className="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-center justify-center p-3 sm:p-6 overflow-y-auto animate-in fade-in duration-200">
+    <div className="fixed inset-0 bg-black/70 backdrop-blur-sm z-[250] flex items-start justify-center pt-4 sm:pt-6 p-3 sm:p-6 overflow-y-auto animate-in fade-in duration-200">
       <div className="bg-card border border-border/80 rounded-2xl w-full max-w-5xl max-h-[94vh] flex flex-col shadow-2xl overflow-hidden">
         
         {/* Header */}

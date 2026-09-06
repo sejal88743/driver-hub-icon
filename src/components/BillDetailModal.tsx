@@ -40,7 +40,7 @@ export default function BillDetailModal({ bill, onClose }: Props) {
 
   async function handleConfirmAction() {
     const ownerPw = (getOwnerPassword() || '').trim();
-    if (ownerPwInput.trim() !== ownerPw) {
+    if (ownerPwInput.trim().toUpperCase() !== ownerPw.toUpperCase()) {
       setPwError(true);
       return;
     }
