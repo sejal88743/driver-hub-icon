@@ -7,6 +7,7 @@ import path from 'path';
 export default defineConfig({
   plugins: [react(), tailwindcss(), tsconfigPaths({ ignoreConfigErrors: true })],
   base: '/',
+  envPrefix: ['VITE_', 'SUPABASE_'],
   resolve: {
     alias: {
       '@': path.resolve(process.cwd(), 'src'),
