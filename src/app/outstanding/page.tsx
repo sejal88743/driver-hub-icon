@@ -581,12 +581,17 @@ Kripya in credit bills ka collection coordinate karein.`;
       await persistSalespersonMobile(spName, giveSalesmanMobile.trim());
     }
 
-    executeBillGiveAssignment(spName, giveDateInput);
+    const saveRes = await executeBillGiveAssignment(spName, giveDateInput);
+    if (!saveRes.ok && !saveRes.queued) {
+      alert('Save nahi hua! Internet check karke dubara try karein.');
+      return;
+    }
 
     setShowGiveModal(false);
     setSelectedBillKeys(new Set());
-    setAlertNotice(`✓ ${count} Bills assigned to ${spName}!`);
+    setAlertNotice(`✓ ${count} Bills assigned to ${spName}${saveRes.queued ? ' (sync pending)' : ''}!`);
     setTimeout(() => setAlertNotice(null), 4000);
+
   };
 
   // Render Sort Header Indicator
