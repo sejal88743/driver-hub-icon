@@ -18,6 +18,7 @@ export default defineConfig({
     port: 3000,
     strictPort: true,
     allowedHosts: true,
+    hmr: process.env.DISABLE_HMR === 'true' ? false : undefined,
     watch: {
       ignored: ['**/.local/**', '**/.cache/**', '**/node_modules/**'],
     },

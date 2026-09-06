@@ -114,6 +114,17 @@ type UploadResult = {
   details?: string[];
 };
 
+export interface TableRestoreProgressItem {
+  id: string;
+  tableName: string;
+  label: string;
+  sheetNames: string[];
+  status: 'pending' | 'loading' | 'done' | 'error' | 'skipped';
+  current: number;
+  total: number;
+  message?: string;
+}
+
 export default function SettingsPage() {
   const [unlocked, setUnlocked] = useState(true);
   const [pwInput] = useState('');
@@ -161,13 +172,16 @@ export default function SettingsPage() {
   const [backupProgress, setBackupProgress] = useState('');
   const [backup2Status, setBackup2Status] = useState<'idle' | 'loading' | 'ok' | 'err'>('idle');
   const [backup2Progress, setBackup2Progress] = useState('');
+
   const [restoreStatus, setRestoreStatus] = useState<UploadResult | null>(null);
   const restoreFileRef = useRef<HTMLInputElement>(null);
   const [pendingRestore, setPendingRestore] = useState<{
     fileName: string;
     stats: { label: string; count: number }[];
     wb: any;
+    steps: TableRestoreProgressItem[];
   } | null>(null);
+  const [tableProgressList, setTableProgressList] = useState<TableRestoreProgressItem[]>([]);
 
   // Helper helper to build shared sheets
   const [ledgerResult, setLedgerResult] = useState<UploadResult | null>(null);
@@ -195,47 +209,196 @@ export default function SettingsPage() {
     return null;
   }
 
-  async function runAutoBackupBeforeRestore(): Promise<boolean> {
-    try {
-      const XLSX = await import('xlsx');
-      const { apiFetchAllData } = await import('@/lib/apiSync');
-      let serverData: any;
-      try {
-        serverData = await apiFetchAllData();
-      } catch (e) {
-        console.warn('[Auto Pre-Restore Backup] apiFetchAllData failed, using local store data:', e);
-        serverData = {
-          bills: getBills(),
-          drivers: getDrivers(),
-          banks: getBanks(),
-          summaries: getSummaries(),
-          partyContacts: getPartyContacts(),
-          salespersonContacts: getSalespersonContacts(),
-          settings: {},
-        };
+  function findAllWorkbookSheets(wb: any, ...aliases: string[]): Array<{ name: string; sheet: any }> {
+    if (!wb || !wb.SheetNames || !Array.isArray(wb.SheetNames)) return [];
+    const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, '');
+    const matched: Array<{ name: string; sheet: any }> = [];
+    const seen = new Set<string>();
+    for (const a of aliases) {
+      const target = norm(a);
+      for (const sn of wb.SheetNames) {
+        if (!seen.has(sn) && norm(sn) === target && wb.Sheets[sn]) {
+          seen.add(sn);
+          matched.push({ name: sn, sheet: wb.Sheets[sn] });
+        }
       }
-      
-      const wb = XLSX.utils.book_new();
-      const allBills: Bill[] = (serverData?.bills && serverData.bills.length > 0) ? serverData.bills : getBills();
-      XLSX.utils.book_append_sheet(wb, buildBillsSheet(XLSX, allBills), 'Bills');
-      appendSharedSheets(XLSX, wb, serverData);
-      
-      downloadWb(XLSX, wb, `VitraTrack_Auto_PreRestore_Backup_${getStamp()}.xlsx`);
-      return true;
-    } catch (err) {
-      console.warn('[Auto Pre-Restore Backup Warning]', err);
-      return true;
     }
+    return matched;
   }
 
-  async function executeRestore(wb: any) {
-    setRestoreStatus({ status: 'loading', message: 'Creating automatic pre-restore backup...' });
+  function buildTableStepsFromWb(XLSX: any, wb: any): TableRestoreProgressItem[] {
+    const steps: TableRestoreProgressItem[] = [];
+
+    // 1. bills
+    const billSheets = findAllWorkbookSheets(wb, 'Bills', 'Bill', 'Ledger', 'all_bills', 'all bills', 'Bills_Data', 'PaidFBR', 'Paid_FBR', 'Other', 'bills', 'b_bills', 'Sale', 'Sales');
+    if (billSheets.length === 0 && wb.SheetNames) {
+      for (const sn of wb.SheetNames) {
+        const s = wb.Sheets[sn];
+        if (!s) continue;
+        const previewRows: any[] = XLSX.utils.sheet_to_json(s, { header: 1, range: 0 });
+        const headerRow = (previewRows[0] || []).map((c: any) => String(c).toLowerCase().replace(/[^a-z0-9]/g, ''));
+        if (headerRow.some((h: string) => h.includes('billno') || h.includes('billnumber') || h.includes('invoiceno') || h.includes('netamt'))) {
+          billSheets.push({ name: sn, sheet: s });
+        }
+      }
+    }
+
+    if (billSheets.length > 0) {
+      let totalRows = 0;
+      for (const b of billSheets) {
+        const rows = XLSX.utils.sheet_to_json(b.sheet, { defval: '' });
+        totalRows += rows.length;
+      }
+      steps.push({
+        id: 'bills',
+        tableName: 'bills',
+        label: 'Bills Data',
+        sheetNames: billSheets.map(b => b.name),
+        status: 'pending',
+        current: 0,
+        total: totalRows,
+      });
+    }
+
+    // 2. drivers
+    const drvSheets = findAllWorkbookSheets(wb, 'Drivers', 'Driver', 'drivers', 'driver', 'Driver List');
+    if (drvSheets.length > 0) {
+      let totalRows = 0;
+      for (const d of drvSheets) {
+        const rows = XLSX.utils.sheet_to_json(d.sheet, { defval: '' });
+        totalRows += rows.length;
+      }
+      steps.push({
+        id: 'drivers',
+        tableName: 'drivers',
+        label: 'Drivers Directory',
+        sheetNames: drvSheets.map(d => d.name),
+        status: 'pending',
+        current: 0,
+        total: totalRows,
+      });
+    }
+
+    // 3. banks
+    const bnkSheets = findAllWorkbookSheets(wb, 'Banks', 'Bank', 'banks', 'bank', 'Bank List');
+    if (bnkSheets.length > 0) {
+      let totalRows = 0;
+      for (const b of bnkSheets) {
+        const rows = XLSX.utils.sheet_to_json(b.sheet, { defval: '' });
+        totalRows += rows.length;
+      }
+      steps.push({
+        id: 'banks',
+        tableName: 'banks',
+        label: 'Banks Directory',
+        sheetNames: bnkSheets.map(b => b.name),
+        status: 'pending',
+        current: 0,
+        total: totalRows,
+      });
+    }
+
+    // 4. summaries
+    const sumSheets = findAllWorkbookSheets(wb, 'Summaries', 'Driver_Summaries', 'Driver Summaries', 'DriverSummaries', 'summaries', 'Summary');
+    if (sumSheets.length > 0) {
+      let totalRows = 0;
+      for (const s of sumSheets) {
+        const rows = XLSX.utils.sheet_to_json(s.sheet, { defval: '' });
+        totalRows += rows.length;
+      }
+      steps.push({
+        id: 'driver_summaries',
+        tableName: 'driver_summaries',
+        label: 'Driver Daily Summaries',
+        sheetNames: sumSheets.map(s => s.name),
+        status: 'pending',
+        current: 0,
+        total: totalRows,
+      });
+    }
+
+    // 5. contacts (party)
+    const ptySheets = findAllWorkbookSheets(wb, 'Party_Contacts', 'Party Contacts', 'PartyContacts', 'Parties', 'party_contacts', 'Retailers', 'Customers');
+    if (ptySheets.length > 0) {
+      let totalRows = 0;
+      for (const p of ptySheets) {
+        const rows = XLSX.utils.sheet_to_json(p.sheet, { defval: '' });
+        totalRows += rows.length;
+      }
+      steps.push({
+        id: 'contacts_party',
+        tableName: 'contacts_party',
+        label: 'Party Contacts',
+        sheetNames: ptySheets.map(p => p.name),
+        status: 'pending',
+        current: 0,
+        total: totalRows,
+      });
+    }
+
+    // 6. contacts (salesperson)
+    const spSheets = findAllWorkbookSheets(wb, 'Salesperson_Contacts', 'Salesperson Contacts', 'SalespersonContacts', 'Sales Contacts', 'Sales_Contacts', 'salesperson_contacts', 'Salespersons');
+    if (spSheets.length > 0) {
+      let totalRows = 0;
+      for (const s of spSheets) {
+        const rows = XLSX.utils.sheet_to_json(s.sheet, { defval: '' });
+        totalRows += rows.length;
+      }
+      steps.push({
+        id: 'contacts_salesperson',
+        tableName: 'contacts_salesperson',
+        label: 'Salesperson Contacts',
+        sheetNames: spSheets.map(s => s.name),
+        status: 'pending',
+        current: 0,
+        total: totalRows,
+      });
+    }
+
+    // 7. settings
+    const setSheets = findAllWorkbookSheets(wb, 'Settings', 'settings', 'Setting', 'Config', 'config', 'App_Settings');
+    if (setSheets.length > 0) {
+      let totalRows = 0;
+      for (const s of setSheets) {
+        const rows = XLSX.utils.sheet_to_json(s.sheet, { defval: '' });
+        totalRows += rows.length;
+      }
+      steps.push({
+        id: 'settings',
+        tableName: 'settings',
+        label: 'System Settings',
+        sheetNames: setSheets.map(s => s.name),
+        status: 'pending',
+        current: 0,
+        total: totalRows,
+      });
+    }
+
+    return steps;
+  }
+
+  async function executeRestore(wb: any, initialSteps?: TableRestoreProgressItem[]) {
+    setRestoreStatus({ status: 'loading', message: 'Starting direct Supabase database upload...' });
     setPendingRestore(null);
     try {
-      await runAutoBackupBeforeRestore();
-
-      setRestoreStatus({ status: 'loading', message: 'Auto-backup complete. Processing sheets for Supabase table-wise update...' });
       const XLSX = await import('xlsx');
+      const { 
+        apiBulkUpsertWithProgress, 
+        apiPushDrivers, 
+        apiPushBanks, 
+        apiPushSummaries, 
+        apiPushPartyContacts, 
+        apiPushSalespersonContacts,
+        apiPushSettingsBulk
+      } = await import('@/lib/apiSync');
+
+      const stepsToRun = initialSteps && initialSteps.length > 0 ? [...initialSteps] : buildTableStepsFromWb(XLSX, wb);
+      setTableProgressList(stepsToRun);
+
+      const updateStep = (id: string, patch: Partial<TableRestoreProgressItem>) => {
+        setTableProgressList(prev => prev.map(s => s.id === id ? { ...s, ...patch } : s));
+      };
+
       const stats: string[] = [];
 
       // Helper: parse numbers safely
@@ -309,355 +472,420 @@ export default function SettingsPage() {
       };
 
       // ─────────────────────────────────────────────────────────────
-      // 1. BILLS TABLE
+      // 1. BILLS TABLE (Direct Supabase upload — NO localStorage)
       // ─────────────────────────────────────────────────────────────
-      const billsSheetInfo = findWorkbookSheet(wb, 'Bills', 'Bill', 'Ledger', 'all_bills', 'Bills_Data', 'PaidFBR', 'Other');
-      if (billsSheetInfo) {
-        setRestoreStatus({ status: 'loading', message: `Sheet "${billsSheetInfo.name}": Preparing bills for Supabase table [bills]...` });
-        const rows: any[] = XLSX.utils.sheet_to_json(billsSheetInfo.sheet, { defval: '' });
-        
-        const existingBills = getBills();
-        const currentBillMap = new Map<string, Bill>(existingBills.map(b => [b.billNo.trim(), b]));
-        
-        let updatedCount = 0;
-        let addedCount = 0;
-        const toUpsert: Bill[] = [];
+      const billStep = stepsToRun.find(s => s.tableName === 'bills');
+      if (billStep && billStep.sheetNames.length > 0) {
+        updateStep(billStep.id, { status: 'loading', message: 'Parsing bills from backup...' });
+        setRestoreStatus({ status: 'loading', message: `[Table 1/7: bills] Parsing bills for direct Supabase upload...` });
 
-        for (const r of rows) {
-          const usedKeys = new Set<string>();
+        // Deduplicate rows within the backup file itself in memory (ZERO local storage usage)
+        const fileBillMap = new Map<string, Bill>();
 
-          const rawBillNo = String(
-            getField(r, usedKeys, 'billNo', 'bill_no', 'Bill No', 'Bill No.', 'Bill Number', 'BillRefNo', 'billRefNo', 'Invoice No', 'Invoice Number', 'Doc No', 'Ref No', 'Bill') || ''
-          ).trim();
-          if (!rawBillNo || isSummaryRow(rawBillNo)) continue;
+        for (const sn of billStep.sheetNames) {
+          const sheet = wb.Sheets[sn];
+          if (!sheet) continue;
+          const rows: any[] = XLSX.utils.sheet_to_json(sheet, { defval: '' });
 
-          const cur = currentBillMap.get(rawBillNo);
-          const billId = cur?.id || getField(r, usedKeys, 'id', 'ID', 'bill_id', 'billId') || `b_${Date.now()}_${Math.random().toString(36).substr(2, 7)}`;
-          
-          if (cur) updatedCount++;
-          else addedCount++;
+          for (const r of rows) {
+            const usedKeys = new Set<string>();
 
-          const billNetAmt = num(getField(r, usedKeys, 'billNetAmt', 'bill_net_amt', 'Bill Net Amt', 'Net Amt', 'Net Amount', 'amount', 'netAmount', 'Total Amount', 'Grand Total', 'Total', 'Invoice Amount'), cur?.billNetAmt || 0);
-          const collectedAmount = num(getField(r, usedKeys, 'collectedAmount', 'collected_amount', 'Collected Amount', 'Collection Amount', 'Paid Amount', 'Received Amount', 'Recd Amt'), cur?.collectedAmount || 0);
-          const outstandingAmount = num(getField(r, usedKeys, 'outstandingAmount', 'outstanding_amount', 'Outstanding Amount', 'Balance Amount', 'Balance', 'Pending Amount', 'Due Amount'), cur?.outstandingAmount || (billNetAmt - collectedAmount));
-          const cashAmount = num(getField(r, usedKeys, 'cashAmount', 'cash_amount', 'Cash Amount', 'Cash', 'Cash Amt'), cur?.cashAmount || 0);
-          const upiAmount = num(getField(r, usedKeys, 'upiAmount', 'upi_amount', 'UPI Amount', 'UPI', 'Online', 'GPay', 'PhonePe', 'Paytm'), cur?.upiAmount || 0);
-          const chequeAmount = num(getField(r, usedKeys, 'chequeAmount', 'cheque_amount', 'Cheque Amount', 'Cheque Amt', 'Cheque'), cur?.chequeAmount || 0);
-          const lineCutAmt = num(getField(r, usedKeys, 'lineCutAmt', 'line_cut_amt', 'Line Cut Amt', 'Line Cut Amount', 'Shortage'), cur?.lineCutAmt || 0);
-          const billAgeing = num(getField(r, usedKeys, 'billAgeing', 'bill_ageing', 'Bill Ageing', 'Ageing', 'Aging', 'Days'), cur?.billAgeing || 0);
+            const rawBillNo = String(
+              getField(r, usedKeys, 'billNo', 'bill_no', 'Bill No', 'Bill No.', 'Bill Number', 'BillRefNo', 'billRefNo', 'Invoice No', 'Invoice Number', 'Doc No', 'Ref No', 'Bill') || ''
+            ).trim();
+            if (!rawBillNo || isSummaryRow(rawBillNo)) continue;
 
-          const rawDate = getField(r, usedKeys, 'date', 'Date', 'Bill Date', 'Invoice Date', 'Doc Date');
-          const rawPayDate = getField(r, usedKeys, 'paymentDate', 'payment_date', 'Payment Date', 'Pay Date', 'Paid Date');
-          const rawDelDate = getField(r, usedKeys, 'deliveryDate', 'delivery_date', 'Delivery Date', 'Del Date', 'Delivered Date');
-          const rawChqDate = getField(r, usedKeys, 'chequeDate', 'cheque_date', 'Cheque Date', 'Chq Date');
+            const fileId = getField(r, usedKeys, 'id', 'ID', 'bill_id', 'billId');
+            const billId = fileId ? String(fileId).trim() : `b_${rawBillNo.replace(/[^a-zA-Z0-9_-]/g, '_')}`;
 
-          const constructedBill: Bill & Record<string, any> = {
-            id: billId,
-            billNo: rawBillNo,
-            srNo: String(getField(r, usedKeys, 'srNo', 'sr_no', 'Sr No', 'Sr. No.', 'Serial No', 'SNo') ?? cur?.srNo ?? ''),
-            date: normDate(rawDate ?? cur?.date ?? ''),
-            salespersonName: cleanSalespersonName(String(getField(r, usedKeys, 'salespersonName', 'salesperson_name', 'Salesperson Name', 'salesman', 'Salesman Name', 'Sales Rep', 'Executive', 'DSM') ?? cur?.salespersonName ?? '')),
-            partyName: cleanPartyName(String(getField(r, usedKeys, 'partyName', 'party_name', 'Party Name', 'party', 'Customer Name', 'Retailer Name', 'Outlet Name', 'Shop Name') ?? cur?.partyName ?? '')),
-            partyCode: String(getField(r, usedKeys, 'partyCode', 'party_code', 'Party Code', 'Customer Code', 'Retailer Code', 'Outlet Code') ?? cur?.partyCode ?? ''),
-            partyHulCode: String(getField(r, usedKeys, 'partyHulCode', 'party_hul_code', 'Party HUL Code', 'HUL Code', 'HUL Party Code') ?? cur?.partyHulCode ?? ''),
-            beatName: String(getField(r, usedKeys, 'beatName', 'beat_name', 'Beat Name', 'beat', 'Route Name', 'Route', 'Area') ?? cur?.beatName ?? ''),
-            billNetAmt,
-            collectedAmount,
-            outstandingAmount,
-            billAgeing,
-            paymentMode: (getField(r, usedKeys, 'paymentMode', 'payment_mode', 'Payment Mode', 'Pay Mode', 'Payment Status', 'Status') || cur?.paymentMode || '') as any,
-            paymentMethod: getField(r, usedKeys, 'paymentMethod', 'payment_method', 'Payment Method', 'Pay Method') || cur?.paymentMethod || undefined,
-            paymentDate: normDate(rawPayDate || cur?.paymentDate || ''),
-            deliveryDate: normDate(rawDelDate || cur?.deliveryDate || ''),
-            paymentTime: getField(r, usedKeys, 'paymentTime', 'payment_time', 'Payment Time', 'Pay Time', 'Time') || cur?.paymentTime || undefined,
-            driverName: getField(r, usedKeys, 'driverName', 'driver_name', 'Driver Name', 'Driver', 'Delivery Boy') || cur?.driverName || undefined,
-            cashAmount: cashAmount || undefined,
-            upiAmount: upiAmount || undefined,
-            chequeAmount: chequeAmount || undefined,
-            chequeNo: getField(r, usedKeys, 'chequeNo', 'cheque_no', 'Cheque No', 'Cheque Number', 'Chq No') || cur?.chequeNo || undefined,
-            chequeDate: normDate(rawChqDate || cur?.chequeDate || ''),
-            bankName: (getField(r, usedKeys, 'bankName', 'bank_name', 'Bank Name', 'Bank') || cur?.bankName || undefined)?.toString().trim().toUpperCase(),
-            collectionCode: String(getField(r, usedKeys, 'collectionCode', 'collection_code', 'Collection Code') ?? cur?.collectionCode ?? ''),
-            discrepancyReason: getField(r, usedKeys, 'discrepancyReason', 'discrepancy_reason', 'Discrepancy Reason', 'Remarks', 'Remark', 'Reason', 'Note', 'Notes', 'Narration') || cur?.discrepancyReason || undefined,
-            nextBillNo: getField(r, usedKeys, 'nextBillNo', 'next_bill_no', 'Next Bill No', 'Next Bill') || cur?.nextBillNo || undefined,
-            cancelLine: getField(r, usedKeys, 'cancelLine', 'cancel_line', 'Cancel Line', 'Cancel Reason') || cur?.cancelLine || undefined,
-            lineCutAmt: lineCutAmt || undefined,
-            delPendingHistory: parseJsonField(getField(r, usedKeys, 'delPendingHistory', 'del_pending_history', 'Del Pending History'), cur?.delPendingHistory),
-            editHistory: parseJsonField(getField(r, usedKeys, 'editHistory', 'edit_history', 'Edit History'), cur?.editHistory || []),
-            partPayments: parseJsonField(getField(r, usedKeys, 'partPayments', 'part_payments', 'Part Payments'), cur?.partPayments),
-            user: getField(r, usedKeys, 'user', 'User', 'Created By', 'Updated By') || cur?.user || undefined,
-            owner: getField(r, usedKeys, 'owner', 'Owner', 'Admin') || cur?.owner || undefined,
-          };
+            const billNetAmt = num(getField(r, usedKeys, 'billNetAmt', 'bill_net_amt', 'Bill Net Amt', 'Net Amt', 'Net Amount', 'amount', 'netAmount', 'Total Amount', 'Grand Total', 'Total', 'Invoice Amount'), 0);
+            const collectedAmount = num(getField(r, usedKeys, 'collectedAmount', 'collected_amount', 'Collected Amount', 'Collection Amount', 'Paid Amount', 'Received Amount', 'Recd Amt'), 0);
+            const outstandingAmount = num(getField(r, usedKeys, 'outstandingAmount', 'outstanding_amount', 'Outstanding Amount', 'Balance Amount', 'Balance', 'Pending Amount', 'Due Amount'), (billNetAmt - collectedAmount));
+            const cashAmount = num(getField(r, usedKeys, 'cashAmount', 'cash_amount', 'Cash Amount', 'Cash', 'Cash Amt'), 0);
+            const upiAmount = num(getField(r, usedKeys, 'upiAmount', 'upi_amount', 'UPI Amount', 'UPI', 'Online', 'GPay', 'PhonePe', 'Paytm'), 0);
+            const chequeAmount = num(getField(r, usedKeys, 'chequeAmount', 'cheque_amount', 'Cheque Amount', 'Cheque Amt', 'Cheque'), 0);
+            const lineCutAmt = num(getField(r, usedKeys, 'lineCutAmt', 'line_cut_amt', 'Line Cut Amt', 'Line Cut Amount', 'Shortage'), 0);
+            const billAgeing = num(getField(r, usedKeys, 'billAgeing', 'bill_ageing', 'Bill Ageing', 'Ageing', 'Aging', 'Days'), 0);
 
-          // Capture ANY and ALL remaining columns in this row that were not matched to standard fields
-          const extraColumns: Record<string, any> = {};
-          for (const [key, val] of Object.entries(r)) {
-            if (val === '' || val === null || val === undefined) continue;
-            if (!usedKeys.has(key)) {
-              extraColumns[key] = val;
-              // Also attach directly onto constructedBill
-              constructedBill[key] = val;
-              const snake = key.replace(/([A-Z])/g, '_$1').toLowerCase().replace(/[^a-z0-9_]/g, '_');
-              if (snake && !constructedBill[snake]) {
-                constructedBill[snake] = val;
+            const rawDate = getField(r, usedKeys, 'date', 'Date', 'Bill Date', 'Invoice Date', 'Doc Date');
+            const rawPayDate = getField(r, usedKeys, 'paymentDate', 'payment_date', 'Payment Date', 'Pay Date', 'Paid Date');
+            const rawDelDate = getField(r, usedKeys, 'deliveryDate', 'delivery_date', 'Delivery Date', 'Del Date', 'Delivered Date');
+            const rawChqDate = getField(r, usedKeys, 'chequeDate', 'cheque_date', 'Cheque Date', 'Chq Date');
+
+            const constructedBill: Bill & Record<string, any> = {
+              id: billId,
+              billNo: rawBillNo,
+              srNo: String(getField(r, usedKeys, 'srNo', 'sr_no', 'Sr No', 'Sr. No.', 'Serial No', 'SNo') ?? ''),
+              date: normDate(rawDate ?? ''),
+              salespersonName: cleanSalespersonName(String(getField(r, usedKeys, 'salespersonName', 'salesperson_name', 'Salesperson Name', 'salesman', 'Salesman Name', 'Sales Rep', 'Executive', 'DSM') ?? '')),
+              partyName: cleanPartyName(String(getField(r, usedKeys, 'partyName', 'party_name', 'Party Name', 'party', 'Customer Name', 'Retailer Name', 'Outlet Name', 'Shop Name') ?? '')),
+              partyCode: String(getField(r, usedKeys, 'partyCode', 'party_code', 'Party Code', 'Customer Code', 'Retailer Code', 'Outlet Code') ?? ''),
+              partyHulCode: String(getField(r, usedKeys, 'partyHulCode', 'party_hul_code', 'Party HUL Code', 'HUL Code', 'HUL Party Code') ?? ''),
+              beatName: String(getField(r, usedKeys, 'beatName', 'beat_name', 'Beat Name', 'beat', 'Route Name', 'Route', 'Area') ?? ''),
+              billNetAmt,
+              collectedAmount,
+              outstandingAmount,
+              billAgeing,
+              paymentMode: (getField(r, usedKeys, 'paymentMode', 'payment_mode', 'Payment Mode', 'Pay Mode', 'Payment Status', 'Status') || '') as any,
+              paymentMethod: getField(r, usedKeys, 'paymentMethod', 'payment_method', 'Payment Method', 'Pay Method') || undefined,
+              paymentDate: normDate(rawPayDate || ''),
+              deliveryDate: normDate(rawDelDate || ''),
+              paymentTime: getField(r, usedKeys, 'paymentTime', 'payment_time', 'Payment Time', 'Pay Time', 'Time') || undefined,
+              driverName: getField(r, usedKeys, 'driverName', 'driver_name', 'Driver Name', 'Driver', 'Delivery Boy') || undefined,
+              cashAmount: cashAmount || undefined,
+              upiAmount: upiAmount || undefined,
+              chequeAmount: chequeAmount || undefined,
+              chequeNo: getField(r, usedKeys, 'chequeNo', 'cheque_no', 'Cheque No', 'Cheque Number', 'Chq No') || undefined,
+              chequeDate: normDate(rawChqDate || ''),
+              bankName: (getField(r, usedKeys, 'bankName', 'bank_name', 'Bank Name', 'Bank') || undefined)?.toString().trim().toUpperCase(),
+              collectionCode: String(getField(r, usedKeys, 'collectionCode', 'collection_code', 'Collection Code') ?? ''),
+              discrepancyReason: getField(r, usedKeys, 'discrepancyReason', 'discrepancy_reason', 'Discrepancy Reason', 'Remarks', 'Remark', 'Reason', 'Note', 'Notes', 'Narration') || undefined,
+              nextBillNo: getField(r, usedKeys, 'nextBillNo', 'next_bill_no', 'Next Bill No', 'Next Bill') || undefined,
+              cancelLine: getField(r, usedKeys, 'cancelLine', 'cancel_line', 'Cancel Line', 'Cancel Reason') || undefined,
+              lineCutAmt: lineCutAmt || undefined,
+              delPendingHistory: parseJsonField(getField(r, usedKeys, 'delPendingHistory', 'del_pending_history', 'Del Pending History')),
+              editHistory: parseJsonField(getField(r, usedKeys, 'editHistory', 'edit_history', 'Edit History'), []),
+              partPayments: parseJsonField(getField(r, usedKeys, 'partPayments', 'part_payments', 'Part Payments')),
+              user: getField(r, usedKeys, 'user', 'User', 'Created By', 'Updated By') || undefined,
+              owner: getField(r, usedKeys, 'owner', 'Owner', 'Admin') || undefined,
+            };
+
+            // Capture ANY and ALL remaining columns in this row that were not matched to standard fields
+            const extraColumns: Record<string, any> = {};
+            for (const [key, val] of Object.entries(r)) {
+              if (val === '' || val === null || val === undefined) continue;
+              if (!usedKeys.has(key)) {
+                extraColumns[key] = val;
               }
             }
-          }
 
-          if (Object.keys(extraColumns).length > 0) {
-            if (!Array.isArray(constructedBill.editHistory)) {
-              constructedBill.editHistory = [];
+            if (Object.keys(extraColumns).length > 0) {
+              if (!Array.isArray(constructedBill.editHistory)) {
+                constructedBill.editHistory = [];
+              }
+              constructedBill.editHistory.push({
+                timestamp: Date.now(),
+                user: 'Restore-Excel-FullCols',
+                changes: { extraColumns },
+              });
+              if (!constructedBill.discrepancyReason && (extraColumns['Remarks'] || extraColumns['Remark'] || extraColumns['Note'])) {
+                constructedBill.discrepancyReason = String(extraColumns['Remarks'] || extraColumns['Remark'] || extraColumns['Note']);
+              }
             }
-            constructedBill.editHistory.push({
-              timestamp: Date.now(),
-              user: 'Restore-Excel-FullCols',
-              changes: { extraColumns },
-            });
-            // If discrepancyReason is empty and there's extra remarks/note, preserve it
-            if (!constructedBill.discrepancyReason && (extraColumns['Remarks'] || extraColumns['Remark'] || extraColumns['Note'])) {
-              constructedBill.discrepancyReason = String(extraColumns['Remarks'] || extraColumns['Remark'] || extraColumns['Note']);
+
+            const existingInFile = fileBillMap.get(rawBillNo);
+            if (existingInFile) {
+              const hasPayment = Number(constructedBill.collectedAmount) > 0 || !!constructedBill.paymentDate || !!constructedBill.paymentMode;
+              if (hasPayment) {
+                fileBillMap.set(rawBillNo, { ...existingInFile, ...constructedBill });
+              }
+            } else {
+              fileBillMap.set(rawBillNo, constructedBill);
             }
           }
-
-          toUpsert.push(constructedBill);
         }
 
+        const toUpsert = Array.from(fileBillMap.values());
         if (toUpsert.length > 0) {
-          mergeBillsInMemoryOnly(toUpsert);
-          setRestoreStatus({ status: 'loading', message: `Supabase Table [bills]: 0 / ${toUpsert.length} syncing...` });
-          const { apiBulkUpsertWithProgress } = await import('@/lib/apiSync');
+          updateStep(billStep.id, { total: toUpsert.length, current: 0 });
+
           await apiBulkUpsertWithProgress(toUpsert, (saved, total) => {
-            setRestoreStatus({ status: 'loading', message: `Supabase Table [bills]: ${saved} / ${total} updated/added` });
+            updateStep(billStep.id, { current: saved, total });
+            setRestoreStatus({
+              status: 'loading',
+              message: `[Table 1/7: bills] Uploading directly to Supabase: ${saved.toLocaleString()} / ${total.toLocaleString()} rows (${Math.round((saved / total) * 100)}%)`
+            });
           });
-          stats.push(`Bills: ${updatedCount} updated, ${addedCount} added in Supabase [bills] table (${toUpsert.length} total)`);
+
+          updateStep(billStep.id, { status: 'done', current: toUpsert.length, total: toUpsert.length });
+          stats.push(`bills: ${toUpsert.length.toLocaleString()} rows uploaded directly to Supabase`);
+        } else {
+          updateStep(billStep.id, { status: 'done', current: 0, total: 0 });
         }
       }
 
       // ─────────────────────────────────────────────────────────────
-      // 2. DRIVERS TABLE
+      // 2. DRIVERS TABLE (Direct Supabase upload — NO localStorage)
       // ─────────────────────────────────────────────────────────────
-      const driversSheetInfo = findWorkbookSheet(wb, 'Drivers', 'Driver', 'drivers');
-      if (driversSheetInfo) {
-        setRestoreStatus({ status: 'loading', message: `Processing sheet "${driversSheetInfo.name}" for table [drivers]...` });
-        const rows: any[] = XLSX.utils.sheet_to_json(driversSheetInfo.sheet, { defval: '' });
-        const existingDrivers = getDrivers();
-        const driverMap = new Map<string, Driver>(existingDrivers.map(d => [d.name.trim().toLowerCase(), d]));
-        let drvAdded = 0;
-        let drvUpdated = 0;
+      const drvStep = stepsToRun.find(s => s.tableName === 'drivers');
+      if (drvStep && drvStep.sheetNames.length > 0) {
+        updateStep(drvStep.id, { status: 'loading', message: 'Reading driver records...' });
+        setRestoreStatus({ status: 'loading', message: `[Table 2/7: drivers] Uploading drivers directly to Supabase...` });
 
-        for (const r of rows) {
-          const usedKeys = new Set<string>();
-          const name = String(getField(r, usedKeys, 'name', 'Name', 'driverName', 'driver_name', 'Driver Name', 'driver', 'Driver') || '').trim();
-          if (!name) continue;
-          const key = name.toLowerCase();
-          const existing = driverMap.get(key);
-          const id = existing?.id || getField(r, usedKeys, 'id', 'ID', 'driver_id', 'driverId') || `drv_${name.toLowerCase().replace(/[^a-z0-9]/g, '_').slice(0, 44)}`;
-          const rawRole = getField(r, usedKeys, 'role', 'Role', 'user_role');
-          const role = (rawRole || existing?.role || (id.startsWith('own_') ? 'owner' : id.startsWith('usr_') ? 'user' : 'driver')) as any;
-          if (existing) drvUpdated++;
-          else drvAdded++;
-          driverMap.set(key, { id, name, role });
+        const driverMap = new Map<string, Driver>();
+
+        for (const sn of drvStep.sheetNames) {
+          const sheet = wb.Sheets[sn];
+          if (!sheet) continue;
+          const rows: any[] = XLSX.utils.sheet_to_json(sheet, { defval: '' });
+
+          for (const r of rows) {
+            const usedKeys = new Set<string>();
+            const name = String(getField(r, usedKeys, 'name', 'Name', 'driverName', 'driver_name', 'Driver Name', 'driver', 'Driver') || '').trim();
+            if (!name) continue;
+            const key = name.toLowerCase();
+            const id = getField(r, usedKeys, 'id', 'ID', 'driver_id', 'driverId') || `drv_${name.toLowerCase().replace(/[^a-z0-9]/g, '_').slice(0, 44)}`;
+            const rawRole = getField(r, usedKeys, 'role', 'Role', 'user_role');
+            const role = (rawRole || (id.startsWith('own_') ? 'owner' : id.startsWith('usr_') ? 'user' : 'driver')) as any;
+            driverMap.set(key, { id, name, role });
+          }
         }
 
         const finalDrivers = Array.from(driverMap.values());
-        await saveDrivers(finalDrivers);
-        const { apiPushDrivers } = await import('@/lib/apiSync');
-        await apiPushDrivers(finalDrivers);
-        stats.push(`Drivers: ${drvUpdated} updated, ${drvAdded} added in Supabase [drivers] table (${finalDrivers.length} total)`);
+        if (finalDrivers.length > 0) {
+          updateStep(drvStep.id, { total: finalDrivers.length, current: 0 });
+          await apiPushDrivers(finalDrivers, (saved, total) => {
+            updateStep(drvStep.id, { current: saved, total });
+            setRestoreStatus({
+              status: 'loading',
+              message: `[Table 2/7: drivers] Uploading: ${saved} / ${total}`
+            });
+          });
+          updateStep(drvStep.id, { status: 'done', current: finalDrivers.length, total: finalDrivers.length });
+          stats.push(`drivers: ${finalDrivers.length} rows uploaded directly to Supabase`);
+        } else {
+          updateStep(drvStep.id, { status: 'done', current: 0, total: 0 });
+        }
       }
 
       // ─────────────────────────────────────────────────────────────
-      // 3. BANKS TABLE
+      // 3. BANKS TABLE (Direct Supabase upload — NO localStorage)
       // ─────────────────────────────────────────────────────────────
-      const banksSheetInfo = findWorkbookSheet(wb, 'Banks', 'Bank', 'banks');
-      if (banksSheetInfo) {
-        setRestoreStatus({ status: 'loading', message: `Processing sheet "${banksSheetInfo.name}" for table [banks]...` });
-        const rows: any[] = XLSX.utils.sheet_to_json(banksSheetInfo.sheet, { defval: '' });
-        const existingBanks = getBanks();
-        const bankMap = new Map<string, Bank>(existingBanks.map(b => [b.name.trim().toUpperCase(), b]));
-        let bnkAdded = 0;
-        let bnkUpdated = 0;
+      const bnkStep = stepsToRun.find(s => s.tableName === 'banks');
+      if (bnkStep && bnkStep.sheetNames.length > 0) {
+        updateStep(bnkStep.id, { status: 'loading', message: 'Reading banks...' });
+        setRestoreStatus({ status: 'loading', message: `[Table 3/7: banks] Uploading banks directly to Supabase...` });
 
-        for (const r of rows) {
-          const usedKeys = new Set<string>();
-          const name = String(getField(r, usedKeys, 'name', 'Name', 'bankName', 'bank_name', 'Bank Name', 'bank', 'Bank') || '').trim().toUpperCase();
-          if (!name) continue;
-          const existing = bankMap.get(name);
-          const id = existing?.id || getField(r, usedKeys, 'id', 'ID', 'bank_id') || `bnk_${name.toLowerCase().replace(/[^a-z0-9]/g, '_').slice(0, 44)}`;
-          if (existing) bnkUpdated++;
-          else bnkAdded++;
-          bankMap.set(name, { id, name });
+        const bankMap = new Map<string, Bank>();
+
+        for (const sn of bnkStep.sheetNames) {
+          const sheet = wb.Sheets[sn];
+          if (!sheet) continue;
+          const rows: any[] = XLSX.utils.sheet_to_json(sheet, { defval: '' });
+
+          for (const r of rows) {
+            const usedKeys = new Set<string>();
+            const name = String(getField(r, usedKeys, 'name', 'Name', 'bankName', 'bank_name', 'Bank Name', 'bank', 'Bank') || '').trim().toUpperCase();
+            if (!name) continue;
+            const id = getField(r, usedKeys, 'id', 'ID', 'bank_id') || `bnk_${name.toLowerCase().replace(/[^a-z0-9]/g, '_').slice(0, 44)}`;
+            bankMap.set(name, { id, name });
+          }
         }
 
         const finalBanks = Array.from(bankMap.values());
-        await saveBanks(finalBanks);
-        const { apiPushBanks } = await import('@/lib/apiSync');
-        await apiPushBanks(finalBanks);
-        stats.push(`Banks: ${bnkUpdated} updated, ${bnkAdded} added in Supabase [banks] table (${finalBanks.length} total)`);
+        if (finalBanks.length > 0) {
+          updateStep(bnkStep.id, { total: finalBanks.length, current: 0 });
+          await apiPushBanks(finalBanks, (saved, total) => {
+            updateStep(bnkStep.id, { current: saved, total });
+            setRestoreStatus({
+              status: 'loading',
+              message: `[Table 3/7: banks] Uploading: ${saved} / ${total}`
+            });
+          });
+          updateStep(bnkStep.id, { status: 'done', current: finalBanks.length, total: finalBanks.length });
+          stats.push(`banks: ${finalBanks.length} rows uploaded directly to Supabase`);
+        } else {
+          updateStep(bnkStep.id, { status: 'done', current: 0, total: 0 });
+        }
       }
 
       // ─────────────────────────────────────────────────────────────
-      // 4. DRIVER_SUMMARIES TABLE
+      // 4. DRIVER_SUMMARIES TABLE (Direct Supabase upload — NO localStorage)
       // ─────────────────────────────────────────────────────────────
-      const summariesSheetInfo = findWorkbookSheet(wb, 'Summaries', 'Driver_Summaries', 'Driver Summaries', 'DriverSummaries', 'summaries');
-      if (summariesSheetInfo) {
-        setRestoreStatus({ status: 'loading', message: `Processing sheet "${summariesSheetInfo.name}" for table [driver_summaries]...` });
-        const rows: any[] = XLSX.utils.sheet_to_json(summariesSheetInfo.sheet, { defval: '' });
-        const existingSummaries = getSummaries();
-        const sumMap = new Map<string, DriverDailySummary>(existingSummaries.map(s => [s.id, s]));
-        let sumAdded = 0;
-        let sumUpdated = 0;
+      const sumStep = stepsToRun.find(s => s.tableName === 'driver_summaries');
+      if (sumStep && sumStep.sheetNames.length > 0) {
+        updateStep(sumStep.id, { status: 'loading', message: 'Reading driver summaries...' });
+        setRestoreStatus({ status: 'loading', message: `[Table 4/7: driver_summaries] Uploading summaries directly to Supabase...` });
 
-        for (const r of rows) {
-          const usedKeys = new Set<string>();
-          const driverName = String(getField(r, usedKeys, 'driverName', 'driver_name', 'Driver Name', 'driver', 'Driver') || '').trim();
-          const rawDate = getField(r, usedKeys, 'date', 'Date', 'summary_date');
-          const date = normDate(rawDate || '');
-          if (!driverName) continue;
-          const id = String(getField(r, usedKeys, 'id', 'ID') || `${driverName.toLowerCase().replace(/[^a-z0-9]/g, '_')}_${date.replace(/[^0-9]/g, '')}`);
-          const totalBillCount = num(getField(r, usedKeys, 'totalBillCount', 'total_bill_count', 'Total Bills', 'Bill Count', 'total_bills'), 0);
-          const totalAmount = num(getField(r, usedKeys, 'totalAmount', 'total_amount', 'Total Amount', 'Amount', 'total'), 0);
-          const cashBreakdown = parseJsonField(getField(r, usedKeys, 'cashBreakdown', 'cash_breakdown', 'Cash Breakdown'));
+        const sumMap = new Map<string, DriverDailySummary>();
 
-          if (sumMap.has(id)) sumUpdated++;
-          else sumAdded++;
+        for (const sn of sumStep.sheetNames) {
+          const sheet = wb.Sheets[sn];
+          if (!sheet) continue;
+          const rows: any[] = XLSX.utils.sheet_to_json(sheet, { defval: '' });
 
-          sumMap.set(id, {
-            id,
-            driverName,
-            date,
-            totalBillCount,
-            totalAmount,
-            cashBreakdown,
-          });
+          for (const r of rows) {
+            const usedKeys = new Set<string>();
+            const driverName = String(getField(r, usedKeys, 'driverName', 'driver_name', 'Driver Name', 'driver', 'Driver') || '').trim();
+            const rawDate = getField(r, usedKeys, 'date', 'Date', 'summary_date');
+            const date = normDate(rawDate || '');
+            if (!driverName) continue;
+            const id = String(getField(r, usedKeys, 'id', 'ID') || `${driverName.toLowerCase().replace(/[^a-z0-9]/g, '_')}_${date.replace(/[^0-9]/g, '')}`);
+            const totalBillCount = num(getField(r, usedKeys, 'totalBillCount', 'total_bill_count', 'Total Bills', 'Bill Count', 'total_bills'), 0);
+            const totalAmount = num(getField(r, usedKeys, 'totalAmount', 'total_amount', 'Total Amount', 'Amount', 'total'), 0);
+            const cashBreakdown = parseJsonField(getField(r, usedKeys, 'cashBreakdown', 'cash_breakdown', 'Cash Breakdown'));
+
+            sumMap.set(id, {
+              id,
+              driverName,
+              date,
+              totalBillCount,
+              totalAmount,
+              cashBreakdown,
+            });
+          }
         }
 
         const finalSummaries = Array.from(sumMap.values());
-        await saveSummaries(finalSummaries);
-        const { apiPushSummaries } = await import('@/lib/apiSync');
-        await apiPushSummaries(finalSummaries);
-        stats.push(`Driver Summaries: ${sumUpdated} updated, ${sumAdded} added in Supabase [driver_summaries] table (${finalSummaries.length} total)`);
+        if (finalSummaries.length > 0) {
+          updateStep(sumStep.id, { total: finalSummaries.length, current: 0 });
+          await apiPushSummaries(finalSummaries, (saved, total) => {
+            updateStep(sumStep.id, { current: saved, total });
+            setRestoreStatus({
+              status: 'loading',
+              message: `[Table 4/7: driver_summaries] Uploading: ${saved} / ${total}`
+            });
+          });
+          updateStep(sumStep.id, { status: 'done', current: finalSummaries.length, total: finalSummaries.length });
+          stats.push(`driver_summaries: ${finalSummaries.length} rows uploaded directly to Supabase`);
+        } else {
+          updateStep(sumStep.id, { status: 'done', current: 0, total: 0 });
+        }
       }
 
       // ─────────────────────────────────────────────────────────────
-      // 5. CONTACTS TABLE (TYPE = PARTY)
+      // 5. CONTACTS TABLE (TYPE = PARTY) (Direct Supabase upload — NO localStorage)
       // ─────────────────────────────────────────────────────────────
-      const partySheetInfo = findWorkbookSheet(wb, 'Party_Contacts', 'Party Contacts', 'PartyContacts', 'Parties', 'party_contacts');
-      if (partySheetInfo) {
-        setRestoreStatus({ status: 'loading', message: `Processing sheet "${partySheetInfo.name}" for table [contacts:party]...` });
-        const rows: any[] = XLSX.utils.sheet_to_json(partySheetInfo.sheet, { defval: '' });
-        const existingParty = getPartyContacts();
-        const partyMap = new Map<string, Contact>(existingParty.map(c => [c.name.toLowerCase(), c]));
-        let ptyAdded = 0;
-        let ptyUpdated = 0;
+      const ptyStep = stepsToRun.find(s => s.id === 'contacts_party');
+      if (ptyStep && ptyStep.sheetNames.length > 0) {
+        updateStep(ptyStep.id, { status: 'loading', message: 'Reading party contacts...' });
+        setRestoreStatus({ status: 'loading', message: `[Table 5/7: contacts:party] Uploading party contacts directly to Supabase...` });
 
-        for (const r of rows) {
-          const usedKeys = new Set<string>();
-          const name = cleanPartyName(String(getField(r, usedKeys, 'name', 'Name', 'partyName', 'party_name', 'Party Name', 'party', 'Customer Name') || '').trim());
-          const mobile = String(getField(r, usedKeys, 'mobile', 'Mobile', 'phone', 'Phone', 'contact', 'Contact', 'mobile_no', 'Mobile No') || '').replace(/\D/g, '').slice(-10);
-          if (!name || !mobile) continue;
-          const key = name.toLowerCase();
-          const existing = partyMap.get(key);
-          const id = existing?.id || getField(r, usedKeys, 'id', 'ID') || `pty_${name.toLowerCase().replace(/[^a-z0-9]/g, '_').slice(0, 44)}`;
-          if (existing) {
-            partyMap.set(key, { ...existing, mobile });
-            ptyUpdated++;
-          } else {
-            partyMap.set(key, { id, name, mobile });
-            ptyAdded++;
+        const partyMap = new Map<string, Contact>();
+
+        for (const sn of ptyStep.sheetNames) {
+          const sheet = wb.Sheets[sn];
+          if (!sheet) continue;
+          const rows: any[] = XLSX.utils.sheet_to_json(sheet, { defval: '' });
+
+          for (const r of rows) {
+            const usedKeys = new Set<string>();
+            const name = cleanPartyName(String(getField(r, usedKeys, 'name', 'Name', 'partyName', 'party_name', 'Party Name', 'party', 'Customer Name') || '').trim());
+            const mobile = String(getField(r, usedKeys, 'mobile', 'Mobile', 'phone', 'Phone', 'contact', 'Contact', 'mobile_no', 'Mobile No') || '').replace(/\D/g, '').slice(-10);
+            if (!name || !mobile) continue;
+            const key = name.toLowerCase();
+            const id = getField(r, usedKeys, 'id', 'ID') || `pty_${name.toLowerCase().replace(/[^a-z0-9]/g, '_').slice(0, 44)}`;
+            partyMap.set(key, { id, name, mobile, type: 'party' });
           }
         }
 
         const finalParty = Array.from(partyMap.values());
-        await savePartyContacts(finalParty);
-        const { apiPushPartyContacts } = await import('@/lib/apiSync');
-        await apiPushPartyContacts(finalParty);
-        stats.push(`Party Contacts: ${ptyUpdated} updated, ${ptyAdded} added in Supabase [contacts] table (${finalParty.length} total)`);
+        if (finalParty.length > 0) {
+          updateStep(ptyStep.id, { total: finalParty.length, current: 0 });
+          await apiPushPartyContacts(finalParty, (saved, total) => {
+            updateStep(ptyStep.id, { current: saved, total });
+            setRestoreStatus({
+              status: 'loading',
+              message: `[Table 5/7: contacts:party] Uploading: ${saved} / ${total}`
+            });
+          });
+          updateStep(ptyStep.id, { status: 'done', current: finalParty.length, total: finalParty.length });
+          stats.push(`contacts (party): ${finalParty.length} rows uploaded directly to Supabase`);
+        } else {
+          updateStep(ptyStep.id, { status: 'done', current: 0, total: 0 });
+        }
       }
 
       // ─────────────────────────────────────────────────────────────
-      // 6. CONTACTS TABLE (TYPE = SALESPERSON)
+      // 6. CONTACTS TABLE (TYPE = SALESPERSON) (Direct Supabase upload — NO localStorage)
       // ─────────────────────────────────────────────────────────────
-      const salesSheetInfo = findWorkbookSheet(wb, 'Salesperson_Contacts', 'Salesperson Contacts', 'SalespersonContacts', 'Sales Contacts', 'Sales_Contacts', 'salesperson_contacts');
-      if (salesSheetInfo) {
-        setRestoreStatus({ status: 'loading', message: `Processing sheet "${salesSheetInfo.name}" for table [contacts:salesperson]...` });
-        const rows: any[] = XLSX.utils.sheet_to_json(salesSheetInfo.sheet, { defval: '' });
-        const existingSales = getSalespersonContacts();
-        const salesMap = new Map<string, Contact>(existingSales.map(c => [cleanSalespersonName(c.name || '').toLowerCase(), c]));
-        let spAdded = 0;
-        let spUpdated = 0;
+      const spStep = stepsToRun.find(s => s.id === 'contacts_salesperson');
+      if (spStep && spStep.sheetNames.length > 0) {
+        updateStep(spStep.id, { status: 'loading', message: 'Reading salesperson contacts...' });
+        setRestoreStatus({ status: 'loading', message: `[Table 6/7: contacts:salesperson] Uploading sales contacts directly to Supabase...` });
 
-        for (const r of rows) {
-          const usedKeys = new Set<string>();
-          const clean = cleanSalespersonName(String(getField(r, usedKeys, 'name', 'Name', 'salespersonName', 'salesperson_name', 'Salesperson Name', 'salesman', 'Salesman Name', 'Sales Rep') || '').trim());
-          const mobile = String(getField(r, usedKeys, 'mobile', 'Mobile', 'phone', 'Phone', 'contact', 'Contact', 'mobile_no') || '').replace(/\D/g, '').slice(-10);
-          if (!clean || !mobile) continue;
-          const key = clean.toLowerCase();
-          let matchKey = '';
-          for (const [k, prev] of salesMap) {
-            if (k === key || areSalespersonNamesEquivalent(prev.name, clean)) {
-              matchKey = k;
-              break;
+        const salesMap = new Map<string, Contact>();
+
+        for (const sn of spStep.sheetNames) {
+          const sheet = wb.Sheets[sn];
+          if (!sheet) continue;
+          const rows: any[] = XLSX.utils.sheet_to_json(sheet, { defval: '' });
+
+          for (const r of rows) {
+            const usedKeys = new Set<string>();
+            const clean = cleanSalespersonName(String(getField(r, usedKeys, 'name', 'Name', 'salespersonName', 'salesperson_name', 'Salesperson Name', 'salesman', 'Salesman Name', 'Sales Rep') || '').trim());
+            const mobile = String(getField(r, usedKeys, 'mobile', 'Mobile', 'phone', 'Phone', 'contact', 'Contact', 'mobile_no') || '').replace(/\D/g, '').slice(-10);
+            if (!clean || !mobile) continue;
+            const key = clean.toLowerCase();
+            let matchKey = '';
+            for (const [k, prev] of salesMap) {
+              if (k === key || areSalespersonNamesEquivalent(prev.name, clean)) {
+                matchKey = k;
+                break;
+              }
             }
-          }
-          if (matchKey) {
-            const prev = salesMap.get(matchKey)!;
-            salesMap.set(matchKey, { ...prev, name: clean, mobile });
-            spUpdated++;
-          } else {
-            const id = getField(r, usedKeys, 'id', 'ID') || `sp_${clean.toLowerCase().replace(/[^a-z0-9]/g, '_').slice(0, 44)}`;
-            salesMap.set(key, { id, name: clean, mobile });
-            spAdded++;
+            if (matchKey) {
+              const prev = salesMap.get(matchKey)!;
+              salesMap.set(matchKey, { ...prev, name: clean, mobile, type: 'salesperson' });
+            } else {
+              const id = getField(r, usedKeys, 'id', 'ID') || `sp_${clean.toLowerCase().replace(/[^a-z0-9]/g, '_').slice(0, 44)}`;
+              salesMap.set(key, { id, name, cleanName: clean, mobile, type: 'salesperson' } as any);
+            }
           }
         }
 
         const finalSales = Array.from(salesMap.values());
-        await saveSalespersonContacts(finalSales);
-        const { apiPushSalespersonContacts } = await import('@/lib/apiSync');
-        await apiPushSalespersonContacts(finalSales);
-        stats.push(`Salesperson Contacts: ${spUpdated} updated, ${spAdded} added in Supabase [contacts] table (${finalSales.length} total)`);
+        if (finalSales.length > 0) {
+          updateStep(spStep.id, { total: finalSales.length, current: 0 });
+          await apiPushSalespersonContacts(finalSales, (saved, total) => {
+            updateStep(spStep.id, { current: saved, total });
+            setRestoreStatus({
+              status: 'loading',
+              message: `[Table 6/7: contacts:salesperson] Uploading: ${saved} / ${total}`
+            });
+          });
+          updateStep(spStep.id, { status: 'done', current: finalSales.length, total: finalSales.length });
+          stats.push(`contacts (salesperson): ${finalSales.length} rows uploaded directly to Supabase`);
+        } else {
+          updateStep(spStep.id, { status: 'done', current: 0, total: 0 });
+        }
       }
 
       // ─────────────────────────────────────────────────────────────
-      // 7. SETTINGS TABLE
+      // 7. SETTINGS TABLE (Direct Supabase upload — NO localStorage)
       // ─────────────────────────────────────────────────────────────
-      const settingsSheetInfo = findWorkbookSheet(wb, 'Settings', 'settings', 'Setting', 'Config', 'config');
-      if (settingsSheetInfo) {
-        setRestoreStatus({ status: 'loading', message: `Processing sheet "${settingsSheetInfo.name}" for table [settings]...` });
-        const rows: any[] = XLSX.utils.sheet_to_json(settingsSheetInfo.sheet, { defval: '' });
-        const { apiPushSetting } = await import('@/lib/apiSync');
-        let setCnt = 0;
+      const cfgStep = stepsToRun.find(s => s.tableName === 'settings');
+      if (cfgStep && cfgStep.sheetNames.length > 0) {
+        updateStep(cfgStep.id, { status: 'loading', message: 'Reading system settings...' });
+        setRestoreStatus({ status: 'loading', message: `[Table 7/7: settings] Uploading settings directly to Supabase...` });
 
-        for (const r of rows) {
-          const usedKeys = new Set<string>();
-          const key = String(getField(r, usedKeys, 'key', 'Key', 'Setting Key', 'setting_key', 'name', 'Name') || '').trim();
-          const rawVal = getField(r, usedKeys, 'value', 'Value', 'setting_value', 'val');
-          const value = rawVal !== undefined ? String(rawVal) : '';
-          if (!key) continue;
-          await apiPushSetting(key, value);
-          if (key === 'pw_suffix') {
-            const { saveSystemPasswordSuffix } = await import('@/lib/billStore');
-            saveSystemPasswordSuffix(value);
+        const settingsEntries: { key: string; value: string }[] = [];
+
+        for (const sn of cfgStep.sheetNames) {
+          const sheet = wb.Sheets[sn];
+          if (!sheet) continue;
+          const rows: any[] = XLSX.utils.sheet_to_json(sheet, { defval: '' });
+
+          for (const r of rows) {
+            const usedKeys = new Set<string>();
+            const key = String(getField(r, usedKeys, 'key', 'Key', 'Setting Key', 'setting_key', 'name', 'Name') || '').trim();
+            const rawVal = getField(r, usedKeys, 'value', 'Value', 'setting_value', 'val');
+            const value = rawVal !== undefined ? String(rawVal) : '';
+            if (!key) continue;
+            settingsEntries.push({ key, value });
           }
-          if (key === 'wa_templates') {
-            try {
-              const { saveWhatsAppTemplates } = await import('@/lib/billStore');
-              saveWhatsAppTemplates(JSON.parse(value));
-            } catch {}
-          }
-          setCnt++;
         }
-        stats.push(`Settings: ${setCnt} keys updated/added in Supabase [settings] table`);
+
+        if (settingsEntries.length > 0) {
+          updateStep(cfgStep.id, { total: settingsEntries.length, current: 0 });
+          await apiPushSettingsBulk(settingsEntries, (saved, total) => {
+            updateStep(cfgStep.id, { current: saved, total });
+          });
+          updateStep(cfgStep.id, { status: 'done', current: settingsEntries.length, total: settingsEntries.length });
+          stats.push(`settings: ${settingsEntries.length} keys uploaded directly to Supabase`);
+        } else {
+          updateStep(cfgStep.id, { status: 'done', current: 0, total: 0 });
+        }
       }
 
       if (stats.length === 0) {
         setRestoreStatus({ status: 'error', message: 'No valid database sheets (Bills, Drivers, Banks, Summaries, Contacts, Settings) found in backup file.' });
       } else {
-        setRestoreStatus({ status: 'loading', message: 'Refreshing all application state from Supabase...' });
-        const { apiFetchAllData } = await import('@/lib/apiSync');
-        const freshData = await apiFetchAllData();
-        setServerData(freshData);
-        setRestoreStatus({ status: 'success', message: 'Full XLS restore completed successfully! All sheets data updated/added in Supabase table-wise.', details: stats });
+        setRestoreStatus({
+          status: 'success',
+          message: 'Direct Supabase cloud restore successful! All backup records uploaded directly to Supabase database with zero local storage clutter.',
+          details: stats
+        });
       }
     } catch (err: any) {
       console.error('[executeRestore error]', err);
@@ -2249,61 +2477,21 @@ export default function SettingsPage() {
             const data = new Uint8Array(evt.target?.result as ArrayBuffer);
             const wb = safeReadWorkbook(XLSX, data, { cellStyles: false, cellNF: false, cellFormula: false });
             
-            const statsList: { label: string; count: number }[] = [];
-            let isValid = false;
+            const tableSteps = buildTableStepsFromWb(XLSX, wb);
 
-            const billsSheet = findWorkbookSheet(wb, 'Bills', 'Bill', 'Ledger', 'all_bills', 'Bills_Data', 'PaidFBR', 'Other');
-            if (billsSheet) {
-              const rows = XLSX.utils.sheet_to_json(billsSheet.sheet, { defval: '' });
-              statsList.push({ label: `Bills (${billsSheet.name}) → [bills]`, count: rows.length });
-              isValid = true;
-            }
-            const driversSheet = findWorkbookSheet(wb, 'Drivers', 'Driver', 'drivers');
-            if (driversSheet) {
-              const rows = XLSX.utils.sheet_to_json(driversSheet.sheet, { defval: '' });
-              statsList.push({ label: `Drivers (${driversSheet.name}) → [drivers]`, count: rows.length });
-              isValid = true;
-            }
-            const banksSheet = findWorkbookSheet(wb, 'Banks', 'Bank', 'banks');
-            if (banksSheet) {
-              const rows = XLSX.utils.sheet_to_json(banksSheet.sheet, { defval: '' });
-              statsList.push({ label: `Banks (${banksSheet.name}) → [banks]`, count: rows.length });
-              isValid = true;
-            }
-            const sumSheet = findWorkbookSheet(wb, 'Summaries', 'Driver_Summaries', 'Driver Summaries', 'DriverSummaries', 'summaries');
-            if (sumSheet) {
-              const rows = XLSX.utils.sheet_to_json(sumSheet.sheet, { defval: '' });
-              statsList.push({ label: `Driver Summaries (${sumSheet.name}) → [driver_summaries]`, count: rows.length });
-              isValid = true;
-            }
-            const partySheet = findWorkbookSheet(wb, 'Party_Contacts', 'Party Contacts', 'PartyContacts', 'Parties', 'party_contacts');
-            if (partySheet) {
-              const rows = XLSX.utils.sheet_to_json(partySheet.sheet, { defval: '' });
-              statsList.push({ label: `Party Contacts (${partySheet.name}) → [contacts:party]`, count: rows.length });
-              isValid = true;
-            }
-            const salesSheet = findWorkbookSheet(wb, 'Salesperson_Contacts', 'Salesperson Contacts', 'SalespersonContacts', 'Sales Contacts', 'Sales_Contacts', 'salesperson_contacts');
-            if (salesSheet) {
-              const rows = XLSX.utils.sheet_to_json(salesSheet.sheet, { defval: '' });
-              statsList.push({ label: `Salesperson Contacts (${salesSheet.name}) → [contacts:salesperson]`, count: rows.length });
-              isValid = true;
-            }
-            const settingsSheet = findWorkbookSheet(wb, 'Settings', 'settings', 'Setting', 'Config', 'config');
-            if (settingsSheet) {
-              const rows = XLSX.utils.sheet_to_json(settingsSheet.sheet, { defval: '' });
-              statsList.push({ label: `Settings (${settingsSheet.name}) → [settings]`, count: rows.length });
-              isValid = true;
-            }
-
-            if (!isValid || statsList.length === 0) {
+            if (tableSteps.length === 0) {
               setRestoreStatus({ status: 'error', message: 'Validation failed: No recognized sheets (Bills, Drivers, Banks, Summaries, Contacts, Settings) found in the backup file.' });
               setPendingRestore(null);
             } else {
               setRestoreStatus(null);
               setPendingRestore({
                 fileName: fName,
-                stats: statsList,
+                stats: tableSteps.map(st => ({
+                  label: `${st.label} → [${st.tableName}] (${st.sheetNames.join(', ')})`,
+                  count: st.total,
+                })),
                 wb,
+                steps: tableSteps,
               });
             }
           } catch (err: any) {
@@ -3541,7 +3729,7 @@ export default function SettingsPage() {
                 </div>
                 <div className="flex gap-2">
                   <Button
-                    onClick={() => executeRestore(pendingRestore.wb)}
+                    onClick={() => executeRestore(pendingRestore.wb, pendingRestore.steps)}
                     className="flex-1 h-8 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-[9px] font-black uppercase tracking-widest"
                   >
                     Confirm & Restore
@@ -3555,15 +3743,133 @@ export default function SettingsPage() {
                   </Button>
                 </div>
                 <p className="text-[8px] font-bold text-indigo-500 uppercase leading-normal">
-                  * System will automatically download a backup file of your current data before executing the restore.
+                  * Backup data will be uploaded directly to Supabase cloud database with zero local storage clutter.
                 </p>
+              </div>
+            )}
+
+            {/* Live Table-Wise Progress Monitor */}
+            {tableProgressList.length > 0 && (
+              <div className="mt-3 p-3 bg-slate-900 text-white rounded-xl border border-indigo-500/40 shadow-lg space-y-2.5">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <span className="relative flex h-2.5 w-2.5">
+                      {restoreStatus?.status === 'loading' && (
+                        <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75" />
+                      )}
+                      <span className={cn("relative inline-flex rounded-full h-2.5 w-2.5", restoreStatus?.status === 'loading' ? "bg-emerald-500" : "bg-blue-500")} />
+                    </span>
+                    <span className="text-[10px] font-black uppercase tracking-wider text-indigo-200">
+                      Supabase Table-Wise Fast Upload
+                    </span>
+                  </div>
+                  <span className="text-[9px] font-bold text-slate-400 uppercase">
+                    {tableProgressList.filter(t => t.status === 'done').length} / {tableProgressList.length} Tables Done
+                  </span>
+                </div>
+
+                {/* Overall progress bar across tables */}
+                {(() => {
+                  const doneCount = tableProgressList.filter(t => t.status === 'done').length;
+                  const totalSteps = tableProgressList.length;
+                  const percent = totalSteps > 0 ? Math.round((doneCount / totalSteps) * 100) : 0;
+                  return (
+                    <div className="w-full bg-slate-800 rounded-full h-2 overflow-hidden">
+                      <div
+                        className="bg-gradient-to-r from-indigo-500 via-sky-400 to-emerald-400 h-2 transition-all duration-300 rounded-full"
+                        style={{ width: `${percent}%` }}
+                      />
+                    </div>
+                  );
+                })()}
+
+                {/* Individual Tables List */}
+                <div className="space-y-1.5 pt-1">
+                  {tableProgressList.map((step) => {
+                    const isDone = step.status === 'done';
+                    const isLoading = step.status === 'loading';
+                    const isError = step.status === 'error';
+                    const isSkipped = step.status === 'skipped';
+                    const pct = step.total > 0 ? Math.min(100, Math.round((step.current / step.total) * 100)) : 0;
+
+                    return (
+                      <div
+                        key={step.id}
+                        className={cn(
+                          "px-2.5 py-1.5 rounded-lg border text-[9px] transition-all",
+                          isLoading
+                            ? "bg-indigo-950/80 border-indigo-400 shadow-md ring-1 ring-indigo-400/50"
+                            : isDone
+                            ? "bg-emerald-950/40 border-emerald-800/60 text-emerald-100"
+                            : isError
+                            ? "bg-rose-950/40 border-rose-800/60 text-rose-200"
+                            : isSkipped
+                            ? "bg-slate-800/30 border-slate-700/40 text-slate-400"
+                            : "bg-slate-800/50 border-slate-700/60 text-slate-300"
+                        )}
+                      >
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-1.5 truncate pr-2">
+                            {isLoading && <Loader2 className="w-3 h-3 animate-spin text-sky-400 shrink-0" />}
+                            {isDone && <CheckCircle2 className="w-3 h-3 text-emerald-400 shrink-0" />}
+                            {isError && <AlertCircle className="w-3 h-3 text-rose-400 shrink-0" />}
+                            {step.status === 'pending' && <span className="text-[10px] text-slate-400">⏳</span>}
+                            {isSkipped && <span className="text-[10px] text-slate-500">⏭</span>}
+                            <span className="font-black uppercase tracking-wide">
+                              {step.label}
+                            </span>
+                            <span className="text-[8px] font-mono text-slate-400">
+                              [{step.tableName}]
+                            </span>
+                          </div>
+                          <div className="shrink-0 flex items-center gap-1 font-mono text-[8.5px] font-bold">
+                            {isLoading ? (
+                              <span className="text-sky-300 font-black animate-pulse">
+                                {step.current.toLocaleString()} / {step.total.toLocaleString()} rows ({pct}%)
+                              </span>
+                            ) : isDone ? (
+                              <span className="text-emerald-400 font-black">
+                                ✓ {step.total.toLocaleString()} rows synced
+                              </span>
+                            ) : isError ? (
+                              <span className="text-rose-400 font-black">FAILED</span>
+                            ) : isSkipped ? (
+                              <span className="text-slate-500">NO ROWS</span>
+                            ) : (
+                              <span className="text-slate-400">{step.total.toLocaleString()} rows pending</span>
+                            )}
+                          </div>
+                        </div>
+
+                        {/* If loading and has rows, show miniature progress bar */}
+                        {isLoading && step.total > 0 && (
+                          <div className="mt-1 w-full bg-slate-800/90 rounded-full h-1 overflow-hidden">
+                            <div
+                              className="bg-sky-400 h-1 transition-all duration-200"
+                              style={{ width: `${pct}%` }}
+                            />
+                          </div>
+                        )}
+
+                        {step.message && (
+                          <p className={cn(
+                            "text-[8px] mt-0.5 font-sans font-medium truncate",
+                            isLoading ? "text-sky-300" : isError ? "text-rose-300" : "text-slate-400"
+                          )}>
+                            {step.message}
+                          </p>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
               </div>
             )}
 
             {restoreStatus && restoreStatus.status !== 'loading' && (
               <ResultBox result={restoreStatus} onClear={() => setRestoreStatus(null)} />
             )}
-            {restoreStatus?.status === 'loading' && (
+            {restoreStatus?.status === 'loading' && tableProgressList.length === 0 && (
               <p className="text-[9px] font-black text-indigo-600 uppercase tracking-wider animate-pulse px-1 mt-1">{restoreStatus.message}</p>
             )}
           </div>

@@ -8,6 +8,14 @@ import { toast } from '@/hooks/use-toast';
 
 // Safe sandboxed iframe replacement for window.alert
 if (typeof window !== 'undefined') {
+  // Suppress benign WebSocket closure errors from disabled Vite HMR in container environment
+  window.addEventListener('unhandledrejection', (event) => {
+    const reasonStr = String(event?.reason?.message || event?.reason || '');
+    if (reasonStr.includes('WebSocket closed without opened') || reasonStr.includes('failed to connect to websocket')) {
+      event.preventDefault();
+    }
+  });
+
   window.alert = (message?: any) => {
     try {
       const msgStr = typeof message === 'object' ? JSON.stringify(message) : String(message ?? '');

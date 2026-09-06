@@ -215,15 +215,6 @@ function billToSupabase(b: Partial<Bill>): Record<string, unknown> {
   // Always stamp updated_at so all devices detect real-time incremental changes instantly
   out.updated_at = new Date().toISOString();
 
-  // Forward any extra custom columns from the bill object (e.g. from custom Excel sheets)
-  for (const [key, val] of Object.entries(b)) {
-    if (key.startsWith('_')) continue;
-    const snakeKey = key.replace(/([A-Z])/g, '_$1').toLowerCase();
-    if (!(snakeKey in out)) {
-      out[snakeKey] = val;
-    }
-  }
-
   return cleanRowForSupabase(out);
 }
 
@@ -268,9 +259,9 @@ function dispatchSyncStatus(status: 'ok' | 'error') {
 }
 
 // ─── Retry wrapper: guarantees Supabase writes complete or throw ──────────────
-// Fast responsive retries: immediate retry on column mismatch, 150ms/400ms on network delays.
+// Resilient retries: immediate retry on column mismatch, 200ms/600ms/1500ms progressive backoff on network delays.
 async function withRetry<T>(fn: () => Promise<T>, label = 'op'): Promise<T> {
-  const delays = [150, 400];
+  const delays = [200, 600, 1500];
   let lastErr: unknown;
   for (let attempt = 0; attempt <= delays.length; attempt++) {
     try {
@@ -609,29 +600,40 @@ async function chunkedUpsertWithProgress(
   label: string,
 ): Promise<{ count: number }> {
   if (bills.length === 0) return { count: 0 };
+  if (!supabase) return { count: bills.length };
   await probeBillSchemaColumns();
   const unique = dedupeBillsByBillNo(bills);
-  const CHUNK = 150;
+  const CHUNK = 800;
+  const CONCURRENCY = 4;
   let saved = 0;
+
+  const chunks: Array<{ index: number; slice: Bill[] }> = [];
+  for (let i = 0; i < unique.length; i += CHUNK) {
+    chunks.push({ index: i, slice: unique.slice(i, i + CHUNK) });
+  }
+
   try {
-    for (let i = 0; i < unique.length; i += CHUNK) {
-      let slice = unique.slice(i, i + CHUNK).map(billToSupabase);
-      await withRetry(async () => {
-        const { error } = await supabase!.from('bills').upsert(slice, { onConflict: 'id' });
-        if (error) {
-          const missing = extractMissingColumnFromError(error);
-          if (missing) {
-            markColumnUnsupported(missing);
-            slice = unique.slice(i, i + CHUNK).map(billToSupabase);
-            const retryRes = await supabase!.from('bills').upsert(slice, { onConflict: 'id' });
-            if (retryRes.error) throw retryRes.error;
-            return;
+    for (let i = 0; i < chunks.length; i += CONCURRENCY) {
+      const batch = chunks.slice(i, i + CONCURRENCY);
+      await Promise.all(batch.map(async ({ index, slice }) => {
+        let rows = slice.map(billToSupabase);
+        await withRetry(async () => {
+          const { error } = await supabase!.from('bills').upsert(rows, { onConflict: 'id' });
+          if (error) {
+            const missing = extractMissingColumnFromError(error);
+            if (missing) {
+              markColumnUnsupported(missing);
+              rows = slice.map(billToSupabase);
+              const retryRes = await supabase!.from('bills').upsert(rows, { onConflict: 'id' });
+              if (retryRes.error) throw retryRes.error;
+              return;
+            }
+            throw error;
           }
-          throw error;
-        }
-      }, `${label}.chunk[${i}]`);
-      saved += slice.length;
-      onProgress?.(Math.min(saved, unique.length), unique.length);
+        }, `${label}.chunk[${index}]`);
+        saved += slice.length;
+        onProgress?.(Math.min(saved, unique.length), unique.length);
+      }));
     }
     dispatchSyncStatus('ok');
     return { count: unique.length };
@@ -835,15 +837,21 @@ export async function apiDeleteDriver(id: string) {
   }
 }
 
-export async function apiPushDrivers(drivers: Driver[]) {
+export async function apiPushDrivers(drivers: Driver[], onProgress?: (saved: number, total: number) => void) {
   if (drivers.length === 0) return { count: 0 };
+  if (!supabase) return { count: drivers.length };
   try {
     const rows = drivers.map(({ id, name }) => ({ id, name }));
-    const CHUNK = 200;
+    const CHUNK = 500;
+    let saved = 0;
     for (let i = 0; i < rows.length; i += CHUNK) {
       const slice = rows.slice(i, i + CHUNK);
-      const { error } = await supabase!.from('drivers').upsert(slice, { onConflict: 'id' });
-      if (error) throw error;
+      await withRetry(async () => {
+        const { error } = await supabase!.from('drivers').upsert(slice, { onConflict: 'id' });
+        if (error) throw error;
+      }, `apiPushDrivers.chunk[${i}]`);
+      saved += slice.length;
+      onProgress?.(saved, rows.length);
     }
     return { count: drivers.length };
   } catch (err) {
@@ -867,14 +875,20 @@ export async function apiDeleteBank(id?: string, name?: string) {
   }
 }
 
-export async function apiPushBanks(banks: Bank[]) {
+export async function apiPushBanks(banks: Bank[], onProgress?: (saved: number, total: number) => void) {
   if (banks.length === 0) return { count: 0 };
+  if (!supabase) return { count: banks.length };
   try {
-    const CHUNK = 200;
+    const CHUNK = 500;
+    let saved = 0;
     for (let i = 0; i < banks.length; i += CHUNK) {
       const slice = banks.slice(i, i + CHUNK);
-      const { error } = await supabase!.from('banks').upsert(slice, { onConflict: 'id' });
-      if (error) throw error;
+      await withRetry(async () => {
+        const { error } = await supabase!.from('banks').upsert(slice, { onConflict: 'id' });
+        if (error) throw error;
+      }, `apiPushBanks.chunk[${i}]`);
+      saved += slice.length;
+      onProgress?.(saved, banks.length);
     }
     return { count: banks.length };
   } catch (err) {
@@ -1010,15 +1024,21 @@ export async function apiMergeTwoBanks(
   }
 }
 
-export async function apiPushSummaries(summaries: DriverDailySummary[]) {
+export async function apiPushSummaries(summaries: DriverDailySummary[], onProgress?: (saved: number, total: number) => void) {
   if (summaries.length === 0) return { count: 0 };
+  if (!supabase) return { count: summaries.length };
   try {
     const rows = summaries.map(summaryToSupabase);
-    const CHUNK = 200;
+    const CHUNK = 500;
+    let saved = 0;
     for (let i = 0; i < rows.length; i += CHUNK) {
       const slice = rows.slice(i, i + CHUNK);
-      const { error } = await supabase!.from('driver_summaries').upsert(slice, { onConflict: 'id' });
-      if (error) throw error;
+      await withRetry(async () => {
+        const { error } = await supabase!.from('driver_summaries').upsert(slice, { onConflict: 'id' });
+        if (error) throw error;
+      }, `apiPushSummaries.chunk[${i}]`);
+      saved += slice.length;
+      onProgress?.(saved, rows.length);
     }
     return { count: summaries.length };
   } catch (err) {
@@ -1029,14 +1049,27 @@ export async function apiPushSummaries(summaries: DriverDailySummary[]) {
 
 // Upsert in chunks so large contact lists (thousands of rows) never hit a
 // single-request payload/row cap — every contact gets saved, however many there are.
-const CONTACT_UPSERT_CHUNK = 500;
-async function upsertContactsChunked(rows: Record<string, unknown>[]): Promise<number> {
+const CONTACT_UPSERT_CHUNK = 800;
+async function upsertContactsChunked(rows: Record<string, unknown>[], onProgress?: (saved: number, total: number) => void): Promise<number> {
+  if (rows.length === 0) return 0;
+  if (!supabase) return rows.length;
+  const CONCURRENCY = 4;
   let saved = 0;
+  const chunks: Array<Record<string, unknown>[]> = [];
   for (let i = 0; i < rows.length; i += CONTACT_UPSERT_CHUNK) {
-    const slice = rows.slice(i, i + CONTACT_UPSERT_CHUNK);
-    const { error } = await supabase!.from('contacts').upsert(slice, { onConflict: 'id' });
-    if (error) throw error;
-    saved += slice.length;
+    chunks.push(rows.slice(i, i + CONTACT_UPSERT_CHUNK));
+  }
+  for (let i = 0; i < chunks.length; i += CONCURRENCY) {
+    const batch = chunks.slice(i, i + CONCURRENCY);
+    await Promise.all(batch.map(async (slice, batchIdx) => {
+      const chunkIndex = i + batchIdx;
+      await withRetry(async () => {
+        const { error } = await supabase!.from('contacts').upsert(slice, { onConflict: 'id' });
+        if (error) throw error;
+      }, `upsertContactsChunked[${chunkIndex}]`);
+      saved += slice.length;
+      onProgress?.(Math.min(saved, rows.length), rows.length);
+    }));
   }
   return saved;
 }
@@ -1048,7 +1081,7 @@ function contactId(prefix: 'pty' | 'sp', name: string): string {
   return `${prefix}_${(name || '').toLowerCase().replace(/[^a-z0-9]/g, '_').slice(0, 44)}`;
 }
 
-export async function apiPushPartyContacts(contacts: Contact[]) {
+export async function apiPushPartyContacts(contacts: Contact[], onProgress?: (saved: number, total: number) => void) {
   if (contacts.length === 0) return { count: 0 };
   try {
     const tagged = contacts.map(c => ({
@@ -1057,7 +1090,7 @@ export async function apiPushPartyContacts(contacts: Contact[]) {
       mobile: c.mobile,
       type:   'party',
     }));
-    const saved = await upsertContactsChunked(tagged);
+    const saved = await upsertContactsChunked(tagged, onProgress);
     return { count: saved };
   } catch (err) {
     console.error('[apiSync] apiPushPartyContacts error:', err);
@@ -1065,7 +1098,7 @@ export async function apiPushPartyContacts(contacts: Contact[]) {
   }
 }
 
-export async function apiPushSalespersonContacts(contacts: Contact[]) {
+export async function apiPushSalespersonContacts(contacts: Contact[], onProgress?: (saved: number, total: number) => void) {
   if (contacts.length === 0) return { count: 0 };
   try {
     const { cleanSalespersonName } = await import('./nameStandardizer');
@@ -1078,7 +1111,7 @@ export async function apiPushSalespersonContacts(contacts: Contact[]) {
         type:   'salesperson',
       };
     });
-    const saved = await upsertContactsChunked(tagged);
+    const saved = await upsertContactsChunked(tagged, onProgress);
     return { count: saved };
   } catch (err) {
     console.error('[apiSync] apiPushSalespersonContacts error:', err);
@@ -1182,6 +1215,37 @@ export async function apiPushSetting(key: string, value: string) {
     enqueuePendingSetting({ key, value });
     dispatchSyncStatus('error');
     return { ok: false, queued: true };
+  }
+}
+
+export async function apiPushSettingsBulk(
+  settings: Array<{ key: string; value: string }>,
+  onProgress?: (saved: number, total: number) => void
+) {
+  if (settings.length === 0) return { count: 0 };
+  if (!supabase) {
+    for (const s of settings) enqueuePendingSetting(s);
+    return { count: settings.length };
+  }
+  try {
+    const CHUNK = 500;
+    let saved = 0;
+    for (let i = 0; i < settings.length; i += CHUNK) {
+      const slice = settings.slice(i, i + CHUNK);
+      await withRetry(async () => {
+        const { error } = await supabase!.from('settings').upsert(slice, { onConflict: 'key' });
+        if (error) throw error;
+      }, `apiPushSettingsBulk[${i}]`);
+      saved += slice.length;
+      onProgress?.(saved, settings.length);
+    }
+    dispatchSyncStatus('ok');
+    return { count: settings.length };
+  } catch (err: any) {
+    console.warn('[apiSync] apiPushSettingsBulk error:', err?.message || err);
+    for (const s of settings) enqueuePendingSetting(s);
+    dispatchSyncStatus('error');
+    return { count: 0 };
   }
 }
 

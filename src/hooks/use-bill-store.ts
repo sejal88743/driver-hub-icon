@@ -251,12 +251,23 @@ async function doFullSync(force = false) {
 // ─── Direct Supabase Realtime Subscription ──────────────────────────────────
 let realtimeChannel: ReturnType<typeof supabase.channel> | null = null;
 let realtimeReconnectTimer: ReturnType<typeof setTimeout> | null = null;
+let isIntentionallyClosing = false;
+let reconnectAttempts = 0;
 
-function initSupabaseRealtime() {
+function initSupabaseRealtime(force = false) {
   if (!supabase) return;
   if (realtimeChannel) {
-    try { supabase.removeChannel(realtimeChannel); } catch {}
+    const channelState = (realtimeChannel as any)?.state;
+    // If not forced and already connected or connecting, do not tear down
+    if (!force && (channelState === 'joined' || channelState === 'joining')) {
+      return;
+    }
+    try {
+      isIntentionallyClosing = true;
+      supabase.removeChannel(realtimeChannel);
+    } catch {}
     realtimeChannel = null;
+    setTimeout(() => { isIntentionallyClosing = false; }, 1000);
   }
 
   try {
@@ -325,17 +336,34 @@ function initSupabaseRealtime() {
       )
       .subscribe((status, err) => {
         if (status === 'SUBSCRIBED') {
+          reconnectAttempts = 0;
+          if (realtimeReconnectTimer) {
+            clearTimeout(realtimeReconnectTimer);
+            realtimeReconnectTimer = null;
+          }
           console.log('[Supabase Realtime] Connected and listening live across all devices.');
           window.dispatchEvent(new CustomEvent('sync-status', { detail: 'ok' }));
           void doDeltaSync();
-        } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') {
-          console.warn('[Supabase Realtime] Channel status:', status, err);
-          if (navigator.onLine && !realtimeReconnectTimer) {
-            realtimeReconnectTimer = setTimeout(() => {
-              realtimeReconnectTimer = null;
-              initSupabaseRealtime();
-              void doDeltaSync();
-            }, 2500);
+        } else if (status === 'CLOSED') {
+          // Closed is normal when removing channel or during intentional teardown.
+          // Supabase's socket manages its own reconnect if disconnected. Do NOT trigger a loop here.
+        } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
+          if (!isIntentionallyClosing) {
+            console.warn('[Supabase Realtime] Channel status:', status, err);
+            // Supabase client auto-reconnects under the hood.
+            // Provide a graceful fallback with exponential backoff if it stays in error state.
+            if (navigator.onLine && !realtimeReconnectTimer) {
+              reconnectAttempts++;
+              const delay = Math.min(30000, 3000 * Math.pow(1.5, Math.min(reconnectAttempts, 5)));
+              realtimeReconnectTimer = setTimeout(() => {
+                realtimeReconnectTimer = null;
+                const state = (realtimeChannel as any)?.state;
+                if (!realtimeChannel || state === 'closed' || state === 'errored') {
+                  initSupabaseRealtime(true);
+                  void doDeltaSync();
+                }
+              }, delay);
+            }
           }
         }
       });
