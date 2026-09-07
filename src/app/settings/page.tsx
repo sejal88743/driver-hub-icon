@@ -58,6 +58,7 @@ import {
   findCanonicalName,
   findSalespersonContact,
   Contact,
+  DriverDailySummary,
   idbSet,
   idbGet,
   normDateStr,
@@ -564,9 +565,13 @@ export default function SettingsPage() {
                 constructedBill.editHistory = [];
               }
               constructedBill.editHistory.push({
-                timestamp: Date.now(),
-                user: 'Restore-Excel-FullCols',
-                changes: { extraColumns },
+                seq: constructedBill.editHistory.length + 1,
+                date: new Date().toLocaleDateString('en-GB'),
+                time: new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }),
+                by: 'Restore-Excel-FullCols',
+                role: 'system',
+                action: 'add',
+                changes: JSON.stringify(extraColumns),
               });
               if (!constructedBill.discrepancyReason && (extraColumns['Remarks'] || extraColumns['Remark'] || extraColumns['Note'])) {
                 constructedBill.discrepancyReason = String(extraColumns['Remarks'] || extraColumns['Remark'] || extraColumns['Note']);
@@ -765,7 +770,7 @@ export default function SettingsPage() {
             if (!name || !mobile) continue;
             const key = name.toLowerCase();
             const id = getField(r, usedKeys, 'id', 'ID') || `pty_${name.toLowerCase().replace(/[^a-z0-9]/g, '_').slice(0, 44)}`;
-            partyMap.set(key, { id, name, mobile, type: 'party' });
+            partyMap.set(key, { id, name, mobile } as Contact);
           }
         }
 
@@ -816,7 +821,7 @@ export default function SettingsPage() {
             }
             if (matchKey) {
               const prev = salesMap.get(matchKey)!;
-              salesMap.set(matchKey, { ...prev, name: clean, mobile, type: 'salesperson' });
+              salesMap.set(matchKey, { ...prev, name: clean, mobile } as Contact);
             } else {
               const id = getField(r, usedKeys, 'id', 'ID') || `sp_${clean.toLowerCase().replace(/[^a-z0-9]/g, '_').slice(0, 44)}`;
               salesMap.set(key, { id, name, cleanName: clean, mobile, type: 'salesperson' } as any);

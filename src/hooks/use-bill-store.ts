@@ -10,9 +10,15 @@ import { applyDirtyPatches, isDirtyPending, flushDirtyQueue } from '@/lib/localQ
 // guarantees instant real-time live sync across all devices.
 
 // Light incremental poll (only rows changed since last sync).
-const POLL_INTERVAL_MS = 3_000;
+// When the Realtime websocket is live, changes already arrive instantly, so the
+// poll acts only as a safety net and can run far less often (saves bandwidth/CPU
+// and keeps the UI smooth). Without realtime we fall back to a fast poll.
+const POLL_FAST_MS = 3_000;
+const POLL_SAFETY_MS = 20_000;
+const POLL_TICK_MS = 1_000;
 // Periodic "download everything" refresh — runs in background.
 const FULL_SYNC_INTERVAL_MS = 3 * 60_000;
+
 
 
 export type StoreSnapshot = {
@@ -430,16 +436,29 @@ function initGlobalSync() {
   // Background flush of BOTH pending queues every 10 seconds so no local
   // change can silently stay un-synced to the cloud.
   setInterval(() => {
+    if (document.visibilityState === 'hidden' && !navigator.onLine) return;
     void flushDirtyQueue();
     void flushPendingWrites();
   }, 10000);
 
-  // Initial full load from Supabase, then light incremental polling
+  // Initial full load from Supabase, then adaptive incremental polling.
   doFullSync();
-  pollingTimer = setInterval(() => { void doDeltaSync(); }, POLL_INTERVAL_MS);
-  setInterval(() => { void doFullSync(true); }, FULL_SYNC_INTERVAL_MS);
+  let lastPollAt = Date.now();
+  pollingTimer = setInterval(() => {
+    if (document.visibilityState === 'hidden') return;
+    const realtimeLive = (realtimeChannel as any)?.state === 'joined';
+    const wait = realtimeLive ? POLL_SAFETY_MS : POLL_FAST_MS;
+    if (Date.now() - lastPollAt < wait) return;
+    lastPollAt = Date.now();
+    void doDeltaSync();
+  }, POLL_TICK_MS);
+  setInterval(() => {
+    if (document.visibilityState === 'hidden') return;
+    void doFullSync(true);
+  }, FULL_SYNC_INTERVAL_MS);
   initSupabaseRealtime();
 }
+
 
 
 function subscribe(callback: () => void) {

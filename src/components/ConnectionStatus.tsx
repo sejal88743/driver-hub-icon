@@ -86,6 +86,7 @@ export function ConnectionStatus() {
         setStatus('offline');
         return;
       }
+      if (document.visibilityState === 'hidden') return;
       updatePending();
       try {
         if (supabase) {
