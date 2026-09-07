@@ -1406,7 +1406,7 @@ export async function apiFixBills(): Promise<{ ok: boolean; fixed: number; spAdd
               if (chequeNo) patch.cheque_amount = bill.collectedAmount;
               else patch.cash_amount = bill.collectedAmount;
             }
-            if (!bill.paymentDate) patch.payment_date = today;
+            if (!bill.paymentDate) patch.payment_date = bill.deliveryDate || bill.date || null;
           }
         }
 

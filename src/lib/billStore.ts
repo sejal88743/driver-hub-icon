@@ -2086,12 +2086,9 @@ export function getSystemPassword(): string {
   return `${dd}${mm}${_pwSuffix}`;
 }
 
-// Owner password = "S" + DDMM (e.g. S0609)
+// Owner login and System login have the exact same password
 export function getOwnerPassword(): string {
-  const now = new Date();
-  const dd = String(now.getDate()).padStart(2, '0');
-  const mm = String(now.getMonth() + 1).padStart(2, '0');
-  return `S${dd}${mm}`;
+  return getSystemPassword();
 }
 
 // ─── User permissions (canEdit, canAdd, canBackDate) — stored in settings table ───────────

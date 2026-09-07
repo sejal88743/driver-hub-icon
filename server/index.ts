@@ -510,7 +510,7 @@ app.post('/api/admin/fix-bills', async (_req, res) => {
           if (chequeNo) updates.cheque_amount = collectedAmt;
           else updates.cash_amount = collectedAmt;
         }
-        if (!bill.payment_date) updates.payment_date = today;
+        if (!bill.payment_date) updates.payment_date = bill.delivery_date || bill.date || null;
       }
 
       const keys = Object.keys(updates);
