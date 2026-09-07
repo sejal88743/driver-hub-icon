@@ -1712,6 +1712,10 @@ export async function consolidateSimilarPartiesOnly(threshold = 0.70): Promise<{
 export async function consolidateSimilarSalespersonsOnly(threshold = 0.50): Promise<{
   updatedCount: number;
   mergedSPs: number;
+  contactsRemoved: number;
+  mobilesPreserved: number;
+  ok: boolean;
+  error?: string;
 }> {
   const rawSPs = [
     ..._bills.map(b => b.salespersonName),
@@ -1719,14 +1723,24 @@ export async function consolidateSimilarSalespersonsOnly(threshold = 0.50): Prom
   ].filter(Boolean) as string[];
   const spMap = buildCanonicalMap(rawSPs, cleanSalespersonName, threshold);
 
+  const canonicalOf = (raw: string): string => {
+    const cleaned = cleanSalespersonName(raw || '').trim();
+    if (!cleaned) return '';
+    return (spMap.get(cleaned) || cleaned).trim();
+  };
+  const normMobile = (m?: string): string => {
+    const d = (m || '').replace(/\D/g, '');
+    return d.length >= 10 ? d.slice(-10) : d;
+  };
+
+  // ── 1. Bills → canonical salesperson name ────────────────────────────────
   let mergedSPCount = 0;
   let changed = 0;
   const changedBills: Bill[] = [];
   const updatedBills = _bills.map(bill => {
     if (bill.salespersonName) {
-      const cleaned = cleanSalespersonName(bill.salespersonName);
-      const canonical = spMap.get(cleaned) || cleaned;
-      if (canonical !== bill.salespersonName) {
+      const canonical = canonicalOf(bill.salespersonName);
+      if (canonical && canonical !== bill.salespersonName) {
         changed++;
         mergedSPCount++;
         const nb = { ...bill, salespersonName: canonical };
@@ -1737,51 +1751,72 @@ export async function consolidateSimilarSalespersonsOnly(threshold = 0.50): Prom
     return bill;
   });
 
-  // Also clean & deduplicate salesperson contacts with deep mobile preservation
-  const cleanContactsMap = new Map<string, Contact>();
+  // ── 2. Contacts → one row per canonical name, mobile ALWAYS preserved ────
+  type Group = { name: string; keepId: string; mobile: string; ids: string[] };
+  const groups = new Map<string, Group>();
+  const removedIds: string[] = [];
+  let mobilesPreserved = 0;
+
   for (const c of _salespersonContacts) {
-    const cleanName = cleanSalespersonName(c.name || '').trim();
-    if (!cleanName) continue;
-    const canonical = spMap.get(cleanName) || cleanName;
+    const canonical = canonicalOf(c.name || '');
+    if (!canonical) continue;
     const key = canonical.toLowerCase();
-    const existing = cleanContactsMap.get(key);
-    const cDigits = (c.mobile || '').replace(/\D/g, '');
-    const cMobile = cDigits.length >= 10 ? cDigits.slice(-10) : cDigits;
-    const stableId = c.id || `sp_${key.replace(/[^a-z0-9]/g, '_').slice(0, 44)}`;
+    const mobile = normMobile(c.mobile);
+    const stableId = `sp_${key.replace(/[^a-z0-9]/g, '_').slice(0, 44)}`;
+    const existing = groups.get(key);
 
     if (!existing) {
-      cleanContactsMap.set(key, { ...c, id: stableId, name: canonical, mobile: cMobile });
-    } else {
-      const existingDigits = (existing.mobile || '').replace(/\D/g, '');
-      const bestMobile = existingDigits.length >= 10 ? existing.mobile : (cMobile || existing.mobile || '');
-      cleanContactsMap.set(key, {
-        ...existing,
-        id: existing.id || stableId,
+      groups.set(key, {
         name: canonical,
-        mobile: bestMobile,
+        keepId: c.id || stableId,
+        mobile,
+        ids: [c.id].filter(Boolean) as string[],
       });
+      continue;
+    }
+
+    if (c.id) existing.ids.push(c.id);
+    // Mobile merge rule: a full 10-digit number always wins; never lose a number.
+    if (!existing.mobile && mobile) {
+      existing.mobile = mobile;
+      if (c.id) existing.keepId = c.id;
+      mobilesPreserved++;
+    } else if (existing.mobile.length < 10 && mobile.length === 10) {
+      existing.mobile = mobile;
+      if (c.id) existing.keepId = c.id;
+      mobilesPreserved++;
     }
   }
 
-  // Also ensure every canonical name in spMap has an entry in contacts so mobile can be entered
-  for (const canon of Array.from(spMap.values())) {
-    const key = canon.toLowerCase();
-    if (!cleanContactsMap.has(key)) {
-      cleanContactsMap.set(key, {
-        id: `sp_${key.replace(/[^a-z0-9]/g, '_').slice(0, 44)}`,
-        name: canon,
-        mobile: '',
-      });
+  // Every canonical name (also bill-only names) gets a row so a mobile can be added later
+  for (const canon of Array.from(new Set(spMap.values()))) {
+    const key = canon.trim().toLowerCase();
+    if (!key || groups.has(key)) continue;
+    groups.set(key, {
+      name: canon.trim(),
+      keepId: `sp_${key.replace(/[^a-z0-9]/g, '_').slice(0, 44)}`,
+      mobile: '',
+      ids: [],
+    });
+  }
+
+  const mergedContacts: Contact[] = [];
+  for (const g of groups.values()) {
+    mergedContacts.push({ id: g.keepId, name: g.name, mobile: g.mobile } as Contact);
+    for (const id of g.ids) {
+      if (id && id !== g.keepId) removedIds.push(id);
     }
   }
 
-  _salespersonContacts = Array.from(cleanContactsMap.values());
+  _salespersonContacts = mergedContacts;
   if (changed > 0) {
     _bills = updatedBills;
   }
 
   dispatchUpdate();
   persistLocalState();
+
+  // ── 3. Persist: bills + merged contacts, then delete absorbed rows ───────
   markWriteStart();
   try {
     const m = await import('@/lib/apiSync');
@@ -1789,13 +1824,29 @@ export async function consolidateSimilarSalespersonsOnly(threshold = 0.50): Prom
       await m.apiBulkUpsertWithProgress(changedBills);
     }
     await m.apiPushSalespersonContacts(_salespersonContacts);
-  } catch (err) {
+    if (removedIds.length > 0) {
+      await m.apiDeleteContactsByIds(removedIds);
+    }
+    return {
+      updatedCount: changed,
+      mergedSPs: mergedSPCount,
+      contactsRemoved: removedIds.length,
+      mobilesPreserved,
+      ok: true,
+    };
+  } catch (err: any) {
     console.error('Failed to persist merged salesperson names:', err);
+    return {
+      updatedCount: changed,
+      mergedSPs: mergedSPCount,
+      contactsRemoved: 0,
+      mobilesPreserved,
+      ok: false,
+      error: String(err?.message ?? err),
+    };
   } finally {
     markWriteEnd();
   }
-
-  return { updatedCount: changed, mergedSPs: mergedSPCount };
 }
 
 export async function consolidateSimilarPartyAndSalespersons(customBills?: Bill[]): Promise<{
