@@ -436,16 +436,29 @@ function initGlobalSync() {
   // Background flush of BOTH pending queues every 10 seconds so no local
   // change can silently stay un-synced to the cloud.
   setInterval(() => {
+    if (document.visibilityState === 'hidden' && !navigator.onLine) return;
     void flushDirtyQueue();
     void flushPendingWrites();
   }, 10000);
 
-  // Initial full load from Supabase, then light incremental polling
+  // Initial full load from Supabase, then adaptive incremental polling.
   doFullSync();
-  pollingTimer = setInterval(() => { void doDeltaSync(); }, POLL_INTERVAL_MS);
-  setInterval(() => { void doFullSync(true); }, FULL_SYNC_INTERVAL_MS);
+  let lastPollAt = Date.now();
+  pollingTimer = setInterval(() => {
+    if (document.visibilityState === 'hidden') return;
+    const realtimeLive = (realtimeChannel as any)?.state === 'joined';
+    const wait = realtimeLive ? POLL_SAFETY_MS : POLL_FAST_MS;
+    if (Date.now() - lastPollAt < wait) return;
+    lastPollAt = Date.now();
+    void doDeltaSync();
+  }, POLL_TICK_MS);
+  setInterval(() => {
+    if (document.visibilityState === 'hidden') return;
+    void doFullSync(true);
+  }, FULL_SYNC_INTERVAL_MS);
   initSupabaseRealtime();
 }
+
 
 
 function subscribe(callback: () => void) {
