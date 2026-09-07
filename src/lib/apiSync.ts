@@ -1120,6 +1120,29 @@ export async function apiPushSalespersonContacts(contacts: Contact[], onProgress
 }
 
 /**
+ * Hard-delete salesperson contact rows that were absorbed by a merge.
+ * Without this, upsert-only pushes leave duplicate rows in Supabase and
+ * the merged-away names reappear on the next full sync.
+ */
+export async function apiDeleteContactsByIds(ids: string[]): Promise<{ deleted: number }> {
+  if (!supabase || ids.length === 0) return { deleted: 0 };
+  const unique = Array.from(new Set(ids.filter(Boolean)));
+  let deleted = 0;
+  try {
+    const BATCH = 100;
+    for (let i = 0; i < unique.length; i += BATCH) {
+      const slice = unique.slice(i, i + BATCH);
+      const { error } = await supabase.from('contacts').delete().in('id', slice);
+      if (!error) deleted += slice.length;
+    }
+    return { deleted };
+  } catch (err) {
+    console.error('[apiSync] apiDeleteContactsByIds error:', err);
+    return { deleted };
+  }
+}
+
+/**
  * One-time cleanup: for every bill whose salesperson_name contains a " - SMNxxxxx"
  * suffix, strip the suffix and update ONLY the salesperson_name column in Supabase.
  * Also deduplicates salesperson contacts in the contacts table.
