@@ -3301,7 +3301,11 @@ export default function SettingsPage() {
                     variant: 'warning',
                     onConfirm: async () => {
                       const res = await consolidateSimilarSalespersonsOnly(0.50);
-                      setPurgeMsg(`Salespersons Merge Complete! Merged: ${res.mergedSPs}, Bills Updated: ${res.updatedCount}`);
+                      setPurgeMsg(
+                        res.ok
+                          ? `Salespersons Merge Complete! Merged: ${res.mergedSPs}, Bills Updated: ${res.updatedCount}, Duplicate Contacts Removed: ${res.contactsRemoved}, Mobile No Preserved: ${res.mobilesPreserved}`
+                          : `Merge failed to sync: ${res.error || 'Supabase error'} — please retry`
+                      );
                       setTimeout(() => setPurgeMsg(''), 8000);
                     }
                   });
