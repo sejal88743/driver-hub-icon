@@ -6,8 +6,23 @@ import App from './App';
 import './styles.css';
 import { toast } from '@/hooks/use-toast';
 
-// Safe sandboxed iframe replacement for window.alert
+// Safe sandboxed iframe replacement for window.alert and suppression of benign extension/HMR errors
 if (typeof window !== 'undefined') {
+  // Suppress third-party Chrome extension errors (e.g. share-modal.js) from interrupting the app
+  window.addEventListener('error', (event) => {
+    const filename = String(event?.filename || '');
+    const message = String(event?.message || '');
+    if (
+      filename.includes('chrome-extension://') ||
+      filename.includes('share-modal.js') ||
+      (message.includes("Cannot read properties of null (reading 'addEventListener')") && (filename.includes('extension') || !filename || filename.includes('modal')))
+    ) {
+      event.preventDefault();
+      event.stopPropagation();
+      return true;
+    }
+  });
+
   // Suppress benign WebSocket closure errors from disabled Vite HMR in container environment
   window.addEventListener('unhandledrejection', (event) => {
     const reasonStr = String(event?.reason?.message || event?.reason || '');
