@@ -432,9 +432,10 @@ export default function DriverDayTable({ bills, selectedDriver, displayDate, onS
     const eff = getEffectiveAmounts(b);
     const hasMoneyRec = eff.cash > 0 || eff.upi > 0 || eff.chq > 0 || (Number(b.collectedAmount) || 0) > 0;
     const hasRecDate = !!b.paymentDate && b.paymentDate.trim() !== '' && b.paymentDate !== '—';
-    const isFBR = (_bm === 'fbr' || _bm === 'cancel') && !hasMoneyRec;
+    const isSnap = snapshotBillNos.has(b.billNo);
+    const isFBR = !isSnap && (_bm === 'fbr' || _bm === 'cancel') && !hasMoneyRec;
     if (isFBR) { totals.fbr += b.billNetAmt; counts.fbr++; return; }
-    if ((_bm === 'del pending' || _bm === 'pending') && !hasMoneyRec) {
+    if (isSnap || ((_bm === 'del pending' || _bm === 'pending') && !hasMoneyRec)) {
       counts.delPending++;
       totals.delPending += b.billNetAmt;
       return;
@@ -1246,31 +1247,30 @@ export default function DriverDayTable({ bills, selectedDriver, displayDate, onS
               const isChecked = selectedRows.has(rowKey);
               // A bill is a snapshot (historical Del Pending) only if it is NOT currently
               // assigned to this driver for this date. If it IS currently assigned with a
-              // payment, show its actual payment status (PAID/FBR/etc.), not ASSIGNED.
+              // payment, show its actual payment status (PAID/FBR/etc.).
               const isSnapshot = snapshotBillNos.has(b.billNo) && !(b.driverName === selectedDriver && b.deliveryDate === displayDate);
               const _bm = (b.paymentMode || '').toLowerCase();
               const eff = getEffectiveAmounts(b);
               const hasMoneyRec = eff.cash > 0 || eff.upi > 0 || eff.chq > 0 || (Number(b.collectedAmount) || 0) > 0;
               const hasRecDate = !!b.paymentDate && b.paymentDate.trim() !== '' && b.paymentDate !== '—';
 
-              // Snapshot rows = bill was Del Pending for this driver/date but has since been
-              // re-assigned to another driver. Show as ASSIGNED (not DEL PEND anymore).
+              // Snapshot rows = bill was Del Pending for this driver/date.
+              // Even if re-assigned on a later date, on this historical date it MUST show as DEL PEND!
               const isFBR = !isSnapshot && (_bm === 'fbr' || _bm === 'cancel') && !hasMoneyRec;
-              const isDelPend = !isSnapshot && (_bm === 'del pending' || _bm === 'pending') && !hasMoneyRec;
+              const isDelPend = isSnapshot || ((_bm === 'del pending' || _bm === 'pending') && !hasMoneyRec);
               const isCredit = !isSnapshot && _bm === 'credit';
               const collected = b.collectedAmount || 0;
               // Bill collected on a different date (originally credit, now paid on Date B)
-              const isPaidElsewhere = !isCredit && !isFBR && !isDelPend && hasRecDate && b.paymentDate !== displayDate && hasMoneyRec;
+              const isPaidElsewhere = !isSnapshot && !isCredit && !isFBR && !isDelPend && hasRecDate && b.paymentDate !== displayDate && hasMoneyRec;
               // Strict rule: PAID ONLY WHEN Cash, GPay, Cheque received AND paymentDate present!
               const isPaid = !isSnapshot && !isFBR && !isDelPend && !isCredit && !isPaidElsewhere && hasMoneyRec && hasRecDate;
               // Today's delivery, driver assigned, no payment/FBR/credit/del-pending entry yet → ASSIGNED
               // (matches paymentMode = "Assigned" saved in Supabase; never shown/saved as Credit).
               const isAssignedToday = !isSnapshot && !isFBR && !isDelPend && !isCredit && !isPaid && !isPaidElsewhere
                 && !!b.driverName && b.deliveryDate === displayDate;
-              // Snapshot bill: if it has money + recDate show PAID, else ASSIGNED
-              const snapshotPaid = isSnapshot && hasMoneyRec && hasRecDate;
-              const statusLabel = isSnapshot ? (snapshotPaid ? 'PAID' : 'ASSIGNED') : isFBR ? 'FBR' : isDelPend ? 'DEL PEND' : isCredit ? 'CREDIT' : isPaidElsewhere ? 'REC' : isPaid ? 'PAID' : isAssignedToday ? 'ASSIGNED' : 'UNPAID';
-              const statusCls = isSnapshot ? (snapshotPaid ? 'bg-emerald-100 text-emerald-700' : 'bg-blue-500 text-white') : isFBR ? 'bg-red-500 text-white' : isDelPend ? 'bg-amber-400 text-black' : isCredit ? 'bg-green-500 text-white' : isPaidElsewhere ? 'bg-indigo-500 text-white' : isPaid ? 'bg-emerald-100 text-emerald-700' : isAssignedToday ? 'bg-blue-500 text-white' : 'bg-red-100 text-red-700';
+
+              const statusLabel = isFBR ? 'FBR' : isDelPend ? 'DEL PEND' : isCredit ? 'CREDIT' : isPaidElsewhere ? 'REC' : isPaid ? 'PAID' : isAssignedToday ? 'ASSIGNED' : 'UNPAID';
+              const statusCls = isFBR ? 'bg-red-500 text-white' : isDelPend ? 'bg-amber-400 text-black' : isCredit ? 'bg-green-500 text-white' : isPaidElsewhere ? 'bg-indigo-500 text-white' : isPaid ? 'bg-emerald-100 text-emerald-700' : isAssignedToday ? 'bg-blue-500 text-white' : 'bg-red-100 text-red-700';
               const isMatchedRow = String(b.discrepancyReason || (b as any).discrepancy_reason || (b as any).discrepancy || '').toUpperCase().includes('MATCHED');
               return (
                 <tr 
@@ -1279,7 +1279,6 @@ export default function DriverDayTable({ bills, selectedDriver, displayDate, onS
                   className={cn(
                     "transition-colors cursor-pointer",
                     isChecked ? "bg-blue-100" :
-                    isSnapshot ? "bg-blue-50 hover:bg-blue-100" :
                     isFBR ? "bg-red-200 hover:bg-red-300" :
                     isDelPend ? "bg-yellow-100 hover:bg-yellow-200" :
                     isCredit ? "bg-green-50 hover:bg-green-100" :
@@ -1313,17 +1312,17 @@ export default function DriverDayTable({ bills, selectedDriver, displayDate, onS
                   </td>
                   <td className="px-0.5 py-0 text-right font-black">₹{b.billNetAmt.toLocaleString('en-IN')}</td>
                   <td className="px-0.5 py-0 text-center font-black text-muted-foreground">{b.deliveryDate || '—'}</td>
-                  <td className={cn("px-0.5 py-0 text-right font-black text-emerald-600", isMatchedRow && eff.cash > 0 && "bg-pink-100 dark:bg-pink-950/80 text-pink-950 dark:text-pink-100 border border-pink-300 dark:border-pink-700 rounded-sm font-extrabold")}>{eff.cash > 0 ? `₹${eff.cash.toLocaleString('en-IN')}` : '—'}</td>
-                  <td className={cn("px-0.5 py-0 text-right font-black text-blue-600", isMatchedRow && eff.upi > 0 && "bg-pink-100 dark:bg-pink-950/80 text-pink-950 dark:text-pink-100 border border-pink-300 dark:border-pink-700 rounded-sm font-extrabold")}>{eff.upi > 0 ? `₹${eff.upi.toLocaleString('en-IN')}` : '—'}</td>
-                  <td className={cn("px-0.5 py-0 text-right font-black text-violet-600", isMatchedRow && eff.chq > 0 && "bg-pink-100 dark:bg-pink-950/80 text-pink-950 dark:text-pink-100 border border-pink-300 dark:border-pink-700 rounded-sm font-extrabold")}>{eff.chq > 0 ? `₹${eff.chq.toLocaleString('en-IN')}${b.chequeNo ? ` #${b.chequeNo}` : ''}` : '—'}</td>
+                  <td className={cn("px-0.5 py-0 text-right font-black text-emerald-600", !isSnapshot && isMatchedRow && eff.cash > 0 && "bg-pink-100 dark:bg-pink-950/80 text-pink-950 dark:text-pink-100 border border-pink-300 dark:border-pink-700 rounded-sm font-extrabold")}>{!isSnapshot && eff.cash > 0 ? `₹${eff.cash.toLocaleString('en-IN')}` : '—'}</td>
+                  <td className={cn("px-0.5 py-0 text-right font-black text-blue-600", !isSnapshot && isMatchedRow && eff.upi > 0 && "bg-pink-100 dark:bg-pink-950/80 text-pink-950 dark:text-pink-100 border border-pink-300 dark:border-pink-700 rounded-sm font-extrabold")}>{!isSnapshot && eff.upi > 0 ? `₹${eff.upi.toLocaleString('en-IN')}` : '—'}</td>
+                  <td className={cn("px-0.5 py-0 text-right font-black text-violet-600", !isSnapshot && isMatchedRow && eff.chq > 0 && "bg-pink-100 dark:bg-pink-950/80 text-pink-950 dark:text-pink-100 border border-pink-300 dark:border-pink-700 rounded-sm font-extrabold")}>{!isSnapshot && eff.chq > 0 ? `₹${eff.chq.toLocaleString('en-IN')}${b.chequeNo ? ` #${b.chequeNo}` : ''}` : '—'}</td>
                   <td className="px-0.5 py-0 text-right font-black text-destructive">
-                    {isCredit && (b.lineCutAmt || 0) > 0
+                    {!isSnapshot && isCredit && (b.lineCutAmt || 0) > 0
                       ? `₹${(b.lineCutAmt!).toLocaleString('en-IN')}`
-                      : collected > 0 && b.billNetAmt > collected
+                      : !isSnapshot && collected > 0 && b.billNetAmt > collected
                         ? `₹${(b.billNetAmt - collected).toLocaleString('en-IN')}`
                         : '-'}
                   </td>
-                  {!isDriverMode && <td className="px-0.5 py-0 text-center font-black text-emerald-600">{b.paymentDate || '—'}</td>}
+                  {!isDriverMode && <td className="px-0.5 py-0 text-center font-black text-emerald-600">{!isSnapshot ? (b.paymentDate || '—') : '—'}</td>}
                   <td className="px-0.5 py-0 text-center">
                     <div className="flex items-center justify-center gap-1">
                       <span className={cn("px-1.5 py-px rounded text-[7px] font-black", statusCls)}>

@@ -653,7 +653,7 @@ export default function Dashboard() {
         
         const isPaid = hasMoneyReceived || ['paid', 'cash', 'upi', 'cheque', 'split'].includes(mode);
         const isFBR = mode === 'fbr' || mode === 'cancel';
-        const isDelPending = mode === 'del pending';
+        const isDelPending = snapshotBillNos.has(b.billNo) || mode === 'del pending';
         const isCredit = mode === 'credit';
 
         if (isPaid || isFBR || isDelPending || isCredit) {

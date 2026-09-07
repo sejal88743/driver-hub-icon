@@ -1886,11 +1886,61 @@ export async function consolidateSimilarPartyAndSalespersons(customBills?: Bill[
 
   return { updatedCount: changed, mergedParties: mergedPartiesCount, mergedSPs: mergedSPCount };
 }
+
+// ── Helper to preserve Del Pending history when a bill is modified or reassigned ──
+function updateDelPendingHistoryOnPatch(
+  existingBill: Bill,
+  patch: Partial<Bill>
+): Array<{ driverName: string; deliveryDate: string }> | undefined {
+  if ('delPendingHistory' in patch && Array.isArray(patch.delPendingHistory)) {
+    return patch.delPendingHistory;
+  }
+  const history: Array<{ driverName: string; deliveryDate: string }> = Array.isArray(existingBill.delPendingHistory)
+    ? [...existingBill.delPendingHistory]
+    : [];
+
+  const prevWasDelPend = (existingBill.paymentMode || '').trim().toLowerCase() === 'del pending';
+  const newIsDelPend = patch.paymentMode != null
+    ? (patch.paymentMode || '').trim().toLowerCase() === 'del pending'
+    : prevWasDelPend;
+
+  // If was previously Del Pending and driver/deliveryDate/paymentMode is changing, record previous assignment
+  if (prevWasDelPend && existingBill.driverName && existingBill.deliveryDate) {
+    const isReassigning = (patch.driverName && patch.driverName !== existingBill.driverName) ||
+                          (patch.deliveryDate && patch.deliveryDate !== existingBill.deliveryDate) ||
+                          (patch.paymentMode && patch.paymentMode.trim().toLowerCase() !== 'del pending');
+    if (isReassigning) {
+      const exists = history.some(h => h.driverName?.trim().toLowerCase() === existingBill.driverName?.trim().toLowerCase() && h.deliveryDate === existingBill.deliveryDate);
+      if (!exists) {
+        history.push({ driverName: existingBill.driverName.trim(), deliveryDate: existingBill.deliveryDate.trim() });
+      }
+    }
+  }
+
+  // If newly set to Del Pending, record this assignment
+  if (newIsDelPend) {
+    const effDr = (patch.driverName ?? existingBill.driverName ?? '').trim();
+    const effDate = (patch.deliveryDate ?? existingBill.deliveryDate ?? '').trim();
+    if (effDr && effDate) {
+      const exists = history.some(h => h.driverName?.trim().toLowerCase() === effDr.toLowerCase() && h.deliveryDate === effDate);
+      if (!exists) {
+        history.push({ driverName: effDr, deliveryDate: effDate });
+      }
+    }
+  }
+
+  return history.length > 0 ? history : undefined;
+}
+
 export async function patchBillInMemory(billNo: string, patch: Partial<Bill>): Promise<boolean> {
   const normKey = getBillDedupeKey({ billNo, id: billNo });
   const norm = (billNo || '').trim().toLowerCase();
   const idx = _bills.findIndex(b => (normKey && getBillDedupeKey(b) === normKey) || (b.billNo || '').trim().toLowerCase() === norm || b.id === billNo);
   if (idx === -1) return false;
+  const delHist = updateDelPendingHistoryOnPatch(_bills[idx], patch);
+  if (delHist && !('delPendingHistory' in patch)) {
+    patch.delPendingHistory = delHist;
+  }
   if (!('editHistory' in patch)) {
     patch = {
       ...patch,
@@ -1940,6 +1990,10 @@ export async function patchBillsInMemory(patches: Array<{ billNo: string; patch:
     const norm = (billNo || '').trim().toLowerCase();
     const idx = _bills.findIndex(b => (normKey && getBillDedupeKey(b) === normKey) || (b.billNo || '').trim().toLowerCase() === norm || b.id === billNo);
     if (idx === -1) continue;
+    const delHist = updateDelPendingHistoryOnPatch(_bills[idx], patch);
+    if (delHist && !('delPendingHistory' in patch)) {
+      patch.delPendingHistory = delHist;
+    }
     const withHist: Partial<Bill> = ('editHistory' in patch) ? patch : {
       ...patch,
       editHistory: appendEditHistory(_bills[idx].editHistory, {
@@ -2566,6 +2620,12 @@ export async function savePayment(
   patch.lineCutAmt = effectiveLc;
   // Del Pending: set deliveryDate only if not already set — once assigned, del date is immutable
   if (isDelPend && !_bills[index].deliveryDate) patch.deliveryDate = excelSerialToDate(paymentDate);
+
+  // ── Del Pending audit trail (delPendingHistory) ──────────────────────────
+  const delHist = updateDelPendingHistoryOnPatch(_bills[index], patch);
+  if (delHist && !('delPendingHistory' in patch)) {
+    patch.delPendingHistory = delHist;
+  }
 
   // ── Audit trail: append one immutable line per entry/edit ──────────────────
   const prevHist = _bills[index].editHistory;
