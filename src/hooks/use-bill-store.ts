@@ -10,9 +10,15 @@ import { applyDirtyPatches, isDirtyPending, flushDirtyQueue } from '@/lib/localQ
 // guarantees instant real-time live sync across all devices.
 
 // Light incremental poll (only rows changed since last sync).
-const POLL_INTERVAL_MS = 3_000;
+// When the Realtime websocket is live, changes already arrive instantly, so the
+// poll acts only as a safety net and can run far less often (saves bandwidth/CPU
+// and keeps the UI smooth). Without realtime we fall back to a fast poll.
+const POLL_FAST_MS = 3_000;
+const POLL_SAFETY_MS = 20_000;
+const POLL_TICK_MS = 1_000;
 // Periodic "download everything" refresh — runs in background.
 const FULL_SYNC_INTERVAL_MS = 3 * 60_000;
+
 
 
 export type StoreSnapshot = {
