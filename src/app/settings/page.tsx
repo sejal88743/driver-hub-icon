@@ -565,8 +565,12 @@ export default function SettingsPage() {
                 constructedBill.editHistory = [];
               }
               constructedBill.editHistory.push({
-                timestamp: Date.now(),
-                user: 'Restore-Excel-FullCols',
+                seq: constructedBill.editHistory.length + 1,
+                date: new Date().toLocaleDateString('en-GB'),
+                time: new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }),
+                by: 'Restore-Excel-FullCols',
+                role: 'system',
+                action: 'add',
                 changes: JSON.stringify(extraColumns),
               });
               if (!constructedBill.discrepancyReason && (extraColumns['Remarks'] || extraColumns['Remark'] || extraColumns['Note'])) {
