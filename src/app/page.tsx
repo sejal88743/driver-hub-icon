@@ -598,12 +598,12 @@ export default function Dashboard() {
     const isUserStaff = !isOwner && (selUpper === 'PRATIXA' || !!drivers.find(d => d.name?.trim().toUpperCase() === selUpper && d.role === 'user'));
 
     let dbills: typeof bills = [];
+    const snapshotBillNos = new Set<string>();
     if (isOwner || isUserStaff) {
       // OWNER and USER selections show the complete database position (UNCHANGED)
       dbills = bills;
     } else {
       // Regular drivers: bills assigned to driver on selected date OR in delPendingHistory snapshot
-      const snapshotBillNos = new Set<string>();
       const nameLower = selectedDriver.toLowerCase().trim();
       for (const b of bills) {
         if (Array.isArray(b.delPendingHistory)) {
