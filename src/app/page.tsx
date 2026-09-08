@@ -3038,7 +3038,7 @@ Kripya party se is bill ka payment collection coordinate karein.`;
                   const _ddIsUnpaid = !b?.deliveryDate && _ddColl === 0;
                   const statusLabel = isFBR ? 'FBR' : isCredit ? 'CREDIT' : isDelPend ? 'DEL PEND' : _ddFull ? 'PAID' : b?.paymentMode === 'Pending' ? 'PENDING' : _ddIsUnpaid ? 'UNPAID' : '';
                   const statusCls = isFBR ? 'bg-red-500 text-white' : isCredit ? 'bg-green-500 text-white' : isDelPend ? 'bg-yellow-400 text-black' : _ddFull ? 'bg-emerald-500 text-white' : statusLabel === 'PENDING' ? 'bg-amber-400 text-black' : 'bg-muted text-muted-foreground';
-                  const rowBg = isHighlighted ? "bg-primary text-primary-foreground" : isFBR ? "bg-red-50 hover:bg-red-100" : isCredit ? "bg-green-50 hover:bg-green-100" : isDelPend ? "bg-yellow-50 hover:bg-yellow-100" : "hover:bg-primary/5";
+                  const rowBg = isHighlighted ? "bg-primary text-primary-foreground" : isFBR ? "bg-red-50 hover:bg-red-100" : isCredit ? "bg-green-100 hover:bg-green-200" : isDelPend ? "bg-yellow-50 hover:bg-yellow-100" : "hover:bg-primary/5";
                   const modeDisplay = b?.cashAmount && b.cashAmount > 0 && b?.upiAmount && b.upiAmount > 0 ? 'SPLIT'
                     : b?.cashAmount && b.cashAmount > 0 ? 'CASH'
                     : b?.upiAmount && b.upiAmount > 0 ? 'GPAY'

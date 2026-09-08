@@ -1281,7 +1281,7 @@ export default function DriverDayTable({ bills, selectedDriver, displayDate, onS
                     isChecked ? "bg-blue-100" :
                     isFBR ? "bg-red-200 hover:bg-red-300" :
                     isDelPend ? "bg-yellow-100 hover:bg-yellow-200" :
-                    isCredit ? "bg-green-50 hover:bg-green-100" :
+                    isCredit ? "bg-green-100 hover:bg-green-200" :
                     isPaidElsewhere ? "bg-indigo-50 hover:bg-indigo-100" :
                     !isPaid ? "bg-white text-red-700 font-black hover:bg-red-50" :
                     (i % 2 === 0 ? "bg-white hover:bg-primary/5" : "bg-slate-50/40 hover:bg-primary/5")

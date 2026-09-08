@@ -1978,7 +1978,7 @@ export default function ReportsPage() {
                         const isAsgnd   = !isPaid && !isFBR && !isCredit && !isDelPend && !!b.driverName && b.deliveryDate === todayDisplay;
                         const label = isFBR ? 'FBR' : isCredit ? 'CREDIT' : isDelPend ? 'DEL PEND' : isPaid ? 'PAID' : isAsgnd ? 'ASGND' : 'UNPAID';
                         const labelCls = isFBR ? 'bg-red-500 text-white' : isCredit ? 'bg-green-500 text-white' : isDelPend ? 'bg-yellow-400 text-black' : isPaid ? 'bg-emerald-500 text-white' : isAsgnd ? 'bg-red-100 text-red-700' : 'bg-muted text-muted-foreground';
-                        const rowCls = isFBR ? 'bg-red-50' : isCredit ? 'bg-green-50' : isDelPend ? 'bg-yellow-50' : i % 2 === 0 ? 'bg-white' : 'bg-slate-50/60';
+                        const rowCls = isFBR ? 'bg-red-50' : isCredit ? 'bg-green-100' : isDelPend ? 'bg-yellow-50' : i % 2 === 0 ? 'bg-white' : 'bg-slate-50/60';
                         return (
                           <tr key={`${b.billNo}_${i}`} onClick={() => setEditBill(b)} className={cn("border-b border-border/20 hover:bg-indigo-50/40 cursor-pointer transition-colors", rowCls)}>
                             <td className="px-1.5 py-0.5 text-center text-muted-foreground">{i + 1}</td>
