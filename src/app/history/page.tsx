@@ -1,9 +1,21 @@
 import { Fragment, useMemo, useState } from 'react';
-import { History, Search, X, ChevronDown, ChevronRight } from 'lucide-react';
+import { History, Search, X, ChevronDown, ChevronRight, ArrowUp, ArrowDown } from 'lucide-react';
 import TopNav from '@/components/TopNav';
 import { useBillStore } from '@/hooks/use-bill-store';
 import type { Bill, BillEditEntry } from '@/lib/billStore';
 import { cn } from '@/lib/utils';
+
+type SortKey =
+  | 'date'
+  | 'billNo'
+  | 'partyName'
+  | 'deliveryDate'
+  | 'driverName'
+  | 'paymentDate'
+  | 'paymentMode'
+  | 'collectedAmount'
+  | 'edits'
+  | 'lastActor';
 
 function rowTone(mode?: string) {
   const m = (mode || '').toLowerCase();
@@ -23,10 +35,30 @@ function lastActor(b: Bill): string {
   return b.owner || b.user || '—';
 }
 
+function parseDateDisplay(d?: string | null): number {
+  if (!d || d === '—') return 0;
+  const parts = d.split('/');
+  if (parts.length < 3) return 0;
+  const [dd, mm, yyOrYyyy] = parts;
+  const year =
+    yyOrYyyy.length === 2
+      ? parseInt(yyOrYyyy, 10) < 50
+        ? `20${yyOrYyyy}`
+        : `19${yyOrYyyy}`
+      : yyOrYyyy;
+  const n = new Date(`${year}-${mm}-${dd}`).getTime();
+  return isNaN(n) ? 0 : n;
+}
+
+function compareString(a: string, b: string): number {
+  return a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' });
+}
+
 export default function HistoryPage() {
   const { bills } = useBillStore();
   const [q, setQ] = useState('');
   const [open, setOpen] = useState<Record<string, boolean>>({});
+  const [sort, setSort] = useState<{ key: SortKey; dir: 'asc' | 'desc' } | null>(null);
 
   const rows = useMemo(() => {
     const term = q.trim().toLowerCase();
@@ -39,10 +71,49 @@ export default function HistoryPage() {
           (b.driverName || '').toLowerCase().includes(term) ||
           histOf(b).some(h => (h.by || '').toLowerCase().includes(term)),
         );
+
     return filtered
       .slice()
       .sort((a, b) => {
-        const ha = histOf(a); const hb = histOf(b);
+        if (sort) {
+          let cmp = 0;
+          switch (sort.key) {
+            case 'date':
+              cmp = parseDateDisplay(a.date) - parseDateDisplay(b.date);
+              break;
+            case 'billNo':
+              cmp = compareString(a.billNo || '', b.billNo || '');
+              break;
+            case 'partyName':
+              cmp = compareString(a.partyName || '', b.partyName || '');
+              break;
+            case 'deliveryDate':
+              cmp = parseDateDisplay(a.deliveryDate) - parseDateDisplay(b.deliveryDate);
+              break;
+            case 'driverName':
+              cmp = compareString(a.driverName || '', b.driverName || '');
+              break;
+            case 'paymentDate':
+              cmp = parseDateDisplay(a.paymentDate) - parseDateDisplay(b.paymentDate);
+              break;
+            case 'paymentMode':
+              cmp = compareString(a.paymentMode || 'UNPAID', b.paymentMode || 'UNPAID');
+              break;
+            case 'collectedAmount':
+              cmp = (a.collectedAmount || 0) - (b.collectedAmount || 0);
+              break;
+            case 'edits':
+              cmp = histOf(a).length - histOf(b).length;
+              break;
+            case 'lastActor':
+              cmp = compareString(lastActor(a), lastActor(b));
+              break;
+          }
+          if (cmp !== 0) return sort.dir === 'asc' ? cmp : -cmp;
+        }
+
+        const ha = histOf(a);
+        const hb = histOf(b);
         const ka = `${ha[ha.length - 1]?.date || ''} ${ha[ha.length - 1]?.time || ''}`;
         const kb = `${hb[hb.length - 1]?.date || ''} ${hb[hb.length - 1]?.time || ''}`;
         const pa = ka.split(' ')[0].split('/').reverse().join('') + (ka.split(' ')[1] || '');
@@ -50,9 +121,43 @@ export default function HistoryPage() {
         return pb.localeCompare(pa);
       })
       .slice(0, 1000);
-  }, [bills, q]);
+  }, [bills, q, sort]);
 
   const totalEdits = useMemo(() => rows.reduce((s, b) => s + histOf(b).length, 0), [rows]);
+
+  function toggleSort(key: SortKey) {
+    setSort(prev => {
+      if (prev?.key === key) {
+        return prev.dir === 'asc' ? { key, dir: 'desc' } : { key, dir: 'asc' };
+      }
+      return { key, dir: 'asc' };
+    });
+  }
+
+  function SortHeader({ key, children, align = 'left' }: { key: SortKey; children: React.ReactNode; align?: 'left' | 'right' | 'center' }) {
+    const active = sort?.key === key;
+    const Icon = active ? (sort.dir === 'asc' ? ArrowUp : ArrowDown) : ArrowUp;
+    const alignClass = align === 'right' ? 'text-right' : align === 'center' ? 'text-center' : 'text-left';
+    return (
+      <th
+        onClick={() => toggleSort(key)}
+        className={cn(
+          'px-2 py-1.5 cursor-pointer select-none hover:bg-muted transition-colors',
+          alignClass,
+        )}
+      >
+        <span className="inline-flex items-center gap-0.5">
+          {children}
+          <Icon
+            className={cn(
+              'w-3 h-3 transition-opacity',
+              active ? 'text-foreground opacity-100' : 'text-muted-foreground opacity-0 group-hover:opacity-50',
+            )}
+          />
+        </span>
+      </th>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-background pb-16">
@@ -86,16 +191,16 @@ export default function HistoryPage() {
             <thead className="bg-muted/60 sticky top-0">
               <tr className="text-[9px] font-black uppercase tracking-wider text-muted-foreground">
                 <th className="px-2 py-1.5 w-6" />
-                <th className="px-2 py-1.5 text-left">Bill Date</th>
-                <th className="px-2 py-1.5 text-left">Bill No</th>
-                <th className="px-2 py-1.5 text-left">Party</th>
-                <th className="px-2 py-1.5 text-left">Del Date</th>
-                <th className="px-2 py-1.5 text-left">Driver</th>
-                <th className="px-2 py-1.5 text-left">Rec / Paid Date</th>
-                <th className="px-2 py-1.5 text-left">Status</th>
-                <th className="px-2 py-1.5 text-right">Rec Amt</th>
-                <th className="px-2 py-1.5 text-center">Edits</th>
-                <th className="px-2 py-1.5 text-left">Last By</th>
+                <SortHeader key="date">Bill Date</SortHeader>
+                <SortHeader key="billNo">Bill No</SortHeader>
+                <SortHeader key="partyName">Party</SortHeader>
+                <SortHeader key="deliveryDate">Del Date</SortHeader>
+                <SortHeader key="driverName">Driver</SortHeader>
+                <SortHeader key="paymentDate">Rec / Paid Date</SortHeader>
+                <SortHeader key="paymentMode">Status</SortHeader>
+                <SortHeader key="collectedAmount" align="right">Rec Amt</SortHeader>
+                <SortHeader key="edits" align="center">Edits</SortHeader>
+                <SortHeader key="lastActor">Last By</SortHeader>
               </tr>
             </thead>
             <tbody>
