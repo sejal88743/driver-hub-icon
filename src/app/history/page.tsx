@@ -20,7 +20,7 @@ type SortKey =
 function rowTone(mode?: string) {
   const m = (mode || '').toLowerCase();
   if (m === 'fbr') return 'bg-red-50';
-  if (m === 'credit') return 'bg-emerald-50';
+  if (m === 'credit') return 'bg-emerald-100';
   if (m === 'del pending') return 'bg-yellow-50';
   return '';
 }
