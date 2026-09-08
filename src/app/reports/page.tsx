@@ -186,7 +186,23 @@ export default function ReportsPage() {
       if (recDStr) {
         const bPay = normBillDate(b.paymentDate);
         const hasMatchingPart = b.partPayments?.some(pp => normBillDate(pp.date) === recDStr) ?? false;
-        if (bPay !== recDStr && !hasMatchingPart) return false;
+        const bDel = normBillDate(b.deliveryDate);
+        const bDate = normBillDate(b.date);
+
+        // 1. Direct payment received on recDate
+        const isPayMatch = bPay === recDStr || hasMatchingPart;
+
+        // 2. Driver-assigned bill on recDate: include all assigned bills for this date (Paid, Credit, Del Pending, FBR, Unpaid)
+        const isDelOnRecDate = (bDel && bDel === recDStr) || (!bDel && bDate === recDStr) || (b.delPendingHistory?.some(h => normBillDate(h.deliveryDate) === recDStr) ?? false);
+        const isNonCollOrDateMatch = !bPay || bPay === recDStr || (b.collectedAmount || 0) === 0 ||
+          b.paymentMode === 'Credit' || b.paymentMode === 'Del Pending' || b.paymentMode === 'Pending' ||
+          b.paymentMode === 'FBR' || b.paymentMode === 'Cancel';
+
+        const isDriverAssignedMatch = isDelOnRecDate && isNonCollOrDateMatch && (
+          !deliveryDStr || deliveryDStr === recDStr
+        );
+
+        if (!isPayMatch && !isDriverAssignedMatch) return false;
       }
       if (driver && b.driverName !== driver) return false;
       if (partyQuery && !(b.partyName || '').toLowerCase().includes(partyQuery)) return false;
@@ -415,28 +431,27 @@ export default function ReportsPage() {
       if (!map.has(key)) map.set(key, []);
       map.get(key)!.push(b);
     }
-    // Sort order within each driver: Cash → GPay → Cheque → Split → FBR → Credit → Del Pending → Other
+    // Sort order within each driver: Cash Paid → GPay Paid → Cheque Paid → Split Paid → Credit → Del Pending → FBR → Other
     function driverPayOrder(x: Bill): number {
-      const ca = Number(x.cashAmount) || 0;
-      const up = Number(x.upiAmount)  || 0;
-      const ch = Number(x.chequeAmount) || 0;
+      const e = getEffAmt(x);
       const col = Number(x.collectedAmount) || 0;
-      let cash = ca, upi = up, chq = ch;
-      if (ca === 0 && up === 0 && ch === 0 && col > 0) {
-        const m = (x.paymentMode || '').toLowerCase();
-        if (m === 'upi')         upi  = col;
-        else if (m === 'cheque') chq  = col;
-        else                     cash = col;
+      const hasCash = e.cash > 0;
+      const hasGpay = e.upi > 0;
+      const hasChq  = e.chq > 0;
+      if (col > 0 || hasCash || hasGpay || hasChq) {
+        if (hasCash && !hasGpay && !hasChq) return 0; // Cash Paid
+        if (hasGpay && !hasCash && !hasChq) return 1; // GPay Paid
+        if (hasChq  && !hasCash && !hasGpay) return 2; // Cheque Paid
+        return 3; // Split / Mixed Paid
       }
-      if (cash > 0 && upi === 0 && chq === 0) return 0; // cash only
-      if (upi  > 0 && cash === 0 && chq === 0) return 1; // gpay only
-      if (chq  > 0 && cash === 0 && upi === 0) return 2; // cheque only
-      if (cash > 0 || upi > 0 || chq > 0)      return 3; // split / mixed
       const pm = (x.paymentMode || '').toLowerCase();
-      if (pm === 'fbr' || pm === 'cancel') return 4;
-      if (pm === 'credit')                 return 5;
-      if (pm === 'del pending')            return 6;
-      return 7; // unpaid / assigned / pending
+      if (pm === 'credit') return 4; // Credit
+      if (pm === 'del pending' || pm === 'pending') return 5; // Del Pending
+      const lc = (x.lineCutAmt || 0) || Number(x.cancelLine) || 0;
+      const netAfterLC = x.billNetAmt - lc;
+      const isAutoFbr = !x.paymentDate && Math.abs(netAfterLC) <= 1 && pm !== 'credit';
+      if (pm === 'fbr' || pm === 'cancel' || isAutoFbr) return 6; // FBR
+      return 7; // Unpaid / Assigned / Other
     }
     return Array.from(map.entries())
       .sort((a, b) => a[0].localeCompare(b[0]))
@@ -1038,7 +1053,9 @@ export default function ReportsPage() {
       const autoTable = (await import('jspdf-autotable')).default;
       const doc = new jsPDF('p', 'mm', 'a4');
 
-      const dateInfo = deliveryDate
+      const dateInfo = deliveryDate && recDate
+        ? `DEL DATE: ${isoToDisplay(deliveryDate)}   |   REC DATE: ${isoToDisplay(recDate)}`
+        : deliveryDate
         ? `DEL DATE: ${isoToDisplay(deliveryDate)}`
         : recDate
         ? `REC DATE: ${isoToDisplay(recDate)}`
@@ -1054,9 +1071,9 @@ export default function ReportsPage() {
         const diff = b.billNetAmt - lineCutAmt - collected;
         const isFBR_r  = collected === 0 && (b.paymentMode === 'FBR' || b.paymentMode === 'Cancel');
         const isCred_r = collected === 0 && b.paymentMode === 'Credit';
-        const isDel_r  = collected === 0 && b.paymentMode === 'Del Pending';
-        const status   = collected > 0 ? 'PAID' : isFBR_r ? 'FBR' : isCred_r ? 'CREDIT' : isDel_r ? 'DEL PEND' : b.paymentMode === 'Pending' ? 'PENDING' : 'UNPAID';
-        const diffCell = isCred_r ? 'CREDIT' : isDel_r ? 'NOT DEL' : diff.toLocaleString('en-IN');
+        const isDel_r  = collected === 0 && (b.paymentMode === 'Del Pending' || b.paymentMode === 'Pending');
+        const status   = collected > 0 ? 'PAID' : isCred_r ? 'CREDIT' : isDel_r ? 'DEL PEND' : isFBR_r ? 'FBR' : 'UNPAID';
+        const diffCell = isCred_r ? 'CREDIT' : isDel_r ? 'NOT DEL' : isFBR_r ? 'FBR' : diff.toLocaleString('en-IN');
 
         const isMatched = String(b.discrepancyReason || (b as any).discrepancy_reason || (b as any).discrepancy || '').toUpperCase().includes('MATCHED');
 
@@ -1142,19 +1159,27 @@ export default function ReportsPage() {
       const footStyles       = { fillColor: [79,70,229] as [number,number,number], textColor: [255,255,255] as [number,number,number], fontStyle: 'bold' as const, fontSize: 8, cellPadding: 0.25, minCellHeight: 2.38 };
       const margin           = { left: 3, right: 3 };
 
-      // ── Sort helper: Cash → GPay → Cheque → Split → FBR → Credit → Del Pending → Other ──
+      // ── Sort helper: Cash Paid → GPay Paid → Cheque Paid → Split Paid → Credit → Del Pending → FBR → Other ──
       function pdfPayOrder(b: Bill): number {
         const e = getEffAmt(b);
-        const hasCash = e.cash > 0, hasGpay = e.upi > 0, hasChq = e.chq > 0;
-        if (hasCash && !hasGpay && !hasChq) return 0; // cash only
-        if (hasGpay && !hasCash && !hasChq) return 1; // gpay only
-        if (hasChq  && !hasCash && !hasGpay) return 2; // cheque only
-        if (hasCash || hasGpay || hasChq)   return 3; // split / mixed
+        const col = Number(b.collectedAmount) || 0;
+        const hasCash = e.cash > 0;
+        const hasGpay = e.upi > 0;
+        const hasChq  = e.chq > 0;
+        if (col > 0 || hasCash || hasGpay || hasChq) {
+          if (hasCash && !hasGpay && !hasChq) return 0; // Cash Paid
+          if (hasGpay && !hasCash && !hasChq) return 1; // GPay Paid
+          if (hasChq  && !hasCash && !hasGpay) return 2; // Cheque Paid
+          return 3; // Split / Mixed Paid
+        }
         const pm = (b.paymentMode || '').toLowerCase();
-        if (pm === 'fbr' || pm === 'cancel') return 4;
-        if (pm === 'credit')                 return 5;
-        if (pm === 'del pending')            return 6;
-        return 7; // unpaid / assigned / pending
+        if (pm === 'credit') return 4; // Credit
+        if (pm === 'del pending' || pm === 'pending') return 5; // Del Pending
+        const lc = (b.lineCutAmt || 0) || Number(b.cancelLine) || 0;
+        const netAfterLC = b.billNetAmt - lc;
+        const isAutoFbr = !b.paymentDate && Math.abs(netAfterLC) <= 1 && pm !== 'credit';
+        if (pm === 'fbr' || pm === 'cancel' || isAutoFbr) return 6; // FBR
+        return 7; // Unpaid / Assigned / Other
       }
       function sortForPdf(list: Bill[]): Bill[] {
         return [...list].sort((a, b) => {
@@ -1241,6 +1266,11 @@ export default function ReportsPage() {
           const grpAmt = sorted.reduce((s, b) => s + (b.billNetAmt || 0), 0);
           const grpColl = sorted.reduce((s, b) => s + (b.collectedAmount || 0), 0);
 
+          if (curY > doc.internal.pageSize.getHeight() - 25) {
+            doc.addPage();
+            curY = 10;
+          }
+
           doc.setFillColor(...bannerColor);
           doc.setTextColor(255, 255, 255);
           doc.setFontSize(8.5); doc.setFont('helvetica', 'bold');
@@ -1269,11 +1299,7 @@ export default function ReportsPage() {
             didParseCell: makeGroupedCellParser(sorted),
           });
 
-          curY = (doc as any).lastAutoTable.finalY + 6;
-          if (curY > doc.internal.pageSize.getHeight() - 40) {
-            doc.addPage();
-            curY = 12;
-          }
+          curY = (doc as any).lastAutoTable.finalY + 4;
         }
         return groups.length;
       }
@@ -1373,6 +1399,11 @@ export default function ReportsPage() {
             return s + (b.outstandingAmount > 0 ? b.outstandingAmount : Math.max(0, (b.billNetAmt || 0) - lc - col));
           }, 0);
 
+          if (curY > doc.internal.pageSize.getHeight() - 25) {
+            doc.addPage();
+            curY = 10;
+          }
+
           // Group banner header (Light background, clean dark purple text)
           const pageW = doc.internal.pageSize.getWidth();
           doc.setFillColor(243, 232, 255);
@@ -1426,11 +1457,7 @@ export default function ReportsPage() {
             }
           });
 
-          curY = (doc as any).lastAutoTable.finalY + 6;
-          if (curY > doc.internal.pageSize.getHeight() - 40) {
-            doc.addPage();
-            curY = 12;
-          }
+          curY = (doc as any).lastAutoTable.finalY + 4;
         }
 
         // Grand total banner (Light background, bold clear text)
@@ -1441,9 +1468,9 @@ export default function ReportsPage() {
           return s + (b.outstandingAmount > 0 ? b.outstandingAmount : Math.max(0, (b.billNetAmt || 0) - lc - col));
         }, 0);
 
-        if (curY > doc.internal.pageSize.getHeight() - 25) {
+        if (curY > doc.internal.pageSize.getHeight() - 15) {
           doc.addPage();
-          curY = 12;
+          curY = 10;
         }
 
         const pageW = doc.internal.pageSize.getWidth();
@@ -1469,6 +1496,12 @@ export default function ReportsPage() {
           const dLine = dBills.reduce((s, b) => s + ((b.lineCutAmt || 0) || Number(b.cancelLine) || 0), 0);
           const dColl = dBills.reduce((s, b) => s + (b.collectedAmount || 0), 0);
           const dDiff = dAmt - dLine - dColl;
+
+          // If remaining height on current page is too small for banner + table head + first rows, start on new page
+          if (curY > doc.internal.pageSize.getHeight() - 25) {
+            doc.addPage();
+            curY = 10;
+          }
 
           // Driver name banner
           doc.setFillColor(30, 80, 180);
@@ -1507,13 +1540,7 @@ export default function ReportsPage() {
             didParseCell: makeCellParser(dBills),
           });
 
-          curY = (doc as any).lastAutoTable.finalY + 6;
-
-          // New page if little space left
-          if (curY > doc.internal.pageSize.getHeight() - 40) {
-            doc.addPage();
-            curY = 12;
-          }
+          curY = (doc as any).lastAutoTable.finalY + 4;
         }
       } else {
         // ── Single combined table (when a specific driver is selected) ──
@@ -1542,14 +1569,18 @@ export default function ReportsPage() {
           margin,
           didParseCell: makeCellParser(sortedFiltered),
         });
-        curY = (doc as any).lastAutoTable.finalY + 10;
+        curY = (doc as any).lastAutoTable.finalY + 5;
       }
 
       // ── Calculator Box — only when a driver is selected and NOT party/salesperson ─────────────
       if (driver && !isPartyOrSP) {
-        const boxStartY = curY + 4;
+        const calcBoxHeight = 8 * 3.5 + 8;
+        if (curY + calcBoxHeight > doc.internal.pageSize.getHeight() - 10) {
+          doc.addPage();
+          curY = 10;
+        }
         autoTable(doc, {
-          startY: boxStartY,
+          startY: curY,
           margin: { left: 14 },
           tableWidth: 60,
           head: [['CALCULATOR', 'RS']],
@@ -1571,6 +1602,7 @@ export default function ReportsPage() {
             if (data.row.index === 7 && data.column.index === 1) data.cell.styles.textColor = [200, 0, 0];
           }
         });
+        curY = (doc as any).lastAutoTable.finalY + 5;
       }
 
 
@@ -1579,16 +1611,17 @@ export default function ReportsPage() {
       // ── Driver-wise Summary Table (only when driver-wise mode and NOT party/salesperson) ───────────
       if (useDriverWise && !isPartyOrSP) {
       const driverMap = new Map<string, {
-        billCount: number; totalAmt: number; cash: number; gpay: number; chq: number; lineCut: number; credit: number; fbr: number;
+        billCount: number; totalAmt: number; cash: number; gpay: number; chq: number; lineCut: number; credit: number; delPending: number; fbr: number;
       }>();
       for (const b of expandedBills) {
         const eff = getEffAmt(b);
         const lc = (b.lineCutAmt || 0) || Number(b.cancelLine) || 0;
         const isFBRb = b.paymentMode === 'FBR' || b.paymentMode === 'Cancel';
         const isCreditb = b.paymentMode === 'Credit';
+        const isDelPendb = (b.paymentMode === 'Del Pending' || b.paymentMode === 'Pending') && (b.collectedAmount || 0) === 0;
         // Use shared key function: detects USER entries separately from OWNER
         const key = getPdfGroupKey(b);
-        if (!driverMap.has(key)) driverMap.set(key, { billCount: 0, totalAmt: 0, cash: 0, gpay: 0, chq: 0, lineCut: 0, credit: 0, fbr: 0 });
+        if (!driverMap.has(key)) driverMap.set(key, { billCount: 0, totalAmt: 0, cash: 0, gpay: 0, chq: 0, lineCut: 0, credit: 0, delPending: 0, fbr: 0 });
         const entry = driverMap.get(key)!;
         entry.billCount += 1;
         entry.totalAmt  += b.billNetAmt || 0;
@@ -1596,16 +1629,22 @@ export default function ReportsPage() {
         entry.gpay      += eff.upi;
         entry.chq       += eff.chq;
         entry.lineCut   += lc;
-        if (isCreditb) entry.credit += b.billNetAmt - lc;
-        if (isFBRb)    entry.fbr    += b.billNetAmt;
+        if (isCreditb)  entry.credit += b.billNetAmt - lc;
+        if (isDelPendb) entry.delPending += b.billNetAmt;
+        if (isFBRb)     entry.fbr    += b.billNetAmt;
       }
       const sortedDrivers = Array.from(driverMap.entries()).sort((a, b) => a[0].localeCompare(b[0]));
 
-      const driverTableY = (doc as any).lastAutoTable.finalY + 10;
+      const summaryTableHeight = (sortedDrivers.length + 2) * 2.8 + 6;
+      if (curY + summaryTableHeight > doc.internal.pageSize.getHeight() - 10) {
+        doc.addPage();
+        curY = 10;
+      }
+
       autoTable(doc, {
-        startY: driverTableY,
+        startY: curY,
         margin: { left: 5, right: 5 },
-        head: [['DRIVER / USER', 'BILLS', 'TOTAL AMT', 'CASH', 'GPAY', 'CHQ', 'LINE CUT', 'CREDIT', 'FBR']],
+        head: [['DRIVER / USER', 'BILLS', 'TOTAL AMT', 'CASH', 'GPAY', 'CHQ', 'LINE CUT', 'CREDIT', 'DEL PEND', 'FBR']],
         body: sortedDrivers.map(([name, d]) => [
           name.toUpperCase(),
           d.billCount,
@@ -1615,6 +1654,7 @@ export default function ReportsPage() {
           d.chq  > 0  ? d.chq.toLocaleString('en-IN')   : '-',
           d.lineCut > 0 ? d.lineCut.toLocaleString('en-IN') : '-',
           d.credit > 0  ? d.credit.toLocaleString('en-IN')  : '-',
+          d.delPending > 0 ? d.delPending.toLocaleString('en-IN') : '-',
           d.fbr  > 0  ? d.fbr.toLocaleString('en-IN')   : '-',
         ]),
         foot: [(() => {
@@ -1626,8 +1666,9 @@ export default function ReportsPage() {
             chq: acc.chq + d.chq,
             lineCut: acc.lineCut + d.lineCut,
             credit: acc.credit + d.credit,
+            delPending: acc.delPending + d.delPending,
             fbr: acc.fbr + d.fbr,
-          }), { billCount: 0, totalAmt: 0, cash: 0, gpay: 0, chq: 0, lineCut: 0, credit: 0, fbr: 0 });
+          }), { billCount: 0, totalAmt: 0, cash: 0, gpay: 0, chq: 0, lineCut: 0, credit: 0, delPending: 0, fbr: 0 });
           return [
             `TOTAL (${sortedDrivers.length} DRIVERS)`,
             gt.billCount,
@@ -1637,6 +1678,7 @@ export default function ReportsPage() {
             gt.chq  > 0  ? gt.chq.toLocaleString('en-IN')   : '-',
             gt.lineCut > 0 ? gt.lineCut.toLocaleString('en-IN') : '-',
             gt.credit > 0  ? gt.credit.toLocaleString('en-IN')  : '-',
+            gt.delPending > 0 ? gt.delPending.toLocaleString('en-IN') : '-',
             gt.fbr  > 0  ? gt.fbr.toLocaleString('en-IN')   : '-',
           ];
         })()],
@@ -1647,15 +1689,16 @@ export default function ReportsPage() {
         footStyles: { fillColor: [30, 80, 180], textColor: [255, 255, 255], fontStyle: 'bold', fontSize: 7.5, cellPadding: 0.3, minCellHeight: 2.38 },
         bodyStyles: { textColor: [0, 0, 0] },
         columnStyles: {
-          0: { cellWidth: 38 },
+          0: { cellWidth: 32 },
           1: { halign: 'center', cellWidth: 12 },
-          2: { halign: 'right', cellWidth: 24 },
-          3: { halign: 'right', cellWidth: 20 },
-          4: { halign: 'right', cellWidth: 20 },
-          5: { halign: 'right', cellWidth: 22 },
-          6: { halign: 'right', cellWidth: 20 },
-          7: { halign: 'right', cellWidth: 20 },
+          2: { halign: 'right', cellWidth: 21 },
+          3: { halign: 'right', cellWidth: 19 },
+          4: { halign: 'right', cellWidth: 19 },
+          5: { halign: 'right', cellWidth: 19 },
+          6: { halign: 'right', cellWidth: 19 },
+          7: { halign: 'right', cellWidth: 19 },
           8: { halign: 'right', cellWidth: 20 },
+          9: { halign: 'right', cellWidth: 19 },
         },
         didParseCell: (data: any) => {
           if (data.section === 'body' && data.row.index % 2 === 1) {
