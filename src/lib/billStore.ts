@@ -860,12 +860,21 @@ export function applyRealtimeTableChange(
 
 // ─── Read functions ─────────────────────────────────────────────────────────
 export function getBills(): Bill[] { return _bills; }
+let _lastDriversRef: Driver[] | null = null;
+let _cachedDriversWithPratixa: Driver[] | null = null;
+
 export function getDrivers(): Driver[] {
+  if (_lastDriversRef === _drivers && _cachedDriversWithPratixa !== null) {
+    return _cachedDriversWithPratixa;
+  }
+  _lastDriversRef = _drivers;
   const hasPratixa = _drivers.some(d => (d.name || '').trim().toUpperCase() === 'PRATIXA');
   if (!hasPratixa) {
-    return [..._drivers, { id: 'usr_pratixa', name: 'Pratixa', role: 'user' }];
+    _cachedDriversWithPratixa = [..._drivers, { id: 'usr_pratixa', name: 'Pratixa', role: 'user' }];
+  } else {
+    _cachedDriversWithPratixa = _drivers;
   }
-  return _drivers;
+  return _cachedDriversWithPratixa;
 }
 export function getBanks(): Bank[] { return _banks; }
 export function getSummaries(): DriverDailySummary[] { return _summaries; }

@@ -7,6 +7,7 @@ import { apiPushSetting } from '@/lib/apiSync';
 import { supabase } from '@/lib/supabase';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
+import { openWhatsApp } from '@/lib/whatsapp';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 export type ChequeReturnEntry = {
@@ -175,15 +176,31 @@ export default function ChequeReturnPage() {
 
   // Salesperson list
   const spList = useMemo(() => {
-    const contacts = getSalespersonContacts().map(c => c.name);
-    const fromBills = [...new Set(bills.map(b => b.salespersonName).filter(Boolean))];
+    const contacts = getSalespersonContacts();
     const seen = new Set<string>();
     const merged: string[] = [];
-    [...contacts, ...fromBills].forEach(n => {
-      const key = n.toLowerCase().trim();
-      if (n && !seen.has(key)) { seen.add(key); merged.push(n); }
-    });
+    for (const c of contacts) {
+      const name = c.name?.trim();
+      if (!name) continue;
+      const key = name.toLowerCase();
+      if (!seen.has(key)) { seen.add(key); merged.push(name); }
+    }
+    for (const b of bills) {
+      const name = b.salespersonName?.trim();
+      if (!name) continue;
+      const key = name.toLowerCase();
+      if (!seen.has(key)) { seen.add(key); merged.push(name); }
+    }
     return merged.sort((a, b) => a.localeCompare(b));
+  }, [bills]);
+
+  // Fast map of bills by billNo
+  const billMap = useMemo(() => {
+    const map = new Map<string, typeof bills[0]>();
+    for (const b of bills) {
+      if (b.billNo) map.set(b.billNo.trim(), b);
+    }
+    return map;
   }, [bills]);
 
   // Active entries — keep showing while any linked bill is:
@@ -192,7 +209,6 @@ export default function ChequeReturnPage() {
   // Entry disappears only when ALL linked bills are genuinely re-paid
   // (collectedAmount > 0 AND mode is not credit-like)
   const activeEntries = useMemo(() => {
-    const billMap = new Map(getBills().map(b => [b.billNo.trim(), b]));
     return entries.filter(entry =>
       entry.billNos.some(billNo => {
         const b = billMap.get(billNo.trim());
@@ -203,7 +219,7 @@ export default function ChequeReturnPage() {
         return (Number(b.collectedAmount) || 0) === 0 || isCreditLike;
       })
     );
-  }, [entries, bills]);
+  }, [entries, billMap]);
 
   // All added cheque nos (for duplicate check)
   const addedCheqNos = useMemo(
@@ -392,8 +408,7 @@ export default function ChequeReturnPage() {
       return;
     }
     const message = buildReturnChequeMessage(entry);
-    const encodedMsg = encodeURIComponent(message);
-    window.location.href = `whatsapp://send?phone=${mobile}&text=${encodedMsg}`;
+    openWhatsApp({ phone: mobile, text: message });
   }
 
   // ── Delete entry ─────────────────────────────────────────────────────────

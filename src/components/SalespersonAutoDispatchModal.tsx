@@ -10,6 +10,7 @@ import { Bill, getSalespersonContacts, findSalespersonContact, getTodayDMY } fro
 import { Button } from '@/components/ui/button';
 import { ConfirmModal } from '@/components/ConfirmModal';
 import { cn } from '@/lib/utils';
+import { openWhatsApp } from '@/lib/whatsapp';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 
@@ -305,11 +306,7 @@ if __name__ == "__main__":
     let cleanPhone = phone.replace(/[^0-9]/g, '');
     if (cleanPhone.length === 10) cleanPhone = `91${cleanPhone}`;
 
-    const encoded = encodeURIComponent(message);
-    // Tries WhatsApp Desktop protocol app link first, falls back to web
-    const appUrl = cleanPhone ? `whatsapp://send?phone=${cleanPhone}&text=${encoded}` : `https://wa.me/?text=${encoded}`;
-    window.open(appUrl, '_blank');
-
+    openWhatsApp({ phone: cleanPhone, text: message });
     setTimeout(() => setSendingSp(null), 1000);
   };
 

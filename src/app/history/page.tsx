@@ -125,22 +125,22 @@ export default function HistoryPage() {
 
   const totalEdits = useMemo(() => rows.reduce((s, b) => s + histOf(b).length, 0), [rows]);
 
-  function toggleSort(key: SortKey) {
+  function toggleSort(sortKey: SortKey) {
     setSort(prev => {
-      if (prev?.key === key) {
-        return prev.dir === 'asc' ? { key, dir: 'desc' } : { key, dir: 'asc' };
+      if (prev?.key === sortKey) {
+        return prev.dir === 'asc' ? { key: sortKey, dir: 'desc' } : { key: sortKey, dir: 'asc' };
       }
-      return { key, dir: 'asc' };
+      return { key: sortKey, dir: 'asc' };
     });
   }
 
-  function SortHeader({ key, children, align = 'left' }: { key: SortKey; children: React.ReactNode; align?: 'left' | 'right' | 'center' }) {
-    const active = sort?.key === key;
-    const Icon = active ? (sort.dir === 'asc' ? ArrowUp : ArrowDown) : ArrowUp;
+  function SortHeader({ sortKey, children, align = 'left' }: { sortKey: SortKey; children: React.ReactNode; align?: 'left' | 'right' | 'center' }) {
+    const active = Boolean(sort && sort.key === sortKey);
+    const Icon = active ? (sort?.dir === 'asc' ? ArrowUp : ArrowDown) : ArrowUp;
     const alignClass = align === 'right' ? 'text-right' : align === 'center' ? 'text-center' : 'text-left';
     return (
       <th
-        onClick={() => toggleSort(key)}
+        onClick={() => toggleSort(sortKey)}
         className={cn(
           'px-2 py-1.5 cursor-pointer select-none hover:bg-muted transition-colors',
           alignClass,
@@ -191,16 +191,16 @@ export default function HistoryPage() {
             <thead className="bg-muted/60 sticky top-0">
               <tr className="text-[9px] font-black uppercase tracking-wider text-muted-foreground">
                 <th className="px-2 py-1.5 w-6" />
-                <SortHeader key="date">Bill Date</SortHeader>
-                <SortHeader key="billNo">Bill No</SortHeader>
-                <SortHeader key="partyName">Party</SortHeader>
-                <SortHeader key="deliveryDate">Del Date</SortHeader>
-                <SortHeader key="driverName">Driver</SortHeader>
-                <SortHeader key="paymentDate">Rec / Paid Date</SortHeader>
-                <SortHeader key="paymentMode">Status</SortHeader>
-                <SortHeader key="collectedAmount" align="right">Rec Amt</SortHeader>
-                <SortHeader key="edits" align="center">Edits</SortHeader>
-                <SortHeader key="lastActor">Last By</SortHeader>
+                <SortHeader sortKey="date">Bill Date</SortHeader>
+                <SortHeader sortKey="billNo">Bill No</SortHeader>
+                <SortHeader sortKey="partyName">Party</SortHeader>
+                <SortHeader sortKey="deliveryDate">Del Date</SortHeader>
+                <SortHeader sortKey="driverName">Driver</SortHeader>
+                <SortHeader sortKey="paymentDate">Rec / Paid Date</SortHeader>
+                <SortHeader sortKey="paymentMode">Status</SortHeader>
+                <SortHeader sortKey="collectedAmount" align="right">Rec Amt</SortHeader>
+                <SortHeader sortKey="edits" align="center">Edits</SortHeader>
+                <SortHeader sortKey="lastActor">Last By</SortHeader>
               </tr>
             </thead>
             <tbody>

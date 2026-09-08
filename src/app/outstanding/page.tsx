@@ -23,6 +23,7 @@ import {
 } from 'lucide-react';
 import { useBillStore } from '@/hooks/use-bill-store';
 import TopNav from '@/components/TopNav';
+import { openWhatsApp } from '@/lib/whatsapp';
 import { cn } from '@/lib/utils';
 import { apiFetchSettingsEarly } from '@/lib/apiSync';
 import {
@@ -553,8 +554,7 @@ export default function OutstandingPage() {
 ${itemsList}━━━━━━━━━━━━━━━━━━━━
 Kripya in credit bills ka collection coordinate karein.`;
 
-    const encodedMessage = encodeURIComponent(message);
-    window.location.href = `whatsapp://send?phone=${phone}&text=${encodedMessage}`;
+    openWhatsApp({ phone, text: message });
 
     setShowGiveModal(false);
     setSelectedBillKeys(new Set());

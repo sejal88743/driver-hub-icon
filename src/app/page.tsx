@@ -25,6 +25,7 @@ import BillDetailsModal from '@/components/BillDetailsModal';
 import LineCutPopup from '@/components/LineCutPopup';
 import OverflowModal from '@/components/OverflowModal';
 import { getTodayISO, getTodayDMY, isoToDisplay, displayToIso } from '@/lib/dateUtils';
+import { openWhatsApp } from '@/lib/whatsapp';
 
 // Line-cut amounts are sometimes entered as a quick sum, e.g. "100+128+335".
 // Keep this deliberately limited to numbers and plus signs; never evaluate input
@@ -2452,8 +2453,7 @@ Kripya party se is bill ka payment collection coordinate karein.`;
     const cleanDigits = (contact?.mobile || '').replace(/\D/g, '');
     if (cleanDigits.length >= 10) {
       const phone = cleanDigits.length === 10 ? `91${cleanDigits}` : cleanDigits;
-      const encodedMsg = encodeURIComponent(msg);
-      window.location.href = `whatsapp://send?phone=${phone}&text=${encodedMsg}`;
+      openWhatsApp({ phone, text: msg });
     } else {
       // Prompt modal to enter & save salesperson mobile number
       setSpModalSalespersonName(rawSalespersonName || salespersonName || 'Salesperson');
@@ -2496,8 +2496,7 @@ Kripya party se is bill ka payment collection coordinate karein.`;
     const phone = cleanDigits.length === 10 ? `91${cleanDigits}` : cleanDigits;
     const msg = formatSalespersonWhatsAppMessage(spPendingBill, cleanName || rawName, true);
 
-    const encodedMsg = encodeURIComponent(msg);
-    window.location.href = `whatsapp://send?phone=${phone}&text=${encodedMsg}`;
+    openWhatsApp({ phone, text: msg });
   };
 
   // Scroll highlighted dropdown item into view when navigating with arrow keys

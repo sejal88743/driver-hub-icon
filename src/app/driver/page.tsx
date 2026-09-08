@@ -12,6 +12,7 @@ import { generateBillReportImages } from '@/lib/billReportImage';
 import { recordDriverDownload } from '@/lib/driverDownloadStatus';
 import TopNav from '@/components/TopNav';
 import { cn } from '@/lib/utils';
+import { openWhatsApp } from '@/lib/whatsapp';
 
 function getTodayISO() {
   const now = new Date();
@@ -749,8 +750,7 @@ export default function DriverPage() {
         .replace(/\{\{days\}\}/gi, days)
         .replace(/\{\{lineCutAmt\}\}/gi, String((b.billNetAmt - (b.collectedAmount || 0)).toLocaleString('en-IN')))
         .replace(/\{\{driver\}\}/gi, d.name);
-      const encodedMsg = encodeURIComponent(msg);
-      window.location.href = `whatsapp://send?text=${encodedMsg}`;
+      openWhatsApp({ text: msg });
       // Small delay so browser doesn't block multiple popups
       if (i < dBills.length - 1) await new Promise(r => setTimeout(r, 700));
     }

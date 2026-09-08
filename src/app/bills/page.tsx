@@ -7,6 +7,7 @@ import { cn } from '@/lib/utils';
 import { Bill, getWhatsAppTemplates, getPartyContacts, getSalespersonContacts, findSalespersonContact } from '@/lib/billStore';
 import SalespersonAutoDispatchModal from '@/components/SalespersonAutoDispatchModal';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
+import { openWhatsApp } from '@/lib/whatsapp';
 
 function stripGST(billNo: string) {
   return billNo ? billNo.replace(/^GST[-_]/i, '') : '';
@@ -290,12 +291,7 @@ export default function BillsPage() {
       const contact = findSalespersonContact(bill.salespersonName) || getSalespersonContacts().find(c => (c.name || '').toLowerCase() === (bill.salespersonName || '').toLowerCase());
       mobile = formatMobile(contact?.mobile || '');
     }
-    const encodedMsg = encodeURIComponent(message);
-    if (mobile) {
-      window.location.href = `whatsapp://send?phone=${mobile}&text=${encodedMsg}`;
-    } else {
-      window.location.href = `whatsapp://send?text=${encodedMsg}`;
-    }
+    openWhatsApp({ phone: mobile, text: message });
     setWaPopup(null);
   }
 

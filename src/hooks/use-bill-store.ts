@@ -100,6 +100,16 @@ function readLocal() {
   });
 }
 
+let readLocalScheduled = false;
+function scheduleReadLocal() {
+  if (readLocalScheduled) return;
+  readLocalScheduled = true;
+  requestAnimationFrame(() => {
+    readLocalScheduled = false;
+    readLocal();
+  });
+}
+
 let lastFullSyncTime = 0;
 let deltaCursor: string | null = null;
 let deltaInFlight = false;
@@ -296,7 +306,7 @@ function initSupabaseRealtime(force = false) {
             applyRealtimeBillChange(eventType, mapped);
           }
 
-          readLocal();
+          scheduleReadLocal();
           window.dispatchEvent(new CustomEvent('sync-status', { detail: 'ok' }));
         }
       )
@@ -305,7 +315,7 @@ function initSupabaseRealtime(force = false) {
         { event: '*', schema: 'public', table: 'driver_summaries' },
         (payload) => {
           applyRealtimeTableChange('driver_summaries', payload.eventType as any, payload.new, payload.old);
-          readLocal();
+          scheduleReadLocal();
         }
       )
       .on(
@@ -313,7 +323,7 @@ function initSupabaseRealtime(force = false) {
         { event: '*', schema: 'public', table: 'drivers' },
         (payload) => {
           applyRealtimeTableChange('drivers', payload.eventType as any, payload.new, payload.old);
-          readLocal();
+          scheduleReadLocal();
         }
       )
       .on(
@@ -321,7 +331,7 @@ function initSupabaseRealtime(force = false) {
         { event: '*', schema: 'public', table: 'banks' },
         (payload) => {
           applyRealtimeTableChange('banks', payload.eventType as any, payload.new, payload.old);
-          readLocal();
+          scheduleReadLocal();
         }
       )
       .on(
@@ -329,7 +339,7 @@ function initSupabaseRealtime(force = false) {
         { event: '*', schema: 'public', table: 'contacts' },
         (payload) => {
           applyRealtimeTableChange('contacts', payload.eventType as any, payload.new, payload.old);
-          readLocal();
+          scheduleReadLocal();
         }
       )
       .on(
@@ -337,7 +347,7 @@ function initSupabaseRealtime(force = false) {
         { event: '*', schema: 'public', table: 'settings' },
         (payload) => {
           applyRealtimeTableChange('settings', payload.eventType as any, payload.new, payload.old);
-          readLocal();
+          scheduleReadLocal();
         }
       )
       .subscribe((status, err) => {
@@ -355,8 +365,13 @@ function initSupabaseRealtime(force = false) {
           // Supabase's socket manages its own reconnect if disconnected. Do NOT trigger a loop here.
         } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
           if (!isIntentionallyClosing) {
-            console.warn('[Supabase Realtime] Channel status:', status, err);
-            // Supabase client auto-reconnects under the hood.
+            const errStr = String(err?.message || err || '');
+            if (errStr.includes('heartbeat timeout')) {
+              // Heartbeat timeouts are normal transient network pauses; Supabase socket reconnects automatically.
+              console.debug('[Supabase Realtime] Heartbeat pause, auto-reconnecting...');
+            } else {
+              console.warn('[Supabase Realtime] Channel status:', status, err);
+            }
             // Provide a graceful fallback with exponential backoff if it stays in error state.
             if (navigator.onLine && !realtimeReconnectTimer) {
               reconnectAttempts++;
@@ -386,7 +401,7 @@ const syncChannel = typeof window !== 'undefined' && 'BroadcastChannel' in windo
 if (syncChannel) {
   syncChannel.onmessage = (event) => {
     if (event.data === 'data-updated') {
-      readLocal();
+      scheduleReadLocal();
     }
   };
 }
