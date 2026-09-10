@@ -1,24 +1,29 @@
 /**
  * Centralized, non-blocking WhatsApp opener.
  *
- * CRITICAL PERFORMANCE & STABILITY NOTE:
- * Never use `window.location.href = "whatsapp://..."`.
- * In modern Chromium browsers, assigning `window.location.href` to an external OS scheme
- * stalls the JavaScript event loop, freezes timers, breaks active WebSockets (triggering
- * Supabase Realtime heartbeat timeouts), triggers long task violations (>400ms), and
- * causes third-party browser extensions (content scripts) to crash on invalid DOM contexts.
+ * DIRECT PROTOCOL DISPATCH:
+ * Uses the native `whatsapp://send` protocol to directly launch WhatsApp Desktop (PC/Mac)
+ * or WhatsApp Mobile (Android/iOS) WITHOUT opening default browser tabs.
  *
- * `openWhatsApp` uses the official https://api.whatsapp.com/send URL opened in a new tab/window,
- * which cleanly bridges to WhatsApp Desktop or WhatsApp Web without interrupting or freezing the app.
+ * PERFORMANCE & STABILITY GUARDS:
+ * 1. Never opens `https://api.whatsapp.com/send` in a new tab by default (prevents 10-50 blank tabs & RAM crash).
+ * 2. Never assigns `window.location.href = "whatsapp://..."` directly (which would stall Chromium's event loop).
+ * 3. Dispatches via an isolated, invisible DOM anchor click without `target="_blank"`.
+ * 4. Ensures the web application remains completely smooth, fast, and responsive without freezing ("chipakna").
  */
 
-export function openWhatsApp(phoneOrOptions: string | { phone?: string; text: string }, textMaybe?: string) {
+export function openWhatsApp(
+  phoneOrOptions: string | { phone?: string; text: string; forceWeb?: boolean },
+  textMaybe?: string
+) {
   let phone = '';
   let text = '';
+  let forceWeb = false;
 
   if (typeof phoneOrOptions === 'object' && phoneOrOptions !== null) {
     phone = phoneOrOptions.phone || '';
     text = phoneOrOptions.text || '';
+    forceWeb = !!phoneOrOptions.forceWeb;
   } else {
     phone = phoneOrOptions || '';
     text = textMaybe || '';
@@ -28,23 +33,49 @@ export function openWhatsApp(phoneOrOptions: string | { phone?: string; text: st
   const fullPhone = cleanDigits.length === 10 ? `91${cleanDigits}` : cleanDigits;
   const encoded = encodeURIComponent(text);
 
-  const url = fullPhone
-    ? `https://api.whatsapp.com/send?phone=${fullPhone}&text=${encoded}`
-    : `https://api.whatsapp.com/send?text=${encoded}`;
+  // If forceWeb is explicitly requested (e.g., WhatsApp Web fallback)
+  if (forceWeb) {
+    const webUrl = fullPhone
+      ? `https://web.whatsapp.com/send?phone=${fullPhone}&text=${encoded}`
+      : `https://web.whatsapp.com/send?text=${encoded}`;
+    window.open(webUrl, '_blank', 'noopener,noreferrer');
+    return;
+  }
+
+  // ── DIRECT WHATSAPP APP PROTOCOL (whatsapp://) ──────────────────────────────
+  // Directly opens WhatsApp Desktop on PC or WhatsApp on Mobile.
+  // CRITICAL: Does NOT open browser tabs, prevents Chrome memory bloat & freeze.
+  const appUrl = fullPhone
+    ? `whatsapp://send?phone=${fullPhone}&text=${encoded}`
+    : `whatsapp://send?text=${encoded}`;
 
   try {
-    const opened = window.open(url, '_blank', 'noopener,noreferrer');
-    if (!opened || opened.closed || typeof opened.closed === 'undefined') {
-      // Fallback in case popup blockers intercept window.open
-      const a = document.createElement('a');
-      a.href = url;
-      a.target = '_blank';
-      a.rel = 'noopener noreferrer';
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-    }
+    const a = document.createElement('a');
+    a.href = appUrl;
+    a.style.position = 'fixed';
+    a.style.top = '-9999px';
+    a.style.left = '-9999px';
+    a.style.opacity = '0';
+    a.style.pointerEvents = 'none';
+    
+    // Do NOT set target="_blank" so the browser doesn't open an empty browser tab
+    document.body.appendChild(a);
+    a.click();
+    
+    setTimeout(() => {
+      try {
+        if (a.parentNode) a.parentNode.removeChild(a);
+      } catch {}
+    }, 200);
   } catch (err) {
-    console.warn('[openWhatsApp] Failed to open window:', err);
+    console.warn('[openWhatsApp] Failed to dispatch direct WhatsApp protocol, attempting fallback:', err);
+    try {
+      const fallbackUrl = fullPhone
+        ? `https://api.whatsapp.com/send?phone=${fullPhone}&text=${encoded}`
+        : `https://api.whatsapp.com/send?text=${encoded}`;
+      window.open(fallbackUrl, '_blank', 'noopener,noreferrer');
+    } catch (fallbackErr) {
+      console.error('[openWhatsApp] Fallback error:', fallbackErr);
+    }
   }
 }

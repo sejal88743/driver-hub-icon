@@ -7,6 +7,7 @@ import {
 } from 'lucide-react';
 import { Bill, getSalespersonContacts, findSalespersonContact } from '@/lib/billStore';
 import { getDisplayBillNo } from '@/lib/commissionMoc';
+import { openWhatsApp } from '@/lib/whatsapp';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 
@@ -157,12 +158,7 @@ export default function WhatsAppSalesmanModal({ isOpen, onClose, selectedBills, 
     let cleanPhone = rawPhone.replace(/[^0-9]/g, '');
     if (cleanPhone.length === 10) cleanPhone = `91${cleanPhone}`;
 
-    const encoded = encodeURIComponent(message);
-    const waUrl = cleanPhone 
-      ? `https://api.whatsapp.com/send?phone=${cleanPhone}&text=${encoded}`
-      : `https://api.whatsapp.com/send?text=${encoded}`;
-
-    window.open(waUrl, '_blank');
+    openWhatsApp({ phone: cleanPhone, text: message });
 
     setSentSalespersons(prev => new Set(prev).add(spName));
 

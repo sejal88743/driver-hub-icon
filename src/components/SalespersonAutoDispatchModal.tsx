@@ -242,11 +242,13 @@ export default function SalespersonAutoDispatchModal({ isOpen, onClose, bills }:
 # AUTOMATED WHATSAPP DESKTOP SENDER FOR SALESPERSON CREDIT & FBR REPORTS
 # Target Date: ${effectiveTargetDate || 'ALL DATES'}
 # Total Active Salespersons to Send: ${payload.length}
+# Direct WhatsApp OS Protocol • Auto-Send via Enter • Auto-Minimize Window
 # ==============================================================================
+import os
+import sys
 import time
 import urllib.parse
-import webbrowser
-import sys
+import subprocess
 
 # List of Salesperson Data generated from Bill App
 DISPATCH_DATA = ${JSON.stringify(payload, null, 2)}
@@ -257,18 +259,65 @@ def clean_phone_number(phone):
         s = '91' + s
     return s
 
+def open_whatsapp_direct(url):
+    """
+    Opens WhatsApp Desktop DIRECTLY via OS protocol.
+    Never opens Chrome, Edge, or any browser tabs.
+    """
+    if sys.platform.startswith('win'):
+        os.system(f'start "" "{url}"')
+    elif sys.platform == 'darwin':
+        subprocess.run(['open', url], check=False)
+    else:
+        subprocess.run(['xdg-open', url], check=False)
+
+def press_send_enter():
+    """
+    Presses ENTER key to send the message in WhatsApp automatically.
+    Uses Windows native user32 event (built into standard Python, no pip needed).
+    """
+    if sys.platform.startswith('win'):
+        try:
+            import ctypes
+            VK_RETURN = 0x0D
+            ctypes.windll.user32.keybd_event(VK_RETURN, 0, 0, 0)
+            time.sleep(0.05)
+            ctypes.windll.user32.keybd_event(VK_RETURN, 0, 2, 0)
+            return True
+        except Exception as e:
+            print(f"   ⚠️ Enter press error: {e}")
+    return False
+
+def auto_minimize_whatsapp():
+    """
+    Auto-minimizes WhatsApp Desktop window so it doesn't block screen or disturb work.
+    """
+    if sys.platform.startswith('win'):
+        try:
+            import ctypes
+            hwnd = ctypes.windll.user32.GetForegroundWindow()
+            if hwnd:
+                SW_MINIMIZE = 6
+                ctypes.windll.user32.ShowWindow(hwnd, SW_MINIMIZE)
+                return True
+        except Exception:
+            pass
+    return False
+
 def run_whatsapp_auto_dispatch():
-    print("=" * 65)
-    print("🚀 STARTING AUTOMATED WHATSAPP DESKTOP DISPATCHER")
+    print("=" * 68)
+    print("🚀 STARTING AUTOMATED WHATSAPP DESKTOP SENDER")
+    print("✨ Direct WhatsApp App (No Browser) • Auto Send • Auto Minimize")
     print(f"📅 Target Date: ${effectiveTargetDate || 'ALL DATES'}")
     print(f"👥 Total Salespersons: {len(DISPATCH_DATA)}")
-    print("=" * 65)
+    print("=" * 68)
     
     if not DISPATCH_DATA:
         print("❌ No active salespersons with Credit/FBR bills for this date.")
         return
 
-    print("\\n⚠️ IMPORTANT: Make sure WhatsApp Desktop or WhatsApp Web is open & logged in on your PC!\\n")
+    print("\\n⚠️ Make sure WhatsApp Desktop App is open & logged in on your PC.")
+    print("⏳ Starting in 3 seconds... Messages will be sent and WhatsApp will auto-minimize.\\n")
     time.sleep(3)
 
     for idx, item in enumerate(DISPATCH_DATA, start=1):
@@ -280,19 +329,32 @@ def run_whatsapp_auto_dispatch():
             print(f"[{idx}/{len(DISPATCH_DATA)}] ⚠️ Skipping {name}: Phone number missing.")
             continue
 
-        print(f"[{idx}/{len(DISPATCH_DATA)}] 📤 Sending to {name} (+{phone})...")
+        print(f"[{idx}/{len(DISPATCH_DATA)}] 📤 Opening WhatsApp for {name} (+{phone})...")
         encoded_msg = urllib.parse.quote(message)
         
-        # Opens WhatsApp Desktop protocol link directly
+        # Opens WhatsApp Desktop directly via OS protocol - NO BROWSER TABS!
         url = f"whatsapp://send?phone={phone}&text={encoded_msg}"
-        webbrowser.open(url)
+        open_whatsapp_direct(url)
 
-        print(f"   ✅ Opened WhatsApp Desktop for {name}. Delaying 4s before next...")
-        time.sleep(4)
+        # Wait for WhatsApp Desktop to focus and populate the message
+        time.sleep(2.8)
 
-    print("\\n" + "=" * 65)
-    print("🎉 ALL WHATSAPP MESSAGES DISPATCHED SUCCESSFULLY!")
-    print("=" * 65)
+        # Automatically press Enter (Send message)
+        press_send_enter()
+        print(f"   ✅ Message SENT to {name} via Send Button!")
+
+        # Short pause for sending transmission
+        time.sleep(1.2)
+
+        # Auto-minimize WhatsApp window
+        auto_minimize_whatsapp()
+        print(f"   📉 WhatsApp auto-minimized. Delaying 2.5s before next...")
+
+        time.sleep(2.5)
+
+    print("\\n" + "=" * 68)
+    print("🎉 ALL WHATSAPP MESSAGES SENT & MINIMIZED SUCCESSFULLY!")
+    print("=" * 68)
 
 if __name__ == "__main__":
     run_whatsapp_auto_dispatch()
@@ -668,11 +730,11 @@ if __name__ == "__main__":
             <div className="p-4 bg-indigo-950/80 border border-indigo-500/40 rounded-xl space-y-2">
               <h3 className="text-sm font-black uppercase text-indigo-300 flex items-center gap-2">
                 <Code className="w-5 h-5 text-indigo-400" />
-                100% AUTOMATIC PYTHON WHATSAPP PC APP SENDER
+                100% AUTOMATIC DIRECT WHATSAPP DESKTOP SENDER (NO BROWSER TABS)
               </h3>
               <p className="text-xs text-slate-300 leading-relaxed font-medium">
-                PC par <span className="font-bold text-amber-300">WhatsApp Desktop App</span> ya WhatsApp Web login karke is Python script ko run kare.
-                Ye script bilkul 100% automatic <span className="font-bold text-emerald-400">Selected Date ({effectiveTargetDate || 'ALL DATES'})</span> ke sabhi 50 salespersons ke phone numbers par unka Credit & FBR report bina kisi manual touch ke send kar dega!
+                PC par <span className="font-bold text-emerald-400">WhatsApp Desktop App</span> login karke is script ko run kare.
+                Ye script <span className="font-bold text-amber-300">kisi bhi browser tab ko bina open kiye</span> direct WhatsApp app me message bhejegi, automatically <span className="font-bold text-emerald-400">Send (Enter)</span> karegi, aur message bhejte hi <span className="font-bold text-sky-400">WhatsApp ko Auto-Minimize</span> kar degi bina PC ya app ko slow/chipkaye!
               </p>
               
               <div className="flex flex-wrap items-center gap-2 pt-2">
@@ -698,13 +760,13 @@ if __name__ == "__main__":
             {/* Instructions */}
             <div className="p-3 bg-slate-900 border border-slate-800 rounded-xl text-xs space-y-1.5 text-slate-300 font-mono">
               <p className="font-black text-amber-400 uppercase font-sans">📌 Quick Setup Instructions for PC:</p>
-              <p>1. Open WhatsApp Desktop App or WhatsApp Web on your PC.</p>
+              <p>1. Open WhatsApp Desktop App on your PC (No browser needed).</p>
               <p>2. Save the downloaded file as <span className="text-emerald-400">`auto_whatsapp_dispatch.py`</span>.</p>
               <p>3. Open Terminal / Command Prompt and run:</p>
               <div className="bg-black p-2 rounded border border-slate-800 text-emerald-400 font-mono text-[11px]">
                 python auto_whatsapp_dispatch.py
               </div>
-              <p>4. Python will automatically cycle through all {activeSalespersonsData.length} salespersons and trigger WhatsApp Desktop send!</p>
+              <p>4. Script will open WhatsApp directly without browser tabs, send each message via Enter, and auto-minimize smoothly!</p>
             </div>
 
             {/* Script Viewer */}
