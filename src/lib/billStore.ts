@@ -108,6 +108,8 @@ export type Bill = {
   editHistory?: BillEditEntry[];
   /** Last edit stamp: "DD/MM/YYYY HH:MM" */
   editDate?: string;
+  /** ISO timestamp of last update (from Supabase updated_at) */
+  updatedAt?: string;
   /** Last non-owner (user/driver) who touched the bill */
   user?: string;
   /** Last owner who touched the bill */
@@ -1960,6 +1962,7 @@ export async function patchBillInMemory(billNo: string, patch: Partial<Bill>): P
         changes: Object.keys(patch).map(k => `${k}=${String((patch as Record<string, unknown>)[k] ?? '')}`).join(' | '),
       }),
       editDate: `${nowDMY()} ${nowHM()}`,
+      updatedAt: new Date().toISOString(),
     };
   }
   const nextBills = [..._bills];
@@ -2012,6 +2015,7 @@ export async function patchBillsInMemory(patches: Array<{ billNo: string; patch:
         changes: Object.keys(patch).map(k => `${k}=${String((patch as Record<string, unknown>)[k] ?? '')}`).join(' | '),
       }),
       editDate: `${nowDMY()} ${nowHM()}`,
+      updatedAt: new Date().toISOString(),
     };
     _bills[idx] = { ..._bills[idx], ...withHist };
     toSync.push({ id: _bills[idx].id, patch: withHist, billNo });
@@ -2325,6 +2329,9 @@ export async function patchBillDirect(billNo: string, patch: Partial<Bill>): Pro
   const normBillNo = (billNo || '').trim().toUpperCase();
   const idx = _bills.findIndex(b => getBillDedupeKey(b) === targetKey || b.id === billNo || (b.billNo || '').trim().toUpperCase() === normBillNo);
   if (idx === -1) return false;
+  if (!('updatedAt' in patch) || !patch.updatedAt) {
+    patch = { ...patch, updatedAt: new Date().toISOString() };
+  }
   _bills[idx] = { ..._bills[idx], ...patch };
   dispatchUpdate();
   persistLocalState(true);
@@ -2653,6 +2660,7 @@ export async function savePayment(
     ].filter(Boolean).join(' | '),
   });
   patch.editDate = `${nowDMY()} ${nowHM()}`;
+  patch.updatedAt = new Date().toISOString();
   {
     const actor = currentActor(effectiveEnteredBy || undefined);
     if (actor.role === 'owner') patch.owner = actor.by;
