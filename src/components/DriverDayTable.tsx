@@ -318,20 +318,34 @@ export default function DriverDayTable({ bills, selectedDriver, displayDate, onS
     }
 
     // Unified sort for OWNER, User, and driver views
+    // Default: most recently updated/entered bills appear at the top.
     result.sort((a, b) => {
       if (sort.key === 'paymentDate') {
         const da = parseDDMMYYYY(String(a.paymentDate || ''));
         const db = parseDDMMYYYY(String(b.paymentDate || ''));
         if (da !== db) return sort.direction === 'asc' ? da - db : db - da;
-        // Secondary: paymentTime
+        // Secondary: most recent update, then paymentTime
+        const ua = updatedAtMs(a);
+        const ub = updatedAtMs(b);
+        if (ua !== ub) return ub - ua;
         const ta = String(a.paymentTime || '');
         const tb = String(b.paymentTime || '');
         return sort.direction === 'asc' ? ta.localeCompare(tb) : tb.localeCompare(ta);
       }
       const va = sort.key === 'diff' ? (a.billNetAmt - (a.collectedAmount || 0)) : (a[sort.key as keyof Bill] || '');
       const vb = sort.key === 'diff' ? (b.billNetAmt - (b.collectedAmount || 0)) : (b[sort.key as keyof Bill] || '');
-      if (typeof va === 'number' && typeof vb === 'number') return sort.direction === 'asc' ? va - vb : vb - va;
-      return sort.direction === 'asc' ? String(va).localeCompare(String(vb)) : String(vb).localeCompare(String(va));
+      let primary = 0;
+      if (typeof va === 'number' && typeof vb === 'number') {
+        primary = sort.direction === 'asc' ? va - vb : vb - va;
+      } else {
+        primary = sort.direction === 'asc' ? String(va).localeCompare(String(vb)) : String(vb).localeCompare(String(va));
+      }
+      if (primary !== 0) return primary;
+      // Tie-break: most recent update first, then paymentTime descending
+      const ua = updatedAtMs(a);
+      const ub = updatedAtMs(b);
+      if (ua !== ub) return ub - ua;
+      return String(b.paymentTime || '').localeCompare(String(a.paymentTime || ''));
     });
 
     // ── Group bills sharing the same Cheque Number together contiguously ──
