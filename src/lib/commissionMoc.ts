@@ -183,20 +183,31 @@ export function getDisplayBillNo(b: any): string {
   return b.billNo || '';
 }
 
-export function hasMocEntries(moc: CommissionMoc, customBills?: any[]): boolean {
-  if (!moc) return false;
-  let allBills: any[] = [];
+export function resolveBillsList(customBills?: any[]): any[] {
   if (Array.isArray(customBills) && customBills.length > 0) {
-    allBills = customBills;
-  } else if (typeof window !== 'undefined') {
+    return customBills;
+  }
+  if (typeof window !== 'undefined') {
+    try {
+      if (typeof (window as any).__VT_GET_BILLS__ === 'function') {
+        const live = (window as any).__VT_GET_BILLS__();
+        if (Array.isArray(live) && live.length > 0) return live;
+      }
+    } catch {}
     try {
       const raw = localStorage.getItem('vt_cached_bills_v2');
       if (raw) {
         const parsed = JSON.parse(raw);
-        if (Array.isArray(parsed)) allBills = parsed;
+        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
       }
     } catch {}
   }
+  return [];
+}
+
+export function hasMocEntries(moc: CommissionMoc, customBills?: any[]): boolean {
+  if (!moc) return false;
+  const allBills = resolveBillsList(customBills);
 
   if (allBills.length === 0) return false;
   const mocNum = extractMocNumber(moc.code);
@@ -273,18 +284,7 @@ export function isBillMatchingMocCode(b: any, targetCode: string): boolean {
 }
 
 export function getMocEntries(mocCodeOrNum: string, customBills?: any[]): any[] {
-  let allBills: any[] = [];
-  if (Array.isArray(customBills) && customBills.length > 0) {
-    allBills = customBills;
-  } else if (typeof window !== 'undefined') {
-    try {
-      const raw = localStorage.getItem('vt_cached_bills_v2');
-      if (raw) {
-        const parsed = JSON.parse(raw);
-        if (Array.isArray(parsed)) allBills = parsed;
-      }
-    } catch {}
-  }
+  const allBills = resolveBillsList(customBills);
   return allBills.filter(b => {
     if (!b) return false;
     const isSaved = (Number(b.collectedAmount) || 0) > 0 || (Number(b.cashAmount) || 0) > 0 || (Number(b.upiAmount) || 0) > 0 || (Number(b.chequeAmount) || 0) > 0 || (!!b.paymentDate && b.paymentDate.trim() !== '' && b.paymentDate !== '—');
@@ -294,18 +294,7 @@ export function getMocEntries(mocCodeOrNum: string, customBills?: any[]): any[] 
 
 export function getNextMocSrNo(mocCodeOrNum: string, customBills?: any[]): number {
   const mocNum = extractMocNumber(mocCodeOrNum) || '1';
-  let allBills: any[] = [];
-  if (Array.isArray(customBills) && customBills.length > 0) {
-    allBills = customBills;
-  } else if (typeof window !== 'undefined') {
-    try {
-      const raw = localStorage.getItem('vt_cached_bills_v2');
-      if (raw) {
-        const parsed = JSON.parse(raw);
-        if (Array.isArray(parsed)) allBills = parsed;
-      }
-    } catch {}
-  }
+  const allBills = resolveBillsList(customBills);
 
   const usedSrNumbers = new Set<number>();
   for (const b of allBills) {

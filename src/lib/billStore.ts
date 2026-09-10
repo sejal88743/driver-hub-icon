@@ -293,43 +293,82 @@ export function persistLocalState(immediate = false) {
   }, 200);
 }
 
+let _hasLoggedQuotaWarning = false;
+
+/**
+ * Safely writes to localStorage without throwing QuotaExceededError or stalling the event loop.
+ */
+function safeSetLocalStorage(key: string, val: string): boolean {
+  if (typeof window === 'undefined') return false;
+  try {
+    localStorage.setItem(key, val);
+    return true;
+  } catch (err: any) {
+    const isQuota =
+      err?.name === 'QuotaExceededError' ||
+      err?.name === 'NS_ERROR_DOM_QUOTA_REACHED' ||
+      err?.code === 22 ||
+      err?.code === 1014;
+
+    if (isQuota && !_hasLoggedQuotaWarning) {
+      _hasLoggedQuotaWarning = true;
+      console.info('[billStore] localStorage quota reached. Using IndexedDB for full database storage.');
+    }
+    return false;
+  }
+}
+
 function doPersistLocalState() {
   const idbPayload: Record<string, any> = {};
-  try {
-    idbPayload['cached_bills_full'] = _bills;
-    if (_bills.length > 0) {
-      localStorage.setItem(LS_BILLS_KEY, JSON.stringify(_bills.slice(0, 400)));
+
+  // 1. IndexedDB always stores 100% of all data with zero quota limitations
+  idbPayload['cached_bills_full'] = _bills;
+  idbPayload['cached_drivers'] = _drivers;
+  idbPayload['cached_banks'] = _banks;
+  idbPayload['cached_summaries'] = _summaries;
+  idbPayload['cached_party_contacts'] = _partyContacts;
+  idbPayload['cached_salesperson_contacts'] = _salespersonContacts;
+
+  // 2. Micro-cache for fast initial-render in localStorage (top recent bills only, stripped of bulky history)
+  if (_bills.length > 0) {
+    // Top 60 bills without heavy edit logs is only ~15KB
+    const lightBills = _bills.slice(0, 60).map(b => {
+      const { editHistory, delPendingHistory, ...rest } = b;
+      return rest;
+    });
+    const saved = safeSetLocalStorage(LS_BILLS_KEY, JSON.stringify(lightBills));
+    if (!saved) {
+      // If quota is tight, fallback to ultra-compact 15 bills
+      const tinyBills = _bills.slice(0, 15).map(b => {
+        const { editHistory, delPendingHistory, ...rest } = b;
+        return rest;
+      });
+      const savedTiny = safeSetLocalStorage(LS_BILLS_KEY, JSON.stringify(tinyBills));
+      if (!savedTiny) {
+        // If localStorage is completely full, remove the bills key to guarantee space for drivers/settings
+        try { localStorage.removeItem(LS_BILLS_KEY); } catch {}
+      }
     }
-    idbPayload['cached_drivers'] = _drivers;
-    if (_drivers.length > 0) {
-      localStorage.setItem(LS_DRIVERS_KEY, JSON.stringify(_drivers));
-    }
-    idbPayload['cached_banks'] = _banks;
-    if (_banks.length > 0) {
-      localStorage.setItem(LS_BANKS_KEY, JSON.stringify(_banks));
-    }
-    idbPayload['cached_summaries'] = _summaries;
-    if (_summaries.length > 0) {
-      localStorage.setItem(LS_SUMMARIES_KEY, JSON.stringify(_summaries));
-    }
-    idbPayload['cached_party_contacts'] = _partyContacts;
-    if (_partyContacts.length > 0) {
-      localStorage.setItem(LS_PARTY_CONTACTS_KEY, JSON.stringify(_partyContacts));
-    }
-    idbPayload['cached_salesperson_contacts'] = _salespersonContacts;
-    if (_salespersonContacts.length > 0) {
-      localStorage.setItem(LS_SALESPERSON_CONTACTS_KEY, JSON.stringify(_salespersonContacts));
-    }
-  } catch (err) {
-    console.warn('[billStore] localStorage quota limit, offloading to IndexedDB', err);
-    idbPayload['cached_bills_full'] = _bills;
-    idbPayload['cached_salesperson_contacts'] = _salespersonContacts;
-    idbPayload['cached_party_contacts'] = _partyContacts;
-    idbPayload['cached_drivers'] = _drivers;
-    idbPayload['cached_banks'] = _banks;
-    idbPayload['cached_summaries'] = _summaries;
   }
 
+  // 3. Save critical metadata entities independently so one never blocks another
+  if (_drivers.length > 0) {
+    safeSetLocalStorage(LS_DRIVERS_KEY, JSON.stringify(_drivers));
+  }
+  if (_banks.length > 0) {
+    safeSetLocalStorage(LS_BANKS_KEY, JSON.stringify(_banks));
+  }
+  if (_summaries.length > 0) {
+    safeSetLocalStorage(LS_SUMMARIES_KEY, JSON.stringify(_summaries));
+  }
+  if (_partyContacts.length > 0) {
+    safeSetLocalStorage(LS_PARTY_CONTACTS_KEY, JSON.stringify(_partyContacts));
+  }
+  if (_salespersonContacts.length > 0) {
+    safeSetLocalStorage(LS_SALESPERSON_CONTACTS_KEY, JSON.stringify(_salespersonContacts));
+  }
+
+  // 4. Commit to IndexedDB asynchronously
   if (Object.keys(idbPayload).length > 0) {
     idbSetMany(idbPayload).catch(() => {});
   }
@@ -345,6 +384,13 @@ let _salespersonContacts: Contact[] = [];
 
 // Hydrate state synchronously from localStorage on startup
 if (typeof window !== 'undefined') {
+  try {
+    // Free up space by removing obsolete legacy cache keys if present
+    localStorage.removeItem('vt_cached_bills');
+    localStorage.removeItem('vitratrack_cached_bills');
+  } catch {}
+  (window as any).__VT_GET_BILLS__ = () => _bills;
+
   try {
     const rawBills = localStorage.getItem(LS_BILLS_KEY);
     if (rawBills) {
@@ -722,7 +768,7 @@ export function applyRealtimeBillChange(
   }
 
   dispatchUpdate();
-  persistLocalState(true);
+  persistLocalState();
 }
 
 export function applyRealtimeTableChange(

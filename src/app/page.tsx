@@ -24,7 +24,7 @@ import ResetPwModal from '@/components/ResetPwModal';
 import BillDetailsModal from '@/components/BillDetailsModal';
 import LineCutPopup from '@/components/LineCutPopup';
 import OverflowModal from '@/components/OverflowModal';
-import { getTodayISO, getTodayDMY, isoToDisplay, displayToIso } from '@/lib/dateUtils';
+import { getTodayISO, getTodayDMY, isoToDisplay, displayToIso, calculateDaysBetween } from '@/lib/dateUtils';
 import { openWhatsApp } from '@/lib/whatsapp';
 
 // Line-cut amounts are sometimes entered as a quick sum, e.g. "100+128+335".
@@ -2393,32 +2393,38 @@ export default function Dashboard() {
       const dueDays = calculateBillDueDays(b.deliveryDate || b.date);
       return `*PAYMENT  PENDING ALERT*
 ━━━━━━━━━━━━━━━━━━━━
-👤 Salesperson: ${salespersonName}
-🏢 Party: ${partyName}
-📄 Bill No: ${billNo}
-🚚 Driver: ${driverName}
-📅 Del Date: ${delDate}
-💰 Bill Net Amt: ₹${billAmt.toLocaleString('en-IN')}
+*👤 Salesperson:* *${salespersonName}*
+*🏢 Party:* *${partyName}*
+*📄 Bill No:* *${billNo}*
+*🚚 Driver:* *${driverName}*
+*📅 Del Date:* *${delDate}*
+*💰 Bill Net Amt:* *₹${billAmt.toLocaleString('en-IN')}*
 *DUE DAYS= ${dueDays} Days*
-📌 Status: CREDIT
+*📌 Status: CREDIT*
 ━━━━━━━━━━━━━━━━━━━━
-Kripya party se is bill ka payment collection coordinate karein.`;
+*Kripya party se is bill ka payment collection coordinate karein.*`;
     }
 
     if (isPaid) {
-      return `🔔 VitraTrack - REC PAYMENT 
+      const rawBillDate = b.date || b.deliveryDate || '';
+      const billDateDisp = isoToDisplay(rawBillDate) || rawBillDate || delDate;
+      const paidDays = calculateDaysBetween(rawBillDate || b.deliveryDate || b.date, effectiveRec);
+
+      return `*🔔 VitraTrack - REC PAYMENT*
 ━━━━━━━━━━━━━━━━━━━━
-👤 Salesperson: ${salespersonName}
-🏢 Party: ${partyName}
-📄 Bill No: ${billNo}
-🚚 Driver: ${driverName}
-📅 Del Date: ${delDate}
-🗓️ Rec Date: ${effectiveRec}
-💰 Bill Net Amt: ₹${billAmt.toLocaleString('en-IN')}
-📉 Line Cut: ₹${lineCut.toLocaleString('en-IN')}
-💵 Collected Amt: ₹${collected.toLocaleString('en-IN')}
-⚠️ Pending Amt: ₹${pendingAmt.toLocaleString('en-IN')}
-📌 *Status: PAID*`;
+*👤 Salesperson:* *${salespersonName}*
+*🏢 Party:* *${partyName}*
+*📄 Bill No:* *${billNo}*
+*🚚 Driver:* *${driverName}*
+*📅 Bill Date:* *${billDateDisp}*
+*🗓️ Rec Date:* *${effectiveRec}*
+*⏳ DAYS = ${paidDays} Days (BILL DATE - REC DATE)*
+*💰 Bill Net Amt:* *₹${billAmt.toLocaleString('en-IN')}*
+*📉 Line Cut:* *₹${lineCut.toLocaleString('en-IN')}*
+*💵 Collected Amt:* *₹${collected.toLocaleString('en-IN')}*
+*⚠️ Pending Amt:* *₹${pendingAmt.toLocaleString('en-IN')}*
+*📌 Status: PAID*
+━━━━━━━━━━━━━━━━━━━━`;
     }
 
     // Default / FBR / Del Pending fallback
@@ -2426,16 +2432,16 @@ Kripya party se is bill ka payment collection coordinate karein.`;
     const modeUpper = (currentMode || 'PENDING').toUpperCase();
     return `*PAYMENT  PENDING ALERT*
 ━━━━━━━━━━━━━━━━━━━━
-👤 Salesperson: ${salespersonName}
-🏢 Party: ${partyName}
-📄 Bill No: ${billNo}
-🚚 Driver: ${driverName}
-📅 Del Date: ${delDate}
-💰 Bill Net Amt: ₹${billAmt.toLocaleString('en-IN')}
+*👤 Salesperson:* *${salespersonName}*
+*🏢 Party:* *${partyName}*
+*📄 Bill No:* *${billNo}*
+*🚚 Driver:* *${driverName}*
+*📅 Del Date:* *${delDate}*
+*💰 Bill Net Amt:* *₹${billAmt.toLocaleString('en-IN')}*
 *DUE DAYS= ${dueDays} Days*
-📌 Status: ${modeUpper}
+*📌 Status: ${modeUpper}*
 ━━━━━━━━━━━━━━━━━━━━
-Kripya party se is bill ka payment collection coordinate karein.`;
+*Kripya party se is bill ka payment collection coordinate karein.*`;
   }, [selectedBill, selectedDriver, lcInputVal, cashAmt, upiAmt, chqAmt, paymentMode, recDateOverride, recDateInput]);
 
   // ── WhatsApp Direct Reminder to Salesperson ─────────────────────────────────
@@ -3049,7 +3055,7 @@ Kripya party se is bill ka payment collection coordinate karein.`;
                     <button key={bn} ref={isHighlighted ? highlightedItemRef : null} onClick={() => handleBillSelect(bn)} className={cn("w-full text-left p-2.5 border-b border-border/30 last:border-0 transition-colors flex items-center justify-between gap-2.5", rowBg)}>
                       {/* Left Side: Row 1 & Row 2 */}
                       <div className="flex-1 min-w-0 flex flex-col gap-1.5">
-                        {/* 1st ROW: BILL NO, PARTY NAME, DRIVER NAME, DEL DATE (FONT BOLD 12PX) */}
+                        {/* 1st ROW: BILL NO, PARTY NAME, DEL DATE, DRIVER NAME (FONT BOLD 12PX) */}
                         <div className="flex items-center gap-2 flex-wrap leading-tight text-[12px] font-bold">
                           <span className={cn("text-[12px] font-black uppercase tracking-wide shrink-0", isHighlighted ? "text-primary-foreground" : "text-primary")}>{bn}</span>
                           {b?.partyName && (
@@ -3062,14 +3068,14 @@ Kripya party se is bill ka payment collection coordinate karein.`;
                               {b.partyName}
                             </span>
                           )}
+                          {(b?.deliveryDate || b?.date) && (
+                            <span className={cn("text-[12px] font-bold px-1.5 py-0.5 rounded-md shrink-0", isHighlighted ? "bg-white/20 text-white" : "bg-slate-100 text-slate-900 border border-slate-300")}>
+                              📅 DEL: {b?.deliveryDate || b?.date}
+                            </span>
+                          )}
                           {b?.driverName && (
                             <span className={cn("text-[12px] font-bold uppercase px-1.5 py-0.5 rounded-md shrink-0", isHighlighted ? "bg-white/20 text-white" : "bg-amber-100 text-amber-950 border border-amber-300")}>
                               🚗 {b.driverName}
-                            </span>
-                          )}
-                          {b?.deliveryDate && (
-                            <span className={cn("text-[12px] font-bold px-1.5 py-0.5 rounded-md shrink-0", isHighlighted ? "bg-white/20 text-white" : "bg-slate-100 text-slate-900 border border-slate-300")}>
-                              📅 DEL: {b.deliveryDate}
                             </span>
                           )}
                         </div>
@@ -3203,11 +3209,17 @@ Kripya party se is bill ka payment collection coordinate karein.`;
               {/* ── Bill Info Card ── */}
               <div className={cn("bg-card border border-border rounded-2xl p-3 sm:p-4 shadow-sm space-y-2.5", isDriverMode && "p-2 rounded-xl space-y-1.5")}>
 
-                {/* ── Row 1: Bill No + Party Name + Status Badge ── */}
+                {/* ── Row 1: Bill No + Party Name + Delivery Date + Status Badge ── */}
                 <div className="flex flex-wrap items-center justify-between gap-1.5 border-b border-border/40 pb-1.5">
                   <div className="flex items-center gap-2 flex-wrap min-w-0">
                     <span className={cn("text-[22px] sm:text-[25px] font-black text-primary uppercase tracking-wider", isDriverMode && "text-[18px] sm:text-[20px]")}>{selectedBill.billNo}</span>
                     <span className={cn("text-[17px] sm:text-[19px] font-black text-foreground uppercase", isDriverMode && "text-[13px] sm:text-[14px]")}>{selectedBill.partyName}</span>
+                    {(selectedBill.deliveryDate || selectedBill.date) && (
+                      <div className={cn("flex items-center bg-amber-100 dark:bg-amber-950/70 border border-amber-300 dark:border-amber-700 text-amber-950 dark:text-amber-200 px-2.5 py-1 rounded-xl shadow-xs shrink-0", isDriverMode && "px-2 py-0.5 rounded-lg text-[10px]")}>
+                        <span className="text-[9px] font-black uppercase text-amber-800 dark:text-amber-300 mr-1">DEL DATE:</span>
+                        <span className={cn("text-[14px] font-black", isDriverMode && "text-[11px]")}>{selectedBill.deliveryDate || selectedBill.date}</span>
+                      </div>
+                    )}
                   </div>
                   <div className="flex items-center gap-1.5 shrink-0">
                     <span className={cn("text-[14px] font-bold text-amber-950 dark:text-amber-200 bg-amber-100 dark:bg-amber-950/70 border border-amber-300 dark:border-amber-700 px-2.5 py-1 rounded-xl shadow-xs shrink-0 whitespace-nowrap", isDriverMode && "text-[10.5px] px-1.5 py-0.5 rounded-lg font-black")}>
@@ -3249,11 +3261,11 @@ Kripya party se is bill ka payment collection coordinate karein.`;
                     </div>
                   )}
 
-                  {/* BILL DATE */}
-                  {(selectedBill.date || selectedBill.deliveryDate) && (
+                  {/* BILL DATE (if available and different from Del Date) */}
+                  {selectedBill.date && selectedBill.date !== (selectedBill.deliveryDate || '') && (
                     <div className={cn("flex items-center bg-slate-100 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 text-slate-800 dark:text-slate-200 px-2.5 py-1.5 rounded-xl shadow-xs", isDriverMode && "px-2 py-0.5 rounded-lg text-[10px]")}>
-                      <span className="text-[9px] font-black uppercase text-slate-500 dark:text-slate-400 mr-1">BILL:</span>
-                      <span className={cn("text-[14px] font-bold", isDriverMode && "text-[11px] font-black")}>{selectedBill.date || selectedBill.deliveryDate}</span>
+                      <span className="text-[9px] font-black uppercase text-slate-500 dark:text-slate-400 mr-1">BILL DATE:</span>
+                      <span className={cn("text-[14px] font-bold", isDriverMode && "text-[11px] font-black")}>{selectedBill.date}</span>
                     </div>
                   )}
 

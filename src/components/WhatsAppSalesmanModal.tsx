@@ -8,6 +8,7 @@ import {
 import { Bill, getSalespersonContacts, findSalespersonContact } from '@/lib/billStore';
 import { getDisplayBillNo } from '@/lib/commissionMoc';
 import { openWhatsApp } from '@/lib/whatsapp';
+import { calculateDaysBetween, isoToDisplay } from '@/lib/dateUtils';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 
@@ -52,36 +53,40 @@ function buildSalesmanPaidMessage(salesperson: string, bills: Bill[], displayDat
       lineCut = billAmt - recAmt;
     }
 
+    const rawBillDate = b.date || b.deliveryDate || '';
+    const billDate = isoToDisplay(rawBillDate) || rawBillDate || '-';
     const recDate = b.paymentDate || displayDate || '-';
+    const days = calculateDaysBetween(rawBillDate, recDate);
     const status = 'PAID';
 
     totalBillAmt += billAmt;
     totalRecAmt += recAmt;
     totalLineCut += lineCut;
 
-    // Requested format: BILL NO - BILL AMT - REC AMT - LINE CUT - REC DATE - PAID
-    let line = `${idx + 1}. ${billNo} - ₹${billAmt.toLocaleString('en-IN')} - ₹${recAmt.toLocaleString('en-IN')} - ₹${lineCut.toLocaleString('en-IN')} - ${recDate} - ${status}`;
+    // Requested format: BILL NO - BILL AMT - REC AMT - LINE CUT - REC DATE - DAYS - PAID (BOLD)
+    let line = `*${idx + 1}. ${billNo} - ₹${billAmt.toLocaleString('en-IN')} - ₹${recAmt.toLocaleString('en-IN')} - ₹${lineCut.toLocaleString('en-IN')} - ${recDate} - ${days} Days - ${status}*`;
     if (b.partyName) {
-      line += `\n   Party: ${b.partyName.trim()}`;
+      line += `\n   *🏢 Party:* *${b.partyName.trim()}*`;
     }
+    line += `\n   *📅 Bill Date:* *${billDate}* | *🗓️ Rec Date:* *${recDate}* | *⏳ Days:* *${days} Days (BILL DATE - REC DATE)*`;
     return line;
   });
 
   let msg = `*PAID BILLS COLLECTION REPORT*\n`;
-  msg += `👤 *Salesman:* ${salesperson.toUpperCase()}\n`;
-  msg += `📅 *Date:* ${displayDate}\n`;
+  msg += `*👤 Salesman:* *${salesperson.toUpperCase()}*\n`;
+  msg += `*📅 Date:* *${displayDate}*\n`;
   msg += `─────────────────────────\n`;
-  msg += `*BILL NO - BILL AMT - REC AMT - LINE CUT - REC DATE - PAID*\n`;
+  msg += `*BILL NO - BILL AMT - REC AMT - LINE CUT - REC DATE - DAYS - PAID*\n`;
   msg += `─────────────────────────\n`;
   msg += lines.join('\n\n') + '\n';
   msg += `─────────────────────────\n`;
-  msg += `📦 *Total Paid Bills:* ${bills.length}\n`;
-  msg += `💰 *Total Bill Amt:* ₹${totalBillAmt.toLocaleString('en-IN')}\n`;
-  msg += `💵 *Total Rec Amt:* ₹${totalRecAmt.toLocaleString('en-IN')}\n`;
+  msg += `*📦 Total Paid Bills:* *${bills.length}*\n`;
+  msg += `*💰 Total Bill Amt:* *₹${totalBillAmt.toLocaleString('en-IN')}*\n`;
+  msg += `*💵 Total Rec Amt:* *₹${totalRecAmt.toLocaleString('en-IN')}*\n`;
   if (totalLineCut > 0) {
-    msg += `✂️ *Total Line Cut:* ₹${totalLineCut.toLocaleString('en-IN')}\n`;
+    msg += `*✂️ Total Line Cut:* *₹${totalLineCut.toLocaleString('en-IN')}*\n`;
   }
-  msg += `\n_Generated via VitraTrack Driver Hub_`;
+  msg += `\n*_Generated via VitraTrack Driver Hub_*`;
 
   return {
     message: msg,
@@ -307,6 +312,7 @@ export default function WhatsAppSalesmanModal({ isOpen, onClose, selectedBills, 
                         <th className="px-2 py-1.5 text-right">Rec Amt</th>
                         <th className="px-2 py-1.5 text-right">Line Cut</th>
                         <th className="px-2 py-1.5 text-center">Rec Date</th>
+                        <th className="px-2 py-1.5 text-center">Days</th>
                         <th className="px-2 py-1.5 text-center">Status</th>
                       </tr>
                     </thead>
@@ -317,6 +323,8 @@ export default function WhatsAppSalesmanModal({ isOpen, onClose, selectedBills, 
                         const rec = (eff.cash + eff.upi + eff.chq) > 0 ? (eff.cash + eff.upi + eff.chq) : (Number(b.collectedAmount) || 0);
                         const lc = (b.lineCutAmt || 0) > 0 ? b.lineCutAmt! : (b.billNetAmt > rec && rec > 0 ? b.billNetAmt - rec : 0);
                         const date = b.paymentDate || displayDate || '-';
+                        const rawBillDate = b.date || b.deliveryDate || '';
+                        const days = calculateDaysBetween(rawBillDate, date);
                         return (
                           <tr key={b.id || b.billNo} className="hover:bg-muted/30">
                             <td className="px-2 py-1 text-muted-foreground">{bIdx + 1}</td>
@@ -326,6 +334,7 @@ export default function WhatsAppSalesmanModal({ isOpen, onClose, selectedBills, 
                             <td className="px-2 py-1 text-right text-emerald-600 font-bold">₹{rec.toLocaleString('en-IN')}</td>
                             <td className="px-2 py-1 text-right text-destructive">₹{lc.toLocaleString('en-IN')}</td>
                             <td className="px-2 py-1 text-center text-muted-foreground">{date}</td>
+                            <td className="px-2 py-1 text-center font-bold text-amber-600 dark:text-amber-400">{days}d</td>
                             <td className="px-2 py-1 text-center">
                               <span className="bg-emerald-100 text-emerald-800 dark:bg-emerald-900/60 dark:text-emerald-200 px-1.5 py-0.5 rounded text-[9px] font-black">
                                 PAID

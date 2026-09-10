@@ -198,3 +198,26 @@ export function excelSerialToDate(serial: number | string | Date | unknown): str
 
   return '';
 }
+
+/**
+ * Calculates the number of calendar days between two dates.
+ * Handles DD/MM/YYYY, YYYY-MM-DD, ISO formats, etc.
+ * Example: 06/09/2026 to 10/09/2026 -> 4 days.
+ */
+export function calculateDaysBetween(date1?: string | null, date2?: string | null): number {
+  if (!date1 || !date2) return 0;
+  const iso1 = displayToIso(date1);
+  const iso2 = displayToIso(date2);
+  if (!iso1 || !iso2) return 0;
+
+  const p1 = iso1.split('-').map(Number);
+  const p2 = iso2.split('-').map(Number);
+  if (p1.length !== 3 || p2.length !== 3) return 0;
+
+  const dt1 = new Date(p1[0], p1[1] - 1, p1[2]);
+  const dt2 = new Date(p2[0], p2[1] - 1, p2[2]);
+  if (isNaN(dt1.getTime()) || isNaN(dt2.getTime())) return 0;
+
+  const diffMs = Math.abs(dt2.getTime() - dt1.getTime());
+  return Math.round(diffMs / (1000 * 60 * 60 * 24));
+}
