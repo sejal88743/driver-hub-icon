@@ -165,6 +165,7 @@ export function mapBillFromSupabase(row: Record<string, unknown>): Bill {
     partPayments:       (row.partPayments ?? row.part_payments) as Bill['partPayments'],
     editHistory:        (row.editHistory ?? row.edit_history) as Bill['editHistory'],
     editDate:           o(row.editDate ?? row.edit_date),
+    updatedAt:          o(row.updated_at ?? row.updatedAt),
     user:               o(row.user),
     owner:              o(row.owner),
   };
@@ -213,7 +214,9 @@ function billToSupabase(b: Partial<Bill>): Record<string, unknown> {
   if ('owner'             in b) out.owner               = b.owner ?? null;
 
   // Always stamp updated_at so all devices detect real-time incremental changes instantly
-  out.updated_at = new Date().toISOString();
+  if ('updatedAt' in b && b.updatedAt) out.updated_at = b.updatedAt;
+  else out.updated_at = new Date().toISOString();
+
 
   return cleanRowForSupabase(out);
 }

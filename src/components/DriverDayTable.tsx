@@ -33,6 +33,13 @@ function parseDDMMYYYY(d: string): number {
   return Number(`${yyyy}${mm}${dd}`);
 }
 
+function updatedAtMs(b: Bill): number {
+  const raw = b.updatedAt;
+  if (!raw) return 0;
+  const n = new Date(raw).getTime();
+  return Number.isNaN(n) ? 0 : n;
+}
+
 function getEffectiveAmounts(b: Bill) {
   const cash = Number(b.cashAmount) || 0;
   const upi  = Number(b.upiAmount)  || 0;
@@ -49,10 +56,10 @@ function getEffectiveAmounts(b: Bill) {
 
 export default function DriverDayTable({ bills, selectedDriver, displayDate, onSelectBill, ownerSavedBillNos, isDriverMode, selectedDriverIsOwnerOrUser, enteredByFilter }: Props) {
   const isOwnerRole = (() => { try { return getRole() === 'owner'; } catch { return false; } })();
-  const [sort, setSort] = useState<SortConfig>({ key: 'paymentDate', direction: 'desc' });
+  const [sort, setSort] = useState<SortConfig>({ key: 'updatedAt', direction: 'desc' });
 
   useEffect(() => {
-    setSort({ key: 'paymentDate', direction: 'desc' });
+    setSort({ key: 'updatedAt', direction: 'desc' });
   }, [selectedDriver]);
   const [showCalculator, setShowCalculator] = useState(false);
   const [calcSaved, setCalcSaved] = useState(false);
