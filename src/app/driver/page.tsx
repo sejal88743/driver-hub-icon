@@ -744,7 +744,7 @@ export default function DriverPage() {
       const billNo = b.billNo.replace(/^GST[-/]?/i, '');
       const msg = template
         .replace(/\{\{billNo\}\}/gi, billNo)
-        .replace(/\{\{billDate\}\}/gi, b.date || '')
+        .replace(/\{\{billDate\}\}/gi, excelSerialToDate(b.date) || '')
         .replace(/\{\{partyName\}\}/gi, b.partyName || '')
         .replace(/\{\{billAmt\}\}/gi, b.billNetAmt.toLocaleString('en-IN'))
         .replace(/\{\{days\}\}/gi, days)
@@ -1155,7 +1155,7 @@ export default function DriverPage() {
                     activeBills.forEach(b => {
                       const driver = (b.driverName || 'UNASSIGNED').trim();
                       const beat = (b.beatName || 'UNASSIGNED').trim();
-                      const dt = b.date || b.deliveryDate || displayDate;
+                      const dt = excelSerialToDate(b.date) || excelSerialToDate(b.deliveryDate) || displayDate;
                       if (!driverMap.has(driver)) driverMap.set(driver, new Map());
                       const bMap = driverMap.get(driver)!;
                       const existing = bMap.get(beat);
