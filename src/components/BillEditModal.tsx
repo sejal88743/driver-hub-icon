@@ -107,6 +107,8 @@ export default function BillEditModal({ bill, banks, onClose, onSaved }: Props) 
       chosenRecDate || null,
       getLoggedInName(),
       chq > 0 ? (bill.chequeDate || null) : null,
+      null,
+      bill.id || null,
     );
 
     setSaving(false);
