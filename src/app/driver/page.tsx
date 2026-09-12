@@ -744,7 +744,7 @@ export default function DriverPage() {
       const billNo = b.billNo.replace(/^GST[-/]?/i, '');
       const msg = template
         .replace(/\{\{billNo\}\}/gi, billNo)
-        .replace(/\{\{billDate\}\}/gi, b.date || '')
+        .replace(/\{\{billDate\}\}/gi, excelSerialToDate(b.date) || '')
         .replace(/\{\{partyName\}\}/gi, b.partyName || '')
         .replace(/\{\{billAmt\}\}/gi, b.billNetAmt.toLocaleString('en-IN'))
         .replace(/\{\{days\}\}/gi, days)
