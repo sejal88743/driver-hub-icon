@@ -28,24 +28,6 @@ function isDateMatching(dt?: string, displayDate?: string, selectedDate?: string
   return false;
 }
 
-function formatToDDMMYYYY(dateStr?: string, fallback?: string): string {
-  if (!dateStr || !dateStr.trim()) {
-    return fallback ? formatToDDMMYYYY(fallback) : '';
-  }
-  const clean = dateStr.trim();
-  const parts = clean.includes('/') ? clean.split('/') : clean.split('-');
-  if (parts.length === 3) {
-    let [p1, p2, p3] = parts;
-    if (p1.length === 4) {
-      // YYYY-MM-DD -> DD-MM-YYYY
-      return `${p3.padStart(2, '0')}-${p2.padStart(2, '0')}-${p1}`;
-    } else {
-      if (p3.length === 2) p3 = '20' + p3;
-      return `${p1.padStart(2, '0')}-${p2.padStart(2, '0')}-${p3}`;
-    }
-  }
-  return clean;
-}
 
 function drawTablePage(
   rows: TableRow[],
