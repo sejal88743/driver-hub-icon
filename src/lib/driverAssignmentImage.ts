@@ -320,7 +320,7 @@ export async function generateDriverAssignmentImages(
   activeBills.forEach((b) => {
     const driver = (b.driverName || 'UNASSIGNED').trim();
     const beat = (b.beatName || 'UNASSIGNED').trim();
-    const dateFormatted = formatToDDMMYYYY(b.date, b.deliveryDate || displayDate);
+    const dateFormatted = isoToDisplay(b.date) || isoToDisplay(b.deliveryDate) || displayDate;
 
     const driverKey = driver.toLowerCase();
     if (!driverMap.has(driverKey)) {
