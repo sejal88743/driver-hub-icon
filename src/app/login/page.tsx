@@ -47,7 +47,7 @@ export default function LoginPage() {
         const [{ data: driverData }, { data: settingsData }] = await Promise.all([
           supabase
             .from('drivers')
-            .select('id,name,role')
+            .select('id,name')
             .like('id', 'usr_%'),
           supabase
             .from('settings')

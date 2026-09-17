@@ -2,6 +2,7 @@ import { useState, useRef, useEffect, useMemo, useCallback } from 'react';
 import { Link } from 'react-router-dom';
 import { Check, Loader2, RotateCcw, Pencil, Wallet, Smartphone, Landmark, Hash, Trash2, X, Calendar, ListPlus, Mic, MicOff, Volume2, Banknote, MessageCircle, AlertTriangle } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { toast } from '@/hooks/use-toast';
 import { useBillStore } from '@/hooks/use-bill-store';
 import { savePayment, getSystemPassword, getBills, saveBills, patchBillInMemory, patchBillDirect, setDailyUnlocked, getBanks, getUserPerm, getBillSearchAutoResetSec, addBillsToMemoryOnly, getSalespersonContacts, saveSalespersonContacts, findSalespersonContact, cleanSalespersonName, calculateBillDiscountPercent, Bill } from '@/lib/billStore';
 import { getRole, getLoggedInName } from '@/lib/auth';
@@ -570,6 +571,48 @@ export default function Dashboard() {
       }
     }
 
+    // If no match found for the driver's current delivery load, search across ALL bills in the ledger
+    // so that bill search never falsely reports "not found"
+    const hasAnyMatch = t.some(arr => arr.length > 0);
+    if (!hasAnyMatch && !isOwner && selectedDriver) {
+      for (const b of bills) {
+        if (isMocBill(b) || (b.billNo || '').toUpperCase().startsWith('MOC') || b.salespersonName === 'MOC' || b.collectionCode === 'MOC' || b.beatName === 'COMMISSION') continue;
+
+        const bn = b.billNo;
+        if (seen.has(bn)) continue;
+
+        const bl = bn.toLowerCase();
+        const bs = stripGst(bn);
+        const bNoZeros = stripGstAndZeros(bn);
+        const pl = (b.partyName || '').toLowerCase();
+
+        let tier = -1;
+        const isExactStr = bl === q || bs === qStripped;
+        const isExactNum = qNoZeros !== '' && bNoZeros === qNoZeros;
+
+        if (isExactStr || isExactNum) {
+          tier = 0;
+        } else if (qStripped !== '' && (bs.endsWith(qStripped) || (qNoZeros !== '' && bNoZeros.endsWith(qNoZeros)))) {
+          tier = 1;
+        } else if (bl.startsWith(q) || bs.startsWith(qStripped) || (qNoZeros !== '' && bNoZeros.startsWith(qNoZeros))) {
+          tier = 2;
+        } else if (bl.includes(q) || bs.includes(qStripped) || (qNoZeros !== '' && bNoZeros.includes(qNoZeros))) {
+          tier = 3;
+        } else if (pl === q) {
+          tier = 4;
+        } else if (pl.startsWith(q)) {
+          tier = 5;
+        } else if (pl.includes(q)) {
+          tier = 6;
+        }
+
+        if (tier >= 0 && t[tier].length < MAX_PER_TIER) {
+          t[tier].push(bn);
+          seen.add(bn);
+        }
+      }
+    }
+
     const sortTier0 = (a: string, b: string) => {
       const aNoZeros = stripGstAndZeros(a);
       const bNoZeros = stripGstAndZeros(b);
@@ -597,6 +640,43 @@ export default function Dashboard() {
     ];
   }, [bills, debouncedQuery, selectedDriver, displayDate, drivers, commissionMocs]);
 
+  // Live on-demand Supabase search fallback: if memory doesn't have the bill yet, query Supabase directly
+  useEffect(() => {
+    const q = debouncedQuery.trim();
+    if (!q || q.length < 2 || filteredBillNos.length > 0 || selectedBillNo) return;
+
+    let cancelled = false;
+    const searchSupabase = async () => {
+      try {
+        const { supabase } = await import('@/lib/supabase');
+        if (!supabase) return;
+        const { BILL_SELECT_COLUMNS, mapBillFromSupabase } = await import('@/lib/apiSync');
+        const cleanQ = q.replace(/^gst[-/]?/i, '');
+        const { data, error } = await supabase
+          .from('bills')
+          .select(BILL_SELECT_COLUMNS)
+          .or(`bill_no.ilike.%${cleanQ}%,party_name.ilike.%${cleanQ}%`)
+          .limit(10);
+
+        if (!cancelled && !error && Array.isArray(data) && data.length > 0) {
+          const fetchedBills = (data as Record<string, unknown>[]).map(mapBillFromSupabase);
+          addBillsToMemoryOnly(fetchedBills);
+        }
+      } catch (err) {
+        console.warn('On-demand Supabase bill lookup error:', err);
+      }
+    };
+
+    const timer = setTimeout(() => {
+      void searchSupabase();
+    }, 150);
+
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [debouncedQuery, filteredBillNos.length, selectedBillNo]);
+
   // Whether the typed search query matches no bill
   const billNotFound = useMemo(() => {
     if (!debouncedQuery || filteredBillNos.length > 0 || selectedBillNo) return false;
@@ -604,10 +684,28 @@ export default function Dashboard() {
   }, [debouncedQuery, filteredBillNos, selectedBillNo]);
 
   const driverStats = useMemo(() => {
-    if (!selectedDriver) return null;
     const isOwner = selectedDriver === 'OWNER';
-    const selUpper = selectedDriver.trim().toUpperCase();
+    const selUpper = (selectedDriver || '').trim().toUpperCase();
     const isUserStaff = !isOwner && (selUpper === 'PRATIXA' || !!drivers.find(d => d.name?.trim().toUpperCase() === selUpper && d.role === 'user'));
+
+    // If no driver selected, show overall database total count, done, and pending
+    if (!selectedDriver) {
+      const totalCount = bills.length;
+      let doneCount = 0;
+      for (const b of bills) {
+        const mode = (b.paymentMode || '').toLowerCase();
+        const hasMoneyReceived =
+          (Number(b.collectedAmount) || 0) > 0 ||
+          (Number(b.cashAmount) || 0) > 0 ||
+          (Number(b.upiAmount) || 0) > 0 ||
+          (Number(b.chequeAmount) || 0) > 0;
+        const isPaid = hasMoneyReceived || ['paid', 'cash', 'upi', 'cheque', 'split'].includes(mode);
+        const isFBR = mode === 'fbr' || mode === 'cancel';
+        if (isPaid || isFBR) doneCount++;
+      }
+      const pendingCount = Math.max(0, totalCount - doneCount);
+      return { total: totalCount, paid: doneCount, pending: pendingCount, isStaff: true };
+    }
 
     let dbills: typeof bills = [];
     const snapshotBillNos = new Set<string>();
@@ -2542,31 +2640,6 @@ export default function Dashboard() {
     highlightedItemRef.current?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
   }, [dropdownIndex]);
 
-  const onKeyDownBillSearch = (e: React.KeyboardEvent) => {
-    if (e.key === '+' || e.code === 'NumpadAdd') {
-      e.preventDefault();
-      handleReset();
-      return;
-    }
-    if (e.key === 'ArrowDown') {
-      e.preventDefault();
-      setShowDropdown(true);
-      setDropdownIndex(prev => Math.min(prev + 1, filteredBillNos.length - 1));
-    } else if (e.key === 'ArrowUp') {
-      e.preventDefault();
-      setShowDropdown(true);
-      setDropdownIndex(prev => Math.max(prev - 1, 0));
-    } else if (e.key === 'Enter') {
-      e.preventDefault();
-      if (filteredBillNos.length === 0) return;
-      // Always select the currently highlighted item (index 0 by default)
-      const safeIdx = Math.min(dropdownIndex, filteredBillNos.length - 1);
-      handleBillSelect(filteredBillNos[safeIdx]);
-    } else if (e.key === 'Escape') {
-      setShowDropdown(false);
-    }
-  };
-
   // Auto-clear special modes when the user enters any cash/upi/cheque amount
   // so the bill saves as Paid (Cash/UPI/Cheque) not the special mode.
   // Includes 'Unpaid' — if Unpaid button was pressed but user then types an amount,
@@ -2601,6 +2674,64 @@ export default function Dashboard() {
   const canUserBackDate = isUserRole ? userPerms.canBackDate : true;
   // Paid/Protected-bill editing follows Admin > Users > Edit. Back Date remains date-only.
   const userCannotEditReceivedBill = isUserRole && isProtectedBill && !userPerms.canEdit;
+
+  // ── Unified Unlock Trigger (Button + 'u'/'U' Shortcut) ──
+  const triggerUnlock = useCallback(() => {
+    if (!selectedBillNo) return;
+    const canEditSelectedBill = !isUserRole || userPerms.canEdit;
+    if (canEditSelectedBill && !userCannotEditReceivedBill) {
+      setEditLocked(false);
+      setTimeout(() => {
+        cashInputRef.current?.focus();
+        cashInputRef.current?.select();
+      }, 50);
+      toast({
+        title: "Bill Unlocked",
+        description: "Edit mode chalu ho gaya (U)",
+        duration: 2000,
+      });
+    } else {
+      toast({
+        title: "Permission Denied",
+        description: "Aapke paas is bill ko unlock/edit karne ki permission nahi hai.",
+        variant: "destructive",
+      });
+    }
+  }, [selectedBillNo, isUserRole, userPerms.canEdit, userCannotEditReceivedBill]);
+
+  const onKeyDownBillSearch = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === '+' || e.code === 'NumpadAdd') {
+      e.preventDefault();
+      handleReset();
+      return;
+    }
+    // User directive: entry page me "u" click karne par bill no ke piche type nahi hona chahiye,
+    // balki us se Unlock button press hona chahiye!
+    const keyLower = e.key ? e.key.toLowerCase() : '';
+    if (keyLower === 'u' && !e.ctrlKey && !e.metaKey && !e.altKey && selectedBillNo && (editLocked || isBillCurrentlyLocked)) {
+      e.preventDefault();
+      e.stopPropagation();
+      triggerUnlock();
+      return;
+    }
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      setShowDropdown(true);
+      setDropdownIndex(prev => Math.min(prev + 1, filteredBillNos.length - 1));
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      setShowDropdown(true);
+      setDropdownIndex(prev => Math.max(prev - 1, 0));
+    } else if (e.key === 'Enter') {
+      e.preventDefault();
+      if (filteredBillNos.length === 0) return;
+      // Always select the currently highlighted item (index 0 by default)
+      const safeIdx = Math.min(dropdownIndex, filteredBillNos.length - 1);
+      handleBillSelect(filteredBillNos[safeIdx]);
+    } else if (e.key === 'Escape') {
+      setShowDropdown(false);
+    }
+  };
 
   // Cheque valid: Cheque No MUST be exactly 6 digits (compulsory)
   // Driver mode: Cheque No (6 digits) and Cheque Date (DD/MM >= 2) are COMPULSORY; Bank is OPTIONAL
@@ -2732,38 +2863,24 @@ export default function Dashboard() {
       }
 
       // ── Bill Unlock Shortcut: 'u' / 'U' ──
-      // User directive: "entry page ne 'u' press kar ne par bill unlock hojana chahiye"
+      // User directive: "entry page me 'u' click kar ne par bill no ke piche type hota he jab ki us se unlock button press hona chahiye"
       const keyLower = e.key ? e.key.toLowerCase() : '';
       const targetEl = e.target as HTMLElement | null;
+      const isSearchInput = targetEl === billInputRef.current;
       const isInputEl = targetEl && (targetEl.tagName === 'INPUT' || targetEl.tagName === 'TEXTAREA' || targetEl.tagName === 'SELECT');
 
-      if (keyLower === 'u' && selectedBillNo && (editLocked || isBillCurrentlyLocked)) {
+      const isModalActive = showLcChangeConfirm || showFbrReasonModal || showLineCutPopup || showDiffConfirm || showRecDateConfirm || showDatePicker || showDatePwModal || showResetPwModal || showMultiBillModal || showOverflowModal || showPaidPopup;
+
+      if (keyLower === 'u' && selectedBillNo && (editLocked || isBillCurrentlyLocked) && !isModalActive) {
         // Trigger if:
-        // 1. Plain 'u' when not typing in an input field (or on body/table/buttons)
+        // 1. Plain 'u' when in bill search input OR when not typing in another active input
         // 2. Alt+U or Ctrl+U anywhere
-        const isDirectU = !e.ctrlKey && !e.metaKey && !e.altKey && !isInputEl;
+        const isDirectU = !e.ctrlKey && !e.metaKey && !e.altKey && (!isInputEl || isSearchInput);
         const isComboU = e.altKey || e.ctrlKey || e.metaKey;
         if (isDirectU || isComboU) {
           e.preventDefault();
-          const canEditSelectedBill = !isUserRole || userPerms.canEdit;
-          if (canEditSelectedBill && !userCannotEditReceivedBill) {
-            setEditLocked(false);
-            setTimeout(() => {
-              cashInputRef.current?.focus();
-              cashInputRef.current?.select();
-            }, 50);
-            toast({
-              title: "Bill Unlocked",
-              description: "Edit mode chalu ho gaya (U)",
-              duration: 2000,
-            });
-          } else {
-            toast({
-              title: "Permission Denied",
-              description: "Aapke paas is bill ko unlock/edit karne ki permission nahi hai.",
-              variant: "destructive",
-            });
-          }
+          e.stopPropagation();
+          triggerUnlock();
           return;
         }
       }
@@ -2772,18 +2889,15 @@ export default function Dashboard() {
         const key = e.key.toLowerCase();
         if (key === 'e') {
           e.preventDefault();
-          const canEditSelectedBill = !isUserRole || userPerms.canEdit;
-          if (selectedBillNo && canEditSelectedBill && !userCannotEditReceivedBill) {
-            setEditLocked(false);
-            setTimeout(() => cashInputRef.current?.focus(), 50);
-          }
+          triggerUnlock();
+          return;
         } else if (key === 's') {
           e.preventDefault();
           if (selectedBillNo) {
             handleSaveClick();
           }
+          return;
         }
-        return;
       }
 
       // ── Entry Shortcuts: 1 = FBR, 2 = Credit, 3 = Del Pending ──
@@ -2826,7 +2940,7 @@ export default function Dashboard() {
     selectedBillNo, canSave, displayDate, isUserRole, editLocked, isBillCurrentlyLocked, userCannotEditReceivedBill, selectedBill, recDateOverride,
     showFbrReasonModal, showLineCutPopup, showDiffConfirm, showRecDateConfirm, showDatePicker,
     showMocModal, showMultiBillModal, showDatePwModal, showResetPwModal, showPaidPopup, showOverflowModal,
-    pendingSelectBill, saveError, showDropdown, showDraftRestored
+    pendingSelectBill, saveError, showDropdown, showDraftRestored, triggerUnlock
   ]);
 
   if (loading) return <div className="flex h-screen items-center justify-center"><Loader2 className="animate-spin text-primary" /></div>;
@@ -3013,7 +3127,20 @@ export default function Dashboard() {
                   pattern="[0-9]*"
                   placeholder={isDriverMode ? "ENTER BILL NO..." : "ENTER BILL NO OR PARTY NAME..."}
                   value={searchQuery}
-                  onChange={(e) => { setSearchQuery(e.target.value); setShowDropdown(true); setDropdownIndex(0); if (!e.target.value) { setSelectedBillNo(''); setDebouncedQuery(''); } }}
+                  onChange={(e) => {
+                    let val = e.target.value;
+                    // User directive: "u" click karne par bill no ke piche type nahi hona chahiye, unlock button press hona chahiye
+                    if (selectedBillNo && (editLocked || isBillCurrentlyLocked) && (val.endsWith('u') || val.endsWith('U'))) {
+                      val = val.slice(0, -1);
+                      setSearchQuery(val);
+                      triggerUnlock();
+                      return;
+                    }
+                    setSearchQuery(val);
+                    setShowDropdown(true);
+                    setDropdownIndex(0);
+                    if (!val) { setSelectedBillNo(''); setDebouncedQuery(''); }
+                  }}
                   onFocus={() => setShowDropdown(true)}
                   onKeyDown={onKeyDownBillSearch}
                   className={cn(
@@ -3746,11 +3873,7 @@ export default function Dashboard() {
                       variant="outline"
                       disabled={(getRole() === 'user' && !userPerms.canEdit) || userCannotEditReceivedBill}
                       title={userCannotEditReceivedBill ? "Admin page me is user ka Edit right ON hona chahiye" : "Bill unlock karne ke liye 'U' key dabayein"}
-                      onClick={() => {
-                        if ((getRole() === 'user' && !userPerms.canEdit) || userCannotEditReceivedBill) return;
-                        setEditLocked(false);
-                        setTimeout(() => cashInputRef.current?.focus(), 50);
-                      }}
+                      onClick={triggerUnlock}
                       className={cn(
                         "flex-1 h-10 rounded-xl font-black uppercase text-[11px] p-0 shadow-sm transition-all",
                         editLocked ? "bg-amber-500/10 border-amber-500/40 text-amber-600 hover:bg-amber-500/20" : "bg-muted"

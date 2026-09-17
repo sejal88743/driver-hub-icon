@@ -409,20 +409,40 @@ export async function processBillsReportBuffer(
     onStatus({ status: 'loading', message: 'Checking existing bills...' });
     await new Promise(r => setTimeout(r, 10));
 
-    const { apiFetchAllData, apiBulkUpsertWithProgress, apiBulkInsertWithProgress } = await import('@/lib/apiSync');
+    const { apiBulkUpsertWithProgress, apiBulkInsertWithProgress, BILL_SELECT_COLUMNS, mapBillFromSupabase } = await import('@/lib/apiSync');
+    const { whenStoreHydrated } = await import('@/lib/billStore');
+    const { supabase } = await import('@/lib/supabase');
     
-    // Get existing bills: use in-memory store if hydrated, otherwise fetch
+    // Get existing bills: use in-memory store if hydrated
     let localBills = getBills();
     if (!localBills || localBills.length === 0) {
-      onStatus({ status: 'loading', message: 'Loading database records...' });
-      const data = await apiFetchAllData();
-      localBills = data?.bills || [];
+      await whenStoreHydrated().catch(() => {});
+      localBills = getBills();
     }
 
     onStatus({ status: 'loading', message: 'Parsing Sales Register rows...' });
     await new Promise(r => setTimeout(r, 10));
 
     const parsed = parseRegister(buffer, XLSX);
+
+    // P1 Optimization: If local store is empty on a fresh session, fetch ONLY
+    // the bills present in this uploaded register (near-zero egress), NEVER download the whole table!
+    if ((!localBills || localBills.length === 0) && supabase) {
+      const fileBillNos = Array.from(parsed.groups.keys()).filter(Boolean);
+      if (fileBillNos.length > 0) {
+        onStatus({ status: 'loading', message: `Checking ${fileBillNos.length} register bills in Supabase...` });
+        const CHUNK = 200;
+        const matchingBills: Bill[] = [];
+        for (let i = 0; i < fileBillNos.length; i += CHUNK) {
+          const chunk = fileBillNos.slice(i, i + CHUNK);
+          const { data } = await supabase.from('bills').select(BILL_SELECT_COLUMNS).in('bill_no', chunk);
+          if (data && Array.isArray(data)) {
+            matchingBills.push(...data.map(mapBillFromSupabase));
+          }
+        }
+        localBills = matchingBills;
+      }
+    }
 
     // Build list of all known SP names for 60% resolution
     const rawSpList = [

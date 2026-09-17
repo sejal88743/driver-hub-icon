@@ -80,31 +80,16 @@ export function ConnectionStatus() {
       setLastSync(new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', second: '2-digit' }));
     }
 
-    // Active heartbeat: Ping Supabase every 20s to ensure live connectivity and flush pending writes
-    const heartbeatTimer = setInterval(async () => {
+    // Periodic local check: Update pending count without spamming Supabase network
+    const localTimer = setInterval(() => {
       if (!navigator.onLine) {
         setStatus('offline');
         return;
       }
-      if (document.visibilityState === 'hidden') return;
       updatePending();
-      try {
-        if (supabase) {
-          const { error } = await supabase.from('settings').select('key').limit(1);
-          if (!error) {
-            consecutiveErrors.current = 0;
-            if (status === 'offline') {
-              setStatus('live');
-              show('live');
-            }
-            // Auto flush any pending offline writes
-            void flushDirtyQueue();
-            void flushPendingWrites();
-            updatePending();
-          }
-        }
-      } catch {
-        // Silent heartbeat catch
+      if (status === 'offline' && navigator.onLine) {
+        setStatus('live');
+        show('live');
       }
     }, 20_000);
 
@@ -115,7 +100,7 @@ export function ConnectionStatus() {
       window.removeEventListener('pending-writes', onPending);
       window.removeEventListener('dirty-queue-count', onPending);
       if (hideTimer.current) clearTimeout(hideTimer.current);
-      clearInterval(heartbeatTimer);
+      clearInterval(localTimer);
     };
   }, [status]);
 

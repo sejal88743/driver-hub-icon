@@ -93,27 +93,16 @@ export function initDriverDownloadsRealtimeSync() {
     } catch {}
   })();
 
-  // 2. Realtime listener on settings table
-  try {
-    if (supabase) {
-      supabase
-        .channel('public:settings:driver_downloads')
-        .on(
-          'postgres_changes',
-          { event: '*', schema: 'public', table: 'settings', filter: `key=eq.${SETTING_KEY}` },
-          (payload: any) => {
-            const rawVal = payload?.new?.value;
-            if (rawVal) {
-              try {
-                const parsed = JSON.parse(rawVal);
-                applyDriverDownloadsFromServer(parsed);
-              } catch {}
-            }
-          }
-        )
-        .subscribe();
+  // 2. Listen to shared settings realtime event from unified realtime channel
+  window.addEventListener('driver-download-records-updated', (e: any) => {
+    const rawVal = e.detail;
+    if (rawVal) {
+      try {
+        const parsed = typeof rawVal === 'string' ? JSON.parse(rawVal) : rawVal;
+        applyDriverDownloadsFromServer(parsed);
+      } catch {}
     }
-  } catch {}
+  });
 }
 
 export function getDriverDownloadStatus(dateStr: string): {

@@ -60,15 +60,14 @@ function OfflineGate({ children }: { children: React.ReactNode }) {
       }
     }
     ping();
-    const t = setInterval(ping, 60_000);
-    const onFocus = () => ping();
-    window.addEventListener('focus', onFocus);
-    document.addEventListener('visibilitychange', onFocus);
+    const onOnline = () => ping();
+    const onOffline = () => { if (!cancelled) setDbReachable(false); };
+    window.addEventListener('online', onOnline);
+    window.addEventListener('offline', onOffline);
     return () => {
       cancelled = true;
-      clearInterval(t);
-      window.removeEventListener('focus', onFocus);
-      document.removeEventListener('visibilitychange', onFocus);
+      window.removeEventListener('online', onOnline);
+      window.removeEventListener('offline', onOffline);
     };
   }, []);
 

@@ -1,5 +1,5 @@
 import { useEffect, useSyncExternalStore } from 'react';
-import { getBills, getDrivers, getBanks, getSummaries, getPartyContacts, getSalespersonContacts, setServerData, applyRealtimeBillChange, applyRealtimeTableChange, applyBillsDelta, Bill, Driver, Bank, DriverDailySummary } from '@/lib/billStore';
+import { getBills, getDrivers, getBanks, getSummaries, getPartyContacts, getSalespersonContacts, setServerData, applyRealtimeBillChange, applyRealtimeTableChange, applyBillsDelta, whenStoreHydrated, Bill, Driver, Bank, DriverDailySummary } from '@/lib/billStore';
 import { apiFetchAllData, apiFetchBillsSince, mapBillFromSupabase, flushPendingWrites } from '@/lib/apiSync';
 import { supabase } from '@/lib/supabase';
 import { isWriteInProgress, getLastWriteAt } from '@/lib/syncState';
@@ -7,16 +7,17 @@ import { applyDirtyPatches, isDirtyPending, flushDirtyQueue } from '@/lib/localQ
 
 // ─── Global singleton ─────────────────────────────────────────────────────
 // Polling + Supabase Realtime WebSocket + BroadcastChannel multi-tab
-// guarantees instant real-time live sync across all devices.
+// guarantees instant real-time live sync across all devices with minimal egress.
 
-// Light incremental poll (only rows changed since last sync).
-// When the Realtime websocket is live, changes already arrive instantly, so the
-// poll acts only as a safety net and can run far less often (saves bandwidth/CPU
 // Adaptive polling intervals:
-// Delta sync fetches ONLY modified rows using `updated_at > deltaCursor` (tiny payload, near-zero egress).
-const POLL_FAST_MS = 4_000;
-const POLL_SAFETY_MS = 15_000;
-const POLL_TICK_MS = 1_000;
+// - Safety fallback when Realtime WebSocket is live: 60s
+// - Fast fallback when Realtime WebSocket is offline: 20s
+// - Idle backoff when user is away (> 2 min): 180s (3 min)
+// - Hidden tab / background: 0s (Completely pauses polling)
+const POLL_SAFETY_MS = 60_000;
+const POLL_FAST_MS = 20_000;
+const POLL_IDLE_MS = 180_000;
+const POLL_TICK_MS = 2_000;
 
 
 
@@ -143,6 +144,9 @@ async function doDeltaSync() {
       if (safe.length > 0) {
         applyBillsDelta(safe);
         readLocal();
+        if (syncChannel) {
+          try { syncChannel.postMessage({ type: 'delta-synced', cursor: deltaCursor }); } catch {}
+        }
       }
     }
     window.dispatchEvent(new CustomEvent('sync-status', { detail: 'ok' }));
@@ -337,6 +341,9 @@ function initSupabaseRealtime(force = false) {
         { event: '*', schema: 'public', table: 'settings' },
         (payload) => {
           applyRealtimeTableChange('settings', payload.eventType as any, payload.new, payload.old);
+          if (payload.new && (payload.new as any).key === 'driver_download_records_v1') {
+            window.dispatchEvent(new CustomEvent('driver-download-records-updated', { detail: (payload.new as any).value }));
+          }
           scheduleReadLocal();
         }
       )
@@ -392,15 +399,28 @@ if (syncChannel) {
   syncChannel.onmessage = (event) => {
     if (event.data === 'data-updated') {
       scheduleReadLocal();
+    } else if (event.data && typeof event.data === 'object' && event.data.type === 'delta-synced') {
+      if (event.data.cursor && (!deltaCursor || event.data.cursor > deltaCursor)) {
+        deltaCursor = event.data.cursor;
+      }
+      scheduleReadLocal();
     }
   };
+}
+
+let lastUserActivityAt = Date.now();
+if (typeof window !== 'undefined') {
+  const onUserActivity = () => { lastUserActivityAt = Date.now(); };
+  window.addEventListener('mousemove', onUserActivity, { passive: true });
+  window.addEventListener('keydown', onUserActivity, { passive: true });
+  window.addEventListener('touchstart', onUserActivity, { passive: true });
 }
 
 function initGlobalSync() {
   if (initialized) return;
   initialized = true;
 
-  // Hydrate local cache into state immediately on boot before network fetch
+  // 1. Hydrate local state from memory/localStorage
   readLocal();
 
   window.addEventListener('bill-store-update', () => {
@@ -412,6 +432,7 @@ function initGlobalSync() {
 
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'visible') {
+      lastUserActivityAt = Date.now();
       void doDeltaSync();
       void flushDirtyQueue();
       void flushPendingWrites();
@@ -419,6 +440,7 @@ function initGlobalSync() {
     }
   });
   window.addEventListener('focus', () => {
+    lastUserActivityAt = Date.now();
     void doDeltaSync();
   });
   window.addEventListener('online', () => {
@@ -438,32 +460,39 @@ function initGlobalSync() {
     flushDirtyQueue();
   });
 
-  // Background flush of BOTH pending queues every 10 seconds so no local
-  // change can silently stay un-synced to the cloud.
+  // Background flush of pending queues every 15 seconds if items are pending
   setInterval(() => {
     if (document.visibilityState === 'hidden' && !navigator.onLine) return;
     void flushDirtyQueue();
     void flushPendingWrites();
-  }, 10000);
+  }, 15000);
 
-  // Initial load: If we already have bills locally in IndexedDB/cache, do NOT re-download all
-  // 42,000 bills (which wastes 50MB+ egress and blocks UI). Instead, use fast delta sync.
-  const localBills = getBills();
-  if (localBills && localBills.length > 0) {
-    patch({ loading: false });
-    const savedTs = typeof window !== 'undefined' ? localStorage.getItem('vitratrack_last_sync_ts') : null;
-    deltaCursor = savedTs || new Date(Date.now() - 24 * 3600 * 1000).toISOString();
-    void doDeltaSync();
-  } else {
-    // Fresh device or empty local cache: do one initial full sync
-    doFullSync();
-  }
+  // Initial load: Hydrate immediately from cache, then run full sync to ensure 100% of all bills are loaded
+  void (async () => {
+    try {
+      await whenStoreHydrated();
+    } catch {}
+    readLocal();
+    const localBills = getBills();
+    if (localBills && localBills.length > 0) {
+      patch({ loading: false });
+      const savedTs = typeof window !== 'undefined' ? localStorage.getItem('vitratrack_last_sync_ts') : null;
+      deltaCursor = savedTs || new Date(Date.now() - 24 * 3600 * 1000).toISOString();
+      void doDeltaSync();
+      // Ensure all bills from Supabase are completely synced and up to date
+      void doFullSync(true);
+    } else {
+      // Fresh device or empty local cache: do initial full sync
+      void doFullSync(true);
+    }
+  })();
 
   let lastPollAt = Date.now();
   pollingTimer = setInterval(() => {
     if (document.visibilityState === 'hidden') return;
+    const isIdle = (Date.now() - lastUserActivityAt) > 120_000;
     const realtimeLive = (realtimeChannel as any)?.state === 'joined';
-    const wait = realtimeLive ? POLL_SAFETY_MS : POLL_FAST_MS;
+    const wait = isIdle ? POLL_IDLE_MS : (realtimeLive ? POLL_SAFETY_MS : POLL_FAST_MS);
     if (Date.now() - lastPollAt < wait) return;
     lastPollAt = Date.now();
     void doDeltaSync();

@@ -427,7 +427,30 @@ if (typeof window !== 'undefined') {
   }
 
   // Fast load full database from IndexedDB asynchronously (loads all bills instantly)
-  idbGet<Bill[]>('cached_bills_full').then((fullBills) => {
+  _initIdbHydration();
+}
+
+let _idbHydrationPromise: Promise<void> | null = null;
+
+export function whenStoreHydrated(): Promise<void> {
+  if (typeof window === 'undefined') return Promise.resolve();
+  if (!_idbHydrationPromise) {
+    _idbHydrationPromise = _initIdbHydration();
+  }
+  return _idbHydrationPromise;
+}
+
+function _initIdbHydration(): Promise<void> {
+  if (typeof window === 'undefined') return Promise.resolve();
+  return Promise.all([
+    idbGet<Bill[]>('cached_bills_full'),
+    idbGet<Driver[]>('cached_drivers'),
+    idbGet<Bank[]>('cached_banks'),
+    idbGet<DriverDailySummary[]>('cached_summaries'),
+    idbGet<Contact[]>('cached_party_contacts'),
+    idbGet<Contact[]>('cached_salesperson_contacts'),
+  ]).then(([fullBills, cachedDrivers, cachedBanks, cachedSummaries, cachedParty, cachedSales]) => {
+    let updated = false;
     if (fullBills && Array.isArray(fullBills) && fullBills.length > 0) {
       const mergedMap = new Map<string, Bill>();
       // 1. First index all bills from IndexedDB
@@ -451,45 +474,48 @@ if (typeof window !== 'undefined') {
         }
       }
       _bills = Array.from(mergedMap.values());
-      dispatchUpdate();
+      updated = true;
     }
-  }).catch(() => {});
 
-  idbGet<Driver[]>('cached_drivers').then((cached) => {
-    if (cached && Array.isArray(cached) && cached.length > _drivers.length) {
-      _drivers = cached;
-      dispatchUpdate();
+    if (cachedDrivers && Array.isArray(cachedDrivers) && cachedDrivers.length > _drivers.length) {
+      _drivers = cachedDrivers;
+      updated = true;
     }
-  }).catch(() => {});
 
-  idbGet<Bank[]>('cached_banks').then((cached) => {
-    if (cached && Array.isArray(cached) && cached.length > _banks.length) {
-      _banks = cached;
-      dispatchUpdate();
+    if (cachedBanks && Array.isArray(cachedBanks) && cachedBanks.length > _banks.length) {
+      _banks = cachedBanks;
+      updated = true;
     }
-  }).catch(() => {});
 
-  idbGet<DriverDailySummary[]>('cached_summaries').then((cached) => {
-    if (cached && Array.isArray(cached) && cached.length > _summaries.length) {
-      _summaries = cached;
-      dispatchUpdate();
+    if (cachedSummaries && Array.isArray(cachedSummaries) && cachedSummaries.length > _summaries.length) {
+      _summaries = cachedSummaries;
+      updated = true;
     }
-  }).catch(() => {});
 
-  idbGet<Contact[]>('cached_salesperson_contacts').then((cached) => {
-    if (cached && Array.isArray(cached) && cached.length > 0) {
+    if (cachedParty && Array.isArray(cachedParty) && cachedParty.length > _partyContacts.length) {
+      _partyContacts = cachedParty;
+      updated = true;
+    }
+
+    if (cachedSales && Array.isArray(cachedSales) && cachedSales.length > 0) {
       const localMap = new Map(_salespersonContacts.map(c => [(c.name || '').trim().toLowerCase(), c]));
-      let changed = false;
-      for (const c of cached) {
+      let salesChanged = false;
+      for (const c of cachedSales) {
         const k = (c.name || '').trim().toLowerCase();
         if (k && !localMap.has(k)) {
           _salespersonContacts.push(c);
-          changed = true;
+          salesChanged = true;
         }
       }
-      if (changed) dispatchUpdate();
+      if (salesChanged) updated = true;
     }
-  }).catch(() => {});
+
+    if (updated) {
+      dispatchUpdate();
+    }
+  }).catch((err) => {
+    console.warn('[billStore] IDB hydration error:', err);
+  });
 }
 
 // ─── In-memory settings ───────────────────────────────────────────────────────

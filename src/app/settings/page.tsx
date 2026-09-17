@@ -1158,15 +1158,12 @@ export default function SettingsPage() {
         return;
       }
 
-      // 2. Fetch all bills
+      // 2. Use hydrated local bills (no network egress waste)
       let allBills = getBills();
-      try {
-        const serverData = await apiFetchAllData();
-        if (serverData.bills && serverData.bills.length > 0) {
-          allBills = serverData.bills;
-        }
-      } catch (e) {
-        console.warn('Using local bills for Leveredge download:', e);
+      if (!allBills || allBills.length === 0) {
+        const { whenStoreHydrated } = await import('@/lib/billStore');
+        await whenStoreHydrated().catch(() => {});
+        allBills = getBills();
       }
 
       const billMap = new Map<string, Bill>();
@@ -1516,15 +1513,14 @@ export default function SettingsPage() {
     setLedgerResult({ status: 'loading', message: 'Reading file...' }); e.target.value = '';
     try {
       const XLSX = await import('xlsx');
-      // Always fetch latest bills from server before processing
-      // so dedup check is accurate even if in-memory store hasn't fully loaded
-      setLedgerResult({ status: 'loading', message: 'Checking existing bills...' });
-      const { apiFetchAllData: freshFetch } = await import('@/lib/apiSync');
-      const freshData = await freshFetch();
-      const currentBillNosFromServer = new Set(freshData.bills.map((b: { billNo: string }) => b.billNo));
-      // Merge with in-memory store (in case store has bills not yet pushed)
-      const memBills = getBills();
-      for (const b of memBills) currentBillNosFromServer.add(b.billNo);
+      const { whenStoreHydrated } = await import('@/lib/billStore');
+      const { apiCheckExistingBillNos } = await import('@/lib/apiSync');
+      
+      setLedgerResult({ status: 'loading', message: 'Checking local records...' });
+      await whenStoreHydrated().catch(() => {});
+      const currentBills = getBills();
+      const currentBillMap = new Map<string, Bill>(currentBills.map((b: Bill) => [b.billNo, b]));
+      const currentBillNosFromServer = new Set(currentBills.map((b: { billNo: string }) => b.billNo));
 
       setLedgerResult({ status: 'loading', message: 'Processing...' });
       const reader = new FileReader();
@@ -1547,17 +1543,15 @@ export default function SettingsPage() {
 
             const jsonRows: any[] = XLSX.utils.sheet_to_json(ws, { range: headerRow, defval: '', raw: true });
 
-            // Build a COMPLETE bill map: start with all server-fresh bills,
-            // then overlay in-memory bills (memory may have unsaved new data).
-            // This ensures bills that exist on server but haven't loaded into
-            // memory yet still get updated properly instead of being skipped.
-            const currentBillMap = new Map<string, Bill>(
-              freshData.bills.map((b: Bill) => [b.billNo, b])
-            );
-            const currentBills = getBills();
-            for (const b of currentBills) {
-              currentBillMap.set(b.billNo, b);
-              currentBillNosFromServer.add(b.billNo);
+            // P1 Optimization: If any candidate bill numbers from sheet are unknown in local cache,
+            // query only those specific numbers from Supabase instead of downloading the whole database!
+            const candidateNos = jsonRows.map(r => String(r['Bill No'] || r['BILL NO'] || r['Bill No.'] || '').trim().toUpperCase()).filter(Boolean);
+            const unknownNos = candidateNos.filter(bn => !currentBillNosFromServer.has(bn));
+            if (unknownNos.length > 0) {
+              const remoteExisting = await apiCheckExistingBillNos(unknownNos);
+              for (const bn of remoteExisting) {
+                currentBillNosFromServer.add(bn);
+              }
             }
             const seenInBatch = new Set<string>(); // prevent duplicates within the same file
             const newBills: Bill[] = [];
@@ -2266,9 +2260,8 @@ export default function SettingsPage() {
       if (ok) {
         setAssignCreditStatus('ok');
         setAssignCreditResult(`${total} bills check kiye · ${fixed} bills fix hue (Assigned / Credit / Unpaid correct)`);
-        const fresh = await apiFetchAllData();
-        const { setServerData } = await import('@/lib/billStore');
-        setServerData(fresh);
+        const { doDeltaSync } = await import('@/hooks/use-bill-store');
+        await doDeltaSync();
         window.dispatchEvent(new Event('bill-store-update'));
       } else {
         setAssignCreditStatus('err');
@@ -2384,7 +2377,7 @@ export default function SettingsPage() {
     try {
       const XLSX = await import('xlsx');
       const { apiFetchAllData } = await import('@/lib/apiSync');
-      const serverData = await apiFetchAllData();
+      const serverData = await apiFetchAllData({ fullHistory: true });
       const allBills: Bill[] = serverData.bills.length > 0 ? serverData.bills : getBills();
       setBackupFullProgress(`Full Backup: ${allBills.length} bills...`);
       const wb = XLSX.utils.book_new();
@@ -2408,12 +2401,17 @@ export default function SettingsPage() {
   // ── File 1: Paid + FBR bills backup ──────────────────────────────────────
   async function handleBackupPaidFbr() {
     setBackupStatus('loading');
-    setBackupProgress('Data fetch ho raha hai...');
+    setBackupProgress('Data prepare ho raha hai...');
     try {
       const XLSX = await import('xlsx');
-      const { apiFetchAllData } = await import('@/lib/apiSync');
-      const serverData = await apiFetchAllData();
-      const allBills: Bill[] = serverData.bills.length > 0 ? serverData.bills : getBills();
+      const { whenStoreHydrated } = await import('@/lib/billStore');
+      await whenStoreHydrated().catch(() => {});
+      let allBills = getBills();
+      if (allBills.length === 0) {
+        const { apiFetchAllData } = await import('@/lib/apiSync');
+        const sData = await apiFetchAllData();
+        allBills = sData.bills;
+      }
       const paidFbrBills = allBills.filter(b => {
         const m = (b.paymentMode || '').toLowerCase();
         return m === 'paid' || m === 'fbr' || m === 'cash' || m === 'upi' || m === 'cheque' || m === 'split';
@@ -2421,7 +2419,14 @@ export default function SettingsPage() {
       setBackupProgress(`Paid+FBR: ${paidFbrBills.length} bills...`);
       const wb = XLSX.utils.book_new();
       XLSX.utils.book_append_sheet(wb, buildBillsSheet(XLSX, paidFbrBills, 100000), 'Bills');
-      appendSharedSheets(XLSX, wb, serverData);
+      const localShared = {
+        drivers: getDrivers(),
+        banks: getBanks(),
+        partyContacts: getPartyContacts(),
+        salespersonContacts: getSalespersonContacts(),
+        settings: getSettings(),
+      };
+      appendSharedSheets(XLSX, wb, localShared as any);
       setBackupProgress('File generate ho rahi hai...');
       downloadWb(XLSX, wb, `VitraTrack_PaidFBR_${getStamp()}.xlsx`);
       setBackupProgress('');
@@ -2438,12 +2443,17 @@ export default function SettingsPage() {
   // ── File 2: Other bills backup (Credit · Unpaid · Del Pending · etc.) ────
   async function handleBackupOther() {
     setBackup2Status('loading');
-    setBackup2Progress('Data fetch ho raha hai...');
+    setBackup2Progress('Data prepare ho raha hai...');
     try {
       const XLSX = await import('xlsx');
-      const { apiFetchAllData } = await import('@/lib/apiSync');
-      const serverData = await apiFetchAllData();
-      const allBills: Bill[] = serverData.bills.length > 0 ? serverData.bills : getBills();
+      const { whenStoreHydrated } = await import('@/lib/billStore');
+      await whenStoreHydrated().catch(() => {});
+      let allBills = getBills();
+      if (allBills.length === 0) {
+        const { apiFetchAllData } = await import('@/lib/apiSync');
+        const sData = await apiFetchAllData();
+        allBills = sData.bills;
+      }
       const otherBills = allBills.filter(b => {
         const m = (b.paymentMode || '').toLowerCase();
         return m !== 'paid' && m !== 'fbr' && m !== 'cash' && m !== 'upi' && m !== 'cheque' && m !== 'split';
@@ -2452,9 +2462,16 @@ export default function SettingsPage() {
       const wb = XLSX.utils.book_new();
       XLSX.utils.book_append_sheet(wb, buildBillsSheet(XLSX, otherBills, 100000), 'Bills');
       // Summaries only in Other file (driver daily operational data)
-      const summariesSource = serverData.summaries.length > 0 ? serverData.summaries : getSummaries();
+      const summariesSource = getSummaries();
       XLSX.utils.book_append_sheet(wb, safeSheet(XLSX, summariesSource.length ? summariesSource : [{ id: '', driverName: '', date: '', totalBillCount: 0, totalAmount: 0 }]), 'Summaries');
-      appendSharedSheets(XLSX, wb, serverData);
+      const localShared = {
+        drivers: getDrivers(),
+        banks: getBanks(),
+        partyContacts: getPartyContacts(),
+        salespersonContacts: getSalespersonContacts(),
+        settings: getSettings(),
+      };
+      appendSharedSheets(XLSX, wb, localShared as any);
       setBackup2Progress('File generate ho rahi hai...');
       downloadWb(XLSX, wb, `VitraTrack_Other_${getStamp()}.xlsx`);
       setBackup2Progress('');

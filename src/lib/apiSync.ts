@@ -125,6 +125,12 @@ function stripPatchForUpdate<T extends Partial<Bill>>(patch: T): T {
 
 
 
+// ── Explicit column list for bills table (P0 Egress Optimizer) ─────────────
+// Prevents downloading unwanted columns and avoids wildcard SELECT * bloat.
+// Note: 'part_payments' does not exist in the bills table schema, so it is excluded.
+export const BILL_SELECT_COLUMNS =
+  'id,sr_no,date,salesperson_name,collection_code,bill_no,party_code,party_hul_code,party_name,beat_name,bill_net_amt,collected_amount,outstanding_amount,bill_ageing,payment_mode,payment_method,payment_date,payment_time,driver_name,delivery_date,cheque_no,cheque_date,bank_name,next_bill_no,cancel_line,line_cut_amt,discrepancy_reason,cash_amount,upi_amount,cheque_amount,del_pending_history,edit_history,edit_date,updated_at,user,owner';
+
 // ── Supabase row → Bill (handles both snake_case and camelCase column names) ──
 export function mapBillFromSupabase(row: Record<string, unknown>): Bill {
   const n = (v: unknown) => (v == null ? 0 : Number(v));
@@ -380,24 +386,17 @@ if (typeof window !== 'undefined') {
   setTimeout(() => { void flushPendingWrites(); }, 3000);
 }
 
-// NOTE: Supabase/PostgREST enforces its own server-side max-rows cap per
-// request (commonly 1000) REGARDLESS of the range you ask for — requesting
-// range(0, 99999) still only returns ~1000 rows. Requesting a bigger chunk
-// size does NOT get you more rows per call, and if pagination is computed
-// from `total / desiredChunkSize` (e.g. 100000), a table with fewer total
-// rows than that resolves to a single request — which then gets silently
-// capped by the server, truncating the result. The only correct approach is
-// to keep requesting sequential ranges and stop only when a request returns
-// zero rows, never assuming a returned page size implies "no more data".
-async function fetchAllBills(): Promise<Bill[]> {
+// ── Fetch all bills from Supabase ──────────────────────────────────────────
+// Downloads all bills using explicit BILL_SELECT_COLUMNS and parallel chunking.
+// Loads complete database position so all bills can be searched and dashboard count is accurate.
+export async function fetchAllBills(options?: { fullHistory?: boolean }): Promise<Bill[]> {
   if (!supabase) return [];
   const CHUNK_SIZE = 1000;
-  
+
   try {
-    // 1-request optimization: fetch page 0 AND count together in a single request
     const { data: firstPage, count, error: countErr } = await supabase
       .from('bills')
-      .select('*', { count: 'exact' })
+      .select(BILL_SELECT_COLUMNS, { count: 'exact' })
       .order('id')
       .range(0, CHUNK_SIZE - 1);
 
@@ -418,7 +417,11 @@ async function fetchAllBills(): Promise<Bill[]> {
     for (let p = 1; p < totalPages; p++) {
       const start = p * CHUNK_SIZE;
       promises.push(
-        supabase!.from('bills').select('*').order('id').range(start, start + CHUNK_SIZE - 1)
+        supabase
+          .from('bills')
+          .select(BILL_SELECT_COLUMNS)
+          .order('id')
+          .range(start, start + CHUNK_SIZE - 1)
       );
     }
     const resList = await Promise.all(promises);
@@ -437,7 +440,11 @@ async function fetchAllBills(): Promise<Bill[]> {
   let offset = 0;
   while (true) {
     try {
-      const { data, error } = await supabase.from('bills').select('*').order('id').range(offset, offset + CHUNK_SIZE - 1);
+      const { data, error } = await supabase
+        .from('bills')
+        .select(BILL_SELECT_COLUMNS)
+        .order('id')
+        .range(offset, offset + CHUNK_SIZE - 1);
       if (error || !data || data.length === 0) break;
       all.push(...(data as Record<string, unknown>[]).map(mapBillFromSupabase));
       if (data.length < CHUNK_SIZE) break;
@@ -521,16 +528,16 @@ function dedupeBillsByBillNo(bills: Bill[]): Bill[] {
   })).values());
 }
 
-export async function apiFetchAllData() {
+export async function apiFetchAllData(options?: { fullHistory?: boolean }) {
   try {
     void probePaymentMethodColumn();
     const [bills, driversRaw, banksRaw, summariesRaw, settingsRaw, contactsRaw] = await Promise.all([
-      fetchAllBills(),
-      fetchAllRows('drivers', 'id'),
-      fetchAllRows('banks', 'id'),
-      fetchAllRows('driver_summaries', 'id'),
-      fetchAllRows('settings', 'key'),
-      fetchAllRows('contacts', 'id'),
+      fetchAllBills(options),
+      fetchAllRows('drivers', 'id', 'id, name'),
+      fetchAllRows('banks', 'id', 'id, name'),
+      fetchAllRows('driver_summaries', 'id', 'id, driver_name, date, total_bill_count, total_amount, cash_breakdown'),
+      fetchAllRows('settings', 'key', 'key, value'),
+      fetchAllRows('contacts', 'id', 'id, name, mobile, type'),
     ]);
 
     const settings: Record<string, string> = {};
@@ -561,6 +568,37 @@ export async function apiFetchAllData() {
     dispatchSyncStatus('error');
     throw err;
   }
+}
+
+/**
+ * P1 Optimization: Checks existing bill numbers in Supabase in targeted chunks of 200.
+ * Completely replaces downloading all 3,500+ bills during Ledger / Register imports!
+ * Returns a Set of bill numbers that already exist in Supabase.
+ */
+export async function apiCheckExistingBillNos(billNos: string[]): Promise<Set<string>> {
+  if (!supabase || !billNos || billNos.length === 0) return new Set();
+  const cleanNos = Array.from(new Set(billNos.map(bn => (bn || '').trim().toUpperCase()).filter(Boolean)));
+  if (cleanNos.length === 0) return new Set();
+
+  const existingSet = new Set<string>();
+  const CHUNK = 200;
+  for (let i = 0; i < cleanNos.length; i += CHUNK) {
+    const chunk = cleanNos.slice(i, i + CHUNK);
+    try {
+      const { data, error } = await supabase
+        .from('bills')
+        .select('bill_no')
+        .in('bill_no', chunk);
+      if (!error && Array.isArray(data)) {
+        data.forEach((row: any) => {
+          if (row.bill_no) existingSet.add(String(row.bill_no).trim().toUpperCase());
+        });
+      }
+    } catch (err) {
+      console.warn('[apiSync] apiCheckExistingBillNos chunk error:', err);
+    }
+  }
+  return existingSet;
 }
 
 
@@ -1531,7 +1569,7 @@ export async function fetchBillsPage(opts: {
   const size = Math.min(500, Math.max(10, opts.pageSize ?? 100));
   const from = page * size;
   const to = from + size - 1;
-  let q = supabase!.from('bills').select('*', { count: 'exact' }).range(from, to)
+  let q = supabase!.from('bills').select(BILL_SELECT_COLUMNS, { count: 'exact' }).range(from, to)
     .order(opts.orderBy ?? 'id', { ascending: opts.ascending ?? true });
   const f = opts.filters ?? {};
   if (f.driverName)       q = q.eq('driver_name', f.driverName);
@@ -1813,14 +1851,25 @@ export async function apiFetchBillsSince(sinceIso: string): Promise<Bill[]> {
   const CHUNK = 1000;
   const out: Bill[] = [];
   let offset = 0;
+  let activeCols = BILL_SELECT_COLUMNS;
   while (true) {
     const { data, error } = await supabase
       .from('bills')
-      .select('*')
+      .select(activeCols)
       .gt('updated_at', sinceIso)
       .order('updated_at')
       .range(offset, offset + CHUNK - 1);
-    if (error) throw error;
+    if (error) {
+      const missing = extractMissingColumn(error);
+      if (missing && activeCols.includes(missing)) {
+        activeCols = activeCols
+          .split(',')
+          .filter(c => c.trim().toLowerCase() !== missing.toLowerCase())
+          .join(',');
+        continue;
+      }
+      throw error;
+    }
     if (!data || data.length === 0) break;
     out.push(...(data as Record<string, unknown>[]).map(mapBillFromSupabase));
     if (data.length < CHUNK) break;

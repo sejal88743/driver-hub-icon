@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { apiFetchAllData } from '@/lib/apiSync';
+import { supabase } from '@/lib/supabase';
 
 type TableResult = {
   table: string;
@@ -20,48 +20,62 @@ type DiagState = {
 const TABLES = ['bills', 'drivers', 'banks', 'contacts', 'driver_summaries', 'settings'];
 
 async function runDiagnostics(): Promise<Omit<DiagState, 'status'>> {
+  if (!supabase) {
+    return {
+      apiReachable: false,
+      apiMs: 0,
+      apiError: 'Supabase client not initialized',
+      tables: TABLES.map(t => ({ table: t, count: null, error: 'No client', latencyMs: 0 })),
+      overallError: 'Supabase client not initialized',
+    };
+  }
+
   let apiReachable: boolean | null = null;
   let apiMs: number | null = null;
   let apiError: string | null = null;
-  const tables: TableResult[] = [];
 
   const t0 = Date.now();
   try {
-    const data = await apiFetchAllData();
+    const tablePromises = TABLES.map(async (table) => {
+      const start = Date.now();
+      try {
+        const idCol = table === 'settings' ? 'key' : 'id';
+        const { count, error } = await supabase!
+          .from(table)
+          .select(idCol, { count: 'exact', head: true });
+        const latency = Date.now() - start;
+        return {
+          table,
+          count: error ? null : (count ?? 0),
+          error: error ? error.message : null,
+          latencyMs: latency,
+        };
+      } catch (err: any) {
+        return {
+          table,
+          count: null,
+          error: String(err?.message || err),
+          latencyMs: Date.now() - start,
+        };
+      }
+    });
+
+    const tables = await Promise.all(tablePromises);
     apiMs = Date.now() - t0;
-
-    const hasBills = Array.isArray(data.bills);
-    apiReachable = hasBills;
-
-    if (hasBills) {
-      const countMap: Record<string, number> = {
-        bills: data.bills?.length ?? 0,
-        drivers: data.drivers?.length ?? 0,
-        banks: data.banks?.length ?? 0,
-        contacts: (data.partyContacts?.length ?? 0) + (data.salespersonContacts?.length ?? 0),
-        driver_summaries: data.summaries?.length ?? 0,
-        settings: Object.keys(data.settings ?? {}).length,
-      };
-      for (const table of TABLES) {
-        tables.push({ table, count: countMap[table] ?? 0, error: null, latencyMs: apiMs ?? 0 });
-      }
-    } else {
-      apiReachable = false;
-      apiError = 'apiFetchAllData returned empty/invalid data';
-      for (const table of TABLES) {
-        tables.push({ table, count: null, error: 'No data', latencyMs: 0 });
-      }
+    const errors = tables.filter(t => t.error !== null);
+    apiReachable = errors.length < tables.length;
+    if (errors.length > 0) {
+      apiError = errors.map(e => `${e.table}: ${e.error}`).join('; ');
     }
+
+    return { apiReachable, apiMs, apiError, tables, overallError: null };
   } catch (e: unknown) {
     apiMs = Date.now() - t0;
     apiReachable = false;
     apiError = String(e);
-    for (const table of TABLES) {
-      tables.push({ table, count: null, error: String(e), latencyMs: 0 });
-    }
+    const tables = TABLES.map(table => ({ table, count: null, error: String(e), latencyMs: 0 }));
+    return { apiReachable, apiMs, apiError, tables, overallError: null };
   }
-
-  return { apiReachable, apiMs, apiError, tables, overallError: null };
 }
 
 export default function DiagnosticsPage() {
