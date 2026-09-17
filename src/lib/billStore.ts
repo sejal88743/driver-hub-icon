@@ -2100,6 +2100,91 @@ export async function patchBillsInMemory(patches: Array<{ billNo: string; patch:
   return allSuccess;
 }
 
+/**
+ * Ultra-fast bulk patch for large datasets (e.g. 100 to 50,000+ bills).
+ * Uses O(1) index map lookup instead of repeated findIndex,
+ * applies patches in-memory and persists local state,
+ * then syncs to Supabase using chunked upserts (CHUNK = 800) with live progress reporting.
+ */
+export async function bulkPatchBillsInMemory(
+  patches: Array<{ id?: string; billNo: string; changes: Record<string, any> }>,
+  onProgress?: (saved: number, total: number) => void
+): Promise<{ success: boolean; updatedCount: number; total: number }> {
+  if (!patches || patches.length === 0) return { success: true, updatedCount: 0, total: 0 };
+
+  const cleanBn = (s: string) => String(s || '').trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
+  const stripGst = (s: string) => cleanBn(s).replace(/^GST/i, '').replace(/^MOC/i, '');
+
+  const billIndexMap = new Map<string, number>();
+  for (let i = 0; i < _bills.length; i++) {
+    const b = _bills[i];
+    if (b.id) billIndexMap.set(`id:${b.id}`, i);
+    const c = cleanBn(b.billNo);
+    if (c && !billIndexMap.has(`bn:${c}`)) billIndexMap.set(`bn:${c}`, i);
+    const st = stripGst(b.billNo);
+    if (st && !billIndexMap.has(`st:${st}`)) billIndexMap.set(`st:${st}`, i);
+  }
+
+  const updatedBills: Bill[] = [];
+  const editTimestamp = `${nowDMY()} ${nowHM()}`;
+  const isoTimestamp = new Date().toISOString();
+
+  for (const { id, billNo, changes } of patches) {
+    if (!changes || Object.keys(changes).length === 0) continue;
+
+    let idx = -1;
+    if (id && billIndexMap.has(`id:${id}`)) {
+      idx = billIndexMap.get(`id:${id}`)!;
+    } else {
+      const c = cleanBn(billNo);
+      const st = stripGst(billNo);
+      if (c && billIndexMap.has(`bn:${c}`)) {
+        idx = billIndexMap.get(`bn:${c}`)!;
+      } else if (st && billIndexMap.has(`st:${st}`)) {
+        idx = billIndexMap.get(`st:${st}`)!;
+      }
+    }
+
+    if (idx === -1) continue;
+
+    const currentBill = _bills[idx];
+    const delHist = updateDelPendingHistoryOnPatch(currentBill, changes);
+    if (delHist && !('delPendingHistory' in changes)) {
+      changes.delPendingHistory = delHist;
+    }
+
+    const withHist: Partial<Bill> = {
+      ...changes,
+      editDate: editTimestamp,
+      updatedAt: isoTimestamp,
+    };
+
+    _bills[idx] = { ...currentBill, ...withHist };
+    updatedBills.push(_bills[idx]);
+  }
+
+  if (updatedBills.length === 0) {
+    return { success: true, updatedCount: 0, total: patches.length };
+  }
+
+  dispatchUpdate();
+  persistLocalState(true);
+
+  markWriteStart();
+  try {
+    const { apiBulkUpsertWithProgress } = await import('@/lib/apiSync');
+    await apiBulkUpsertWithProgress(updatedBills, (saved, total) => {
+      onProgress?.(saved, total);
+    });
+    return { success: true, updatedCount: updatedBills.length, total: patches.length };
+  } catch (syncErr) {
+    console.warn('[bulkPatchBillsInMemory] Supabase sync warning:', syncErr);
+    return { success: false, updatedCount: updatedBills.length, total: patches.length };
+  } finally {
+    markWriteEnd();
+  }
+}
+
 
 
 // ─── Settings — in-memory (from Supabase), session-only state in sessionStorage ─

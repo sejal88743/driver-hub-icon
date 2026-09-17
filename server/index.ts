@@ -553,16 +553,20 @@ app.post('/api/admin/fix-bills', async (_req, res) => {
 
 // Helper function to call Gemini with multi-model fallback (handles 503/high-demand spikes gracefully)
 async function generateGeminiContentWithFallback(ai: GoogleGenAI, prompt: string): Promise<string | null> {
-  const candidateModels = ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-flash'];
+  const candidateModels = ['gemini-3.8-flash', 'gemini-flash-latest', 'gemini-3.1-flash-lite'];
   for (const model of candidateModels) {
     try {
-      const res = await ai.models.generateContent({
+      const generatePromise = ai.models.generateContent({
         model,
         contents: prompt,
         config: {
           responseMimeType: 'application/json',
         },
       });
+      const timeoutPromise = new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error(`Timeout calling model ${model}`)), 5000)
+      );
+      const res = await Promise.race([generatePromise, timeoutPromise]);
       if (res && res.text) {
         return res.text.trim();
       }
@@ -576,7 +580,7 @@ async function generateGeminiContentWithFallback(ai: GoogleGenAI, prompt: string
 // ─── Admin AI Agent endpoint (Gemini Powered DB Assistant & XLS Bulk Engine) ─
 app.post('/api/admin/ai-agent', async (req, res) => {
   try {
-    const { action, prompt, apiKey: clientApiKey, patches: inputPatches, bills: clientBills, billNos: inputBillNos, fileRows } = req.body ?? {};
+    const { action, prompt, apiKey: clientApiKey, patches: inputPatches, bills: clientBills, billNos: inputBillNos, fileRows, detectedHeaders } = req.body ?? {};
     const apiKey = (typeof clientApiKey === 'string' && clientApiKey.trim())
       ? clientApiKey.trim()
       : (req.headers['x-gemini-api-key'] as string) || process.env.GEMINI_API_KEY;
@@ -585,7 +589,7 @@ app.post('/api/admin/ai-agent', async (req, res) => {
     const now = new Date();
     const todayDMY = `${String(now.getDate()).padStart(2, '0')}/${String(now.getMonth() + 1).padStart(2, '0')}/${now.getFullYear()}`;
 
-    // 0. PARSE INTENT ONLY (LIGHTWEIGHT GEMINI CALL)
+    // 0. PARSE INTENT ONLY (LIGHTWEIGHT GEMINI CALL WITH DEEP REASONING)
     if (action === 'parse-intent') {
       const userPrompt = typeof prompt === 'string' ? prompt.trim() : '';
       if (!userPrompt) {
@@ -600,36 +604,71 @@ app.post('/api/admin/ai-agent', async (req, res) => {
             httpOptions: { headers: { 'User-Agent': 'aistudio-build' } },
           });
 
-          const promptContext = `You are the VitraTrack Billing AI Administrator.
-Analyze this admin request for a billing database.
+          const promptContext = `You are the VitraTrack Billing AI Administrator & Database Operations Agent.
+Analyze this admin request for a billing database (which can handle 40,000+ bills and XLS data).
 User Command/Prompt: "${userPrompt}"
 Today's Date: "${todayDMY}"
+Available XLS Headers (if any uploaded): ${Array.isArray(detectedHeaders) ? JSON.stringify(detectedHeaders) : '[]'}
 
-Understand user's intent in Hindi, Hinglish, Gujarati, or English:
-1. Target Payment Mode:
-   - "Paid" (when user asks to mark bills as Paid, Jama, Cash me paid karo, UPI me paid karo, etc.)
-   - "FBR" (when user asks to mark as FBR, Return, Cancel, Goods return, etc.)
-   - "Credit" or "Del Pending" (when user asks for credit, delivery pending, etc.)
-   - "Unpaid" (reset / unpaid)
-   - "" (if only searching/filtering without updating)
-2. Target Payment Method:
-   - "Cash" (when user mentions cash, nakad, rokad)
-   - "UPI" (when user mentions UPI, GPay, PhonePe, Paytm, online)
-   - "Cheque" (when user mentions cheque, bank)
-   - "Split" (when split payment is specified)
-   - "" (none)
-3. Target Date:
-   - If user mentions specific date (e.g. "25/08/2026" or "25-08-2026"), convert to DD/MM/YYYY.
-   - If user asks for today / aaj ki date / default, use "${todayDMY}".
-4. Discrepancy Reason (if FBR or discrepancy):
-   - e.g. "Damage", "Rate Difference", "Party Closed", "Order Cancelled", "Excess Stock", "Goods Return"
-5. Is this a Write/Edit/Update intent? (boolean: true if user wants to change/update/set/mark/paid/fbr/credit bills, false if just viewing)
-6. Target Amount Mode: "NET_AMOUNT" (full collection equal to net - lineCut) | "ZERO" (for FBR/Credit) | "CUSTOM"
+Understand the user's intent in Hindi, Hinglish, Gujarati, or English:
+1. Operation Type:
+   - "BULK_XLS_UPDATE": User wants to update a field in Supabase/Database from uploaded XLS data (e.g. "ye 42000 bills ke xls data se sabhi sales porson name ko supabase me update karo", "driver names xls se update karo", "beat names xls se update karo")
+   - "STATUS_UPDATE": User wants to mark bills as Paid (Cash/UPI/Cheque), FBR, Credit, Del Pending, or Unpaid.
+   - "FIELD_UPDATE": User wants to update a specific field across bills (e.g. "salesperson Ramesh ko Suresh karo", "driver Mukesh ke sabhi bills me driver Ramesh karo", "line cut amount 0 karo")
+   - "READ_QUERY": User is asking a question, count, summary, or report (e.g. "kitne bills unpaid hai", "driver wise summary batao", "salesperson list dikhao", "total outstanding kitna hai")
+   - "CONDITIONAL_UPDATE": Update field Y where field X matches a condition.
+
+2. Target Field:
+   - "salespersonName" (for sales person, salesman, salesperson, SR)
+   - "driverName" (for driver, route driver)
+   - "beatName" (for beat, route, market)
+   - "partyName" (for party name)
+   - "paymentMode" (for status, Paid, FBR, Credit, Unpaid)
+   - "lineCutAmt" (for line cut, damage deduction)
+   - "deliveryDate" (for delivery date)
+   - "paymentDate" (for collection / rec date)
+   - "discrepancyReason" (for FBR reason)
+   - "" (if generic read query)
+
+3. Target Value:
+   - "FROM_XLS" if pulling from uploaded XLS column
+   - Specific string/number value if specified (e.g. "Suresh", 0, "Goods Return")
+   - "" if not applicable
+
+4. XLS Column Mapping Hint (if BULK_XLS_UPDATE):
+   - For salesperson: look for header like "Salesman", "Sales Person", "Sales Person Name", "SR Name", "Employee"
+   - For driver: "Driver", "Driver Name"
+   - For beat: "Beat", "Beat Name", "Market"
+   - For amount: "Amount", "Net Amount", "Total"
+
+5. Thinking Steps:
+   - Provide 3-4 detailed Hindi/Hinglish reasoning steps explaining your logic and plan.
+   - Example Step 1: "Command samjha: User ne XLS data se sabhi bills ke Salesperson Name ko Supabase me update karne ko kaha hai."
+   - Example Step 2: "Column mapping identify ki: Bill No column aur Salesperson Name column ko match kiya jayega."
+   - Example Step 3: "Database comparison plan: 42,000 records ke sath database matching aur verification tayar ki gayi."
+   - Example Step 4: "Batch execution strategy: Chunks (800 bills per batch) me Supabase upsert aur app state sync hoga bina browser freeze hue."
+
+6. Payment specifics (if STATUS_UPDATE):
+   - targetPaymentMode: "Paid" | "FBR" | "Credit" | "Del Pending" | "Unpaid" | ""
+   - targetPaymentMethod: "Cash" | "UPI" | "Cheque" | "Split" | ""
+   - targetDate: DD/MM/YYYY (default "${todayDMY}")
+   - targetAmountMode: "NET_AMOUNT" | "ZERO" | "CUSTOM"
+   - discrepancyReason: string
 
 Respond ONLY in valid JSON matching schema:
 {
-  "explanation": "Clear Hinglish/English summary of what will be done",
+  "explanation": "Clear friendly Hinglish summary of the operation",
+  "operationType": "BULK_XLS_UPDATE" | "STATUS_UPDATE" | "FIELD_UPDATE" | "READ_QUERY" | "CONDITIONAL_UPDATE",
   "isWriteIntent": boolean,
+  "targetField": string,
+  "targetValue": string,
+  "sourceColumnHint": string,
+  "filterCondition": {
+    "field": string,
+    "operator": "equals" | "contains" | "greater_than" | "is_not",
+    "value": string
+  },
+  "thinkingSteps": [string, string, string, string],
   "targetPaymentMode": "Paid" | "FBR" | "Credit" | "Del Pending" | "Unpaid" | "",
   "targetPaymentMethod": "Cash" | "UPI" | "Cheque" | "Split" | "",
   "targetDate": string,

@@ -1,1 +1,0 @@
-ALTER TABLE public.bills ADD COLUMN IF NOT EXISTS edit_history jsonb NOT NULL DEFAULT '[]'::jsonb;

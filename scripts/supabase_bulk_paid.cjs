@@ -6,8 +6,8 @@
 const XLSX = require('../node_modules/xlsx');
 const fs   = require('fs');
 
-const SUPABASE_URL = 'https://sgtjihrzpngktwnpihmx.supabase.co';
-const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InNndGppaHJ6cG5na3R3bnBpaG14Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzkzNTczMzMsImV4cCI6MjA5NDkzMzMzM30.ZOE8BJbLMuS72k2OzOKlV-sD34Fy8punld3pJzV9dv8';
+const SUPABASE_URL = process.env.SUPABASE_URL || 'https://zybrzzouzleacqjvfiiu.supabase.co';
+const SUPABASE_KEY = process.env.SUPABASE_PUBLISHABLE_KEY || 'sb_publishable_go6TmeUGX9H7XytOiuC8lQ_c7Wjnaye';
 
 // DD/MM/YYYY → YYYY-MM-DD  (handles empty/blank gracefully)
 function parseDate(val) {

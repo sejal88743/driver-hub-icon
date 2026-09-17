@@ -14,8 +14,8 @@ for (const l of envLines) {
   if (m) process.env[m[1]] = m[2].replace(/^"|"$/g, '');
 }
 
-const URL = process.env.VITE_SUPABASE_URL;
-const KEY = process.env.VITE_SUPABASE_PUBLISHABLE_KEY;
+const URL = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL || 'https://zybrzzouzleacqjvfiiu.supabase.co';
+const KEY = process.env.VITE_SUPABASE_PUBLISHABLE_KEY || process.env.SUPABASE_PUBLISHABLE_KEY || 'sb_publishable_go6TmeUGX9H7XytOiuC8lQ_c7Wjnaye';
 
 async function fetchAll(filter) {
   let all = [];

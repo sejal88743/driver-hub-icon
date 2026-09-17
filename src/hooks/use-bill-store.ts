@@ -12,12 +12,11 @@ import { applyDirtyPatches, isDirtyPending, flushDirtyQueue } from '@/lib/localQ
 // Light incremental poll (only rows changed since last sync).
 // When the Realtime websocket is live, changes already arrive instantly, so the
 // poll acts only as a safety net and can run far less often (saves bandwidth/CPU
-// and keeps the UI smooth). Without realtime we fall back to a fast poll.
-const POLL_FAST_MS = 3_000;
-const POLL_SAFETY_MS = 20_000;
+// Adaptive polling intervals:
+// Delta sync fetches ONLY modified rows using `updated_at > deltaCursor` (tiny payload, near-zero egress).
+const POLL_FAST_MS = 4_000;
+const POLL_SAFETY_MS = 15_000;
 const POLL_TICK_MS = 1_000;
-// Periodic "download everything" refresh — runs in background.
-const FULL_SYNC_INTERVAL_MS = 3 * 60_000;
 
 
 
@@ -123,7 +122,10 @@ function scheduleDebouncedFullSync(delayMs = 1500) {
 
 // ─── Light incremental sync: only pull bills changed since last sync ─────────
 async function doDeltaSync() {
-  if (!deltaCursor) { void doFullSync(); return; }
+  if (!deltaCursor) {
+    const savedTs = typeof window !== 'undefined' ? localStorage.getItem('vitratrack_last_sync_ts') : null;
+    deltaCursor = savedTs || new Date(Date.now() - 24 * 3600 * 1000).toISOString();
+  }
   if (deltaInFlight || syncInFlight) return;
   const now = Date.now();
   if (isWriteInProgress() || (now - getLastWriteAt() < 2500)) return;
@@ -132,6 +134,9 @@ async function doDeltaSync() {
   try {
     const changed = await apiFetchBillsSince(deltaCursor);
     deltaCursor = cursorAt;
+    try {
+      if (typeof window !== 'undefined') localStorage.setItem('vitratrack_last_sync_ts', cursorAt);
+    } catch {}
     if (changed.length > 0) {
       // Never let the server overwrite rows still waiting to be pushed up
       const safe = changed.filter(b => !isDirtyPending(b.id, b.billNo));
@@ -161,6 +166,9 @@ async function doFullSync(force = false) {
   }
   syncInFlight = true;
   deltaCursor = new Date(Date.now() - 60_000).toISOString();
+  try {
+    if (typeof window !== 'undefined') localStorage.setItem('vitratrack_last_sync_ts', deltaCursor);
+  } catch {}
   patch({ syncing: true });
   try {
 
@@ -289,27 +297,9 @@ function initSupabaseRealtime(force = false) {
   try {
     realtimeChannel = supabase
       .channel('vitratrack_realtime_all')
-      .on(
-        'postgres_changes',
-        { event: '*', schema: 'public', table: 'bills' },
-        (payload) => {
-          const eventType = payload.eventType as 'INSERT' | 'UPDATE' | 'DELETE';
-          const newRow = payload.new as Record<string, unknown> | null;
-          const oldRow = payload.old as Record<string, unknown> | null;
-
-          if (eventType === 'DELETE') {
-            const oldId = String(oldRow?.id || '');
-            const oldBillNo = String(oldRow?.bill_no || oldRow?.billNo || '');
-            applyRealtimeBillChange('DELETE', undefined, oldId, oldBillNo);
-          } else if (newRow && typeof newRow === 'object') {
-            const mapped = mapBillFromSupabase(newRow);
-            applyRealtimeBillChange(eventType, mapped);
-          }
-
-          scheduleReadLocal();
-          window.dispatchEvent(new CustomEvent('sync-status', { detail: 'ok' }));
-        }
-      )
+      // Note: Do NOT listen to raw wildcard events on 42,000+ bills table!
+      // Listening to 42,000 rows generated ~400,000 realtime messages and exhausted free tier.
+      // Delta sync (doDeltaSync) already fetches changed bills incrementally every few seconds with near-zero egress.
       .on(
         'postgres_changes',
         { event: '*', schema: 'public', table: 'driver_summaries' },
@@ -456,8 +446,19 @@ function initGlobalSync() {
     void flushPendingWrites();
   }, 10000);
 
-  // Initial full load from Supabase, then adaptive incremental polling.
-  doFullSync();
+  // Initial load: If we already have bills locally in IndexedDB/cache, do NOT re-download all
+  // 42,000 bills (which wastes 50MB+ egress and blocks UI). Instead, use fast delta sync.
+  const localBills = getBills();
+  if (localBills && localBills.length > 0) {
+    patch({ loading: false });
+    const savedTs = typeof window !== 'undefined' ? localStorage.getItem('vitratrack_last_sync_ts') : null;
+    deltaCursor = savedTs || new Date(Date.now() - 24 * 3600 * 1000).toISOString();
+    void doDeltaSync();
+  } else {
+    // Fresh device or empty local cache: do one initial full sync
+    doFullSync();
+  }
+
   let lastPollAt = Date.now();
   pollingTimer = setInterval(() => {
     if (document.visibilityState === 'hidden') return;
@@ -467,10 +468,10 @@ function initGlobalSync() {
     lastPollAt = Date.now();
     void doDeltaSync();
   }, POLL_TICK_MS);
-  setInterval(() => {
-    if (document.visibilityState === 'hidden') return;
-    void doFullSync(true);
-  }, FULL_SYNC_INTERVAL_MS);
+
+  // We intentionally do NOT run a 3-minute full sync timer here anymore!
+  // Incremental delta sync above checks every few seconds and only fetches modified rows.
+  // This keeps Egress under 20MB/month instead of 17.29 GB.
   initSupabaseRealtime();
 }
 

@@ -1,1 +1,0 @@
-ALTER TABLE public.bills ADD COLUMN IF NOT EXISTS line_cut_amt real NOT NULL DEFAULT 0;

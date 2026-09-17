@@ -1,8 +1,8 @@
 import { createClient } from '@supabase/supabase-js';
 
 const supabase = createClient(
-  'https://sgtjihrzpngktwnpihmx.supabase.co',
-  'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InNndGppaHJ6cG5na3R3bnBpaG14Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzkzNTczMzMsImV4cCI6MjA5NDkzMzMzM30.ZOE8BJbLMuS72k2OzOKlV-sD34Fy8punld3pJzV9dv8'
+  process.env.SUPABASE_URL || 'https://zybrzzouzleacqjvfiiu.supabase.co',
+  process.env.SUPABASE_PUBLISHABLE_KEY || 'sb_publishable_go6TmeUGX9H7XytOiuC8lQ_c7Wjnaye'
 );
 
 // Fetch all bills with a cancel_line value

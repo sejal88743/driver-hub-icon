@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useMemo, useCallback } from 'react';
 import { Link } from 'react-router-dom';
-import { Check, Loader2, RotateCcw, Pencil, Wallet, Smartphone, Landmark, Hash, Trash2, X, Calendar, ListPlus, Mic, MicOff, Volume2, Banknote, MessageCircle } from 'lucide-react';
+import { Check, Loader2, RotateCcw, Pencil, Wallet, Smartphone, Landmark, Hash, Trash2, X, Calendar, ListPlus, Mic, MicOff, Volume2, Banknote, MessageCircle, AlertTriangle } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { useBillStore } from '@/hooks/use-bill-store';
 import { savePayment, getSystemPassword, getBills, saveBills, patchBillInMemory, patchBillDirect, setDailyUnlocked, getBanks, getUserPerm, getBillSearchAutoResetSec, addBillsToMemoryOnly, getSalespersonContacts, saveSalespersonContacts, findSalespersonContact, cleanSalespersonName, calculateBillDiscountPercent, Bill } from '@/lib/billStore';
@@ -200,6 +200,17 @@ export default function Dashboard() {
   const [showLineCutPopup, setShowLineCutPopup] = useState(false);
   const [lcInputVal, setLcInputVal] = useState('');
   const [lcAsOutstanding, setLcAsOutstanding]   = useState(false); // OS checkbox in LC popup
+
+  // ── Existing Line Cut Change Confirmation Modal ──
+  // User directive: agar ex: pahlese line cut amt 100 he or entry me rec amount add kar ne par 100 ke alava or koi amount line cut ka ho raha he to confirmation pop ke bad save hoga.
+  const [showLcChangeConfirm, setShowLcChangeConfirm] = useState(false);
+  const [lcChangeDetails, setLcChangeDetails] = useState<{
+    existingLc: number;
+    newLc: number;
+    totalCollected: number;
+    billNetAmt: number;
+    recDateParam?: string | null;
+  } | null>(null);
 
 
   const saveBtnRef = useRef<HTMLButtonElement>(null);
@@ -2214,9 +2225,30 @@ export default function Dashboard() {
     // Cheque metadata-only update (editLocked or received bill — only update chequeNo + chequeDate + bankName)
     if (isChqMetaOnlyEdit || isEditLockedChqMeta) { doSaveChequeMetadata(); return; }
 
+    // Existing line cut on this bill (if any)
+    const existingLc = Math.max(0, (selectedBill?.lineCutAmt || 0) || Number(selectedBill?.cancelLine) || 0);
+
+    // USER RULE:
+    // line cut amt jab bill entry horaha he to change live nahi hoga vah save karne par hi change hoga
+    // or agar ex: pahlese line cut amt 100 he or entry me rec amount add kar ne par 100 ke alava or koi amount line cut ka ho raha he to comfomation pop ke bad save hoga.
+    if (!isSpecial && netAmt != null && totalCollected > 0 && totalCollected <= netAmt) {
+      const calculatedNewLc = Math.max(0, netAmt - totalCollected);
+      if (existingLc > 0 && calculatedNewLc !== existingLc) {
+        setLcChangeDetails({
+          existingLc,
+          newLc: calculatedNewLc,
+          totalCollected,
+          billNetAmt: netAmt,
+          recDateParam: recDate,
+        });
+        setShowLcChangeConfirm(true);
+        return;
+      }
+    }
+
     if (isSpecial) doSave(null, recDate);
     else if (netAmt != null && totalCollected < netAmt && totalCollected > 0) {
-      // Partial payment → Line Cut automatically calculated as: Bill Net Amt - Received Amt
+      // Partial payment (no previous line cut) → Line Cut automatically calculated as: Bill Net Amt - Received Amt
       const calculatedLc = Math.max(0, netAmt - totalCollected);
       setLcInputVal(String(calculatedLc));
       setLcAsOutstanding(false);
@@ -2681,6 +2713,61 @@ export default function Dashboard() {
         return;
       }
 
+      // ── Escape key closes LC change confirm modal ──
+      if (showLcChangeConfirm) {
+        if (e.key === 'Escape') {
+          e.preventDefault();
+          setShowLcChangeConfirm(false);
+          return;
+        }
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          if (lcChangeDetails) {
+            const { newLc, recDateParam } = lcChangeDetails;
+            setShowLcChangeConfirm(false);
+            doSave(newLc, recDateParam);
+          }
+          return;
+        }
+      }
+
+      // ── Bill Unlock Shortcut: 'u' / 'U' ──
+      // User directive: "entry page ne 'u' press kar ne par bill unlock hojana chahiye"
+      const keyLower = e.key ? e.key.toLowerCase() : '';
+      const targetEl = e.target as HTMLElement | null;
+      const isInputEl = targetEl && (targetEl.tagName === 'INPUT' || targetEl.tagName === 'TEXTAREA' || targetEl.tagName === 'SELECT');
+
+      if (keyLower === 'u' && selectedBillNo && (editLocked || isBillCurrentlyLocked)) {
+        // Trigger if:
+        // 1. Plain 'u' when not typing in an input field (or on body/table/buttons)
+        // 2. Alt+U or Ctrl+U anywhere
+        const isDirectU = !e.ctrlKey && !e.metaKey && !e.altKey && !isInputEl;
+        const isComboU = e.altKey || e.ctrlKey || e.metaKey;
+        if (isDirectU || isComboU) {
+          e.preventDefault();
+          const canEditSelectedBill = !isUserRole || userPerms.canEdit;
+          if (canEditSelectedBill && !userCannotEditReceivedBill) {
+            setEditLocked(false);
+            setTimeout(() => {
+              cashInputRef.current?.focus();
+              cashInputRef.current?.select();
+            }, 50);
+            toast({
+              title: "Bill Unlocked",
+              description: "Edit mode chalu ho gaya (U)",
+              duration: 2000,
+            });
+          } else {
+            toast({
+              title: "Permission Denied",
+              description: "Aapke paas is bill ko unlock/edit karne ki permission nahi hai.",
+              variant: "destructive",
+            });
+          }
+          return;
+        }
+      }
+
       if (e.ctrlKey || e.metaKey) {
         const key = e.key.toLowerCase();
         if (key === 'e') {
@@ -2701,7 +2788,7 @@ export default function Dashboard() {
 
       // ── Entry Shortcuts: 1 = FBR, 2 = Credit, 3 = Del Pending ──
       // Active when a bill is selected and no modal is blocking
-      if (selectedBillNo && !showFbrReasonModal && !showLineCutPopup && !showDiffConfirm && !showRecDateConfirm && !showDatePicker && !showMocModal && !showMultiBillModal && !showOverflowModal && !showResetPwModal && !pendingSelectBill) {
+      if (selectedBillNo && !showLcChangeConfirm && !showFbrReasonModal && !showLineCutPopup && !showDiffConfirm && !showRecDateConfirm && !showDatePicker && !showMocModal && !showMultiBillModal && !showOverflowModal && !showResetPwModal && !pendingSelectBill) {
         const target = e.target as HTMLElement | null;
         const isInput = target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.tagName === 'SELECT');
         const isSearchInput = target === billInputRef.current;
@@ -3173,15 +3260,8 @@ export default function Dashboard() {
             || (!isFBR2 && !isCredit2 && !isDelPend2 && !isUnpaid2 && !!selectedBill.paymentDate && (selectedBill.collectedAmount || 0) > 0)
             || (!isFBR2 && !isCredit2 && !isDelPend2 && !isUnpaid2 && _liveTotal > 0);
           const savedLineCut2 = (selectedBill.lineCutAmt || 0) || Number(selectedBill.cancelLine) || 0;
-          const lineCut2 = isMoc2 ? 0 : ((!isFBR2 && !isCredit2 && !isDelPend2 && !isUnpaid2)
-            ? (_liveTotal > 0
-                ? Math.max(0, selectedBill.billNetAmt - _liveTotal)
-                : ((selectedBill.collectedAmount || 0) >= selectedBill.billNetAmt
-                    ? 0
-                    : ((selectedBill.collectedAmount || 0) > 0
-                        ? Math.max(0, Math.min(savedLineCut2, selectedBill.billNetAmt - (selectedBill.collectedAmount || 0)))
-                        : savedLineCut2)))
-            : (isFBR2 ? selectedBill.billNetAmt : savedLineCut2));
+          // USER DIRECTIVE: line cut amt jab bill entry horaha he to change live nahi hoga vah save karne par hi change hoga
+          const lineCut2 = isMoc2 ? 0 : (isFBR2 ? selectedBill.billNetAmt : savedLineCut2);
           const net2 = isMoc2 ? (selectedBill.billNetAmt || _liveTotal || 0) : (selectedBill.billNetAmt - lineCut2);
           const collected2 = _liveTotal > 0 ? _liveTotal : (selectedBill.collectedAmount || 0);
           const isFullyPaid2 = isMoc2 || (isPaidMode2 && collected2 > 0 && Math.abs(net2 - collected2) <= 1);
@@ -3665,7 +3745,7 @@ export default function Dashboard() {
                     <Button
                       variant="outline"
                       disabled={(getRole() === 'user' && !userPerms.canEdit) || userCannotEditReceivedBill}
-                      title={userCannotEditReceivedBill ? "Admin page me is user ka Edit right ON hona chahiye" : undefined}
+                      title={userCannotEditReceivedBill ? "Admin page me is user ka Edit right ON hona chahiye" : "Bill unlock karne ke liye 'U' key dabayein"}
                       onClick={() => {
                         if ((getRole() === 'user' && !userPerms.canEdit) || userCannotEditReceivedBill) return;
                         setEditLocked(false);
@@ -3676,7 +3756,7 @@ export default function Dashboard() {
                         editLocked ? "bg-amber-500/10 border-amber-500/40 text-amber-600 hover:bg-amber-500/20" : "bg-muted"
                       )}
                     >
-                      <Pencil className="w-3.5 h-3.5 mr-1.5" />{editLocked ? 'Unlock' : 'Edit'}
+                      <Pencil className="w-3.5 h-3.5 mr-1.5" />{editLocked ? 'Unlock (U)' : 'Edit Mode'}
                     </Button>
                   )}
                   <Button
@@ -3944,6 +4024,103 @@ export default function Dashboard() {
         initialLcAsOutstanding={lcAsOutstanding}
         initialLineCutValue={parseAmountExpression(lcInputVal)}
       />
+
+      {/* ── Existing Line Cut Amount Change Confirmation Modal ── */}
+      {showLcChangeConfirm && lcChangeDetails && selectedBill && (
+        <div className="fixed inset-0 bg-black/60 z-[285] flex items-center justify-center p-4 backdrop-blur-xs">
+          <div className="bg-card rounded-3xl p-6 w-full max-w-md shadow-2xl border-2 border-amber-500/40 animate-in zoom-in-95 duration-150">
+            <div className="flex items-center justify-between pb-3 border-b border-border mb-4">
+              <div className="flex items-center gap-2.5">
+                <div className="w-10 h-10 rounded-2xl bg-amber-500/10 text-amber-600 flex items-center justify-center font-black">
+                  <AlertTriangle className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-base font-black uppercase text-foreground">Line Cut Badlaav Confirm Karein</h3>
+                  <p className="text-[11px] font-bold text-muted-foreground uppercase">
+                    Bill #{selectedBill.billNo} • {selectedBill.partyName}
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => setShowLcChangeConfirm(false)}
+                className="w-8 h-8 rounded-full bg-muted flex items-center justify-center text-muted-foreground hover:text-foreground"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="space-y-3 mb-5">
+              <div className="rounded-2xl bg-muted/50 p-3.5 border border-border space-y-2 text-xs">
+                <div className="flex justify-between items-center">
+                  <span className="text-muted-foreground font-bold uppercase">Bill Net Amount:</span>
+                  <span className="font-black text-foreground">₹{lcChangeDetails.billNetAmt.toLocaleString('en-IN')}</span>
+                </div>
+                <div className="flex justify-between items-center">
+                  <span className="text-muted-foreground font-bold uppercase">Naya Received Amount:</span>
+                  <span className="font-black text-emerald-600">₹{lcChangeDetails.totalCollected.toLocaleString('en-IN')}</span>
+                </div>
+                <div className="h-px bg-border my-1" />
+                <div className="flex justify-between items-center bg-amber-500/10 -mx-2 px-2 py-1.5 rounded-lg border border-amber-500/20">
+                  <span className="text-amber-800 dark:text-amber-300 font-bold uppercase">Pehle se Line Cut Amount:</span>
+                  <span className="font-black text-amber-700 dark:text-amber-400 text-sm">₹{lcChangeDetails.existingLc.toLocaleString('en-IN')}</span>
+                </div>
+                <div className="flex justify-between items-center bg-red-500/10 -mx-2 px-2 py-1.5 rounded-lg border border-red-500/20">
+                  <span className="text-red-800 dark:text-red-300 font-bold uppercase">Naya Line Cut Hoga:</span>
+                  <span className="font-black text-red-700 dark:text-red-400 text-sm">₹{lcChangeDetails.newLc.toLocaleString('en-IN')}</span>
+                </div>
+                <div className="flex justify-between items-center text-[11px]">
+                  <span className="text-muted-foreground font-bold uppercase">Farak (Difference):</span>
+                  <span className="font-black text-foreground">
+                    {lcChangeDetails.newLc > lcChangeDetails.existingLc ? '+' : ''}
+                    ₹{(lcChangeDetails.newLc - lcChangeDetails.existingLc).toLocaleString('en-IN')}
+                    {lcChangeDetails.newLc > lcChangeDetails.existingLc ? ' (Line Cut badh raha hai)' : ' (Line Cut ghat raha hai)'}
+                  </span>
+                </div>
+              </div>
+
+              <p className="text-xs font-semibold text-muted-foreground leading-relaxed">
+                Pehle se is bill par <strong>₹{lcChangeDetails.existingLc.toLocaleString('en-IN')}</strong> Line Cut tha. Kya aap naya Line Cut <strong>₹{lcChangeDetails.newLc.toLocaleString('en-IN')}</strong> save karna chahte hain, ya purana <strong>₹{lcChangeDetails.existingLc.toLocaleString('en-IN')}</strong> hi rakhna chahte hain?
+              </p>
+            </div>
+
+            <div className="flex flex-col gap-2">
+              <Button
+                type="button"
+                onClick={() => {
+                  const { newLc, recDateParam } = lcChangeDetails;
+                  setShowLcChangeConfirm(false);
+                  doSave(newLc, recDateParam);
+                }}
+                className="w-full h-11 rounded-2xl bg-red-600 hover:bg-red-700 text-white font-black uppercase text-xs shadow-md active:scale-98"
+              >
+                Haan, Naya Line Cut (₹{lcChangeDetails.newLc.toLocaleString('en-IN')}) Save Karein
+              </Button>
+
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => {
+                  const { existingLc, recDateParam } = lcChangeDetails;
+                  setShowLcChangeConfirm(false);
+                  doSave(existingLc, recDateParam);
+                }}
+                className="w-full h-11 rounded-2xl border-2 border-amber-500/40 text-amber-700 hover:bg-amber-500/10 font-black uppercase text-xs"
+              >
+                Nahi, Purana Line Cut (₹{lcChangeDetails.existingLc.toLocaleString('en-IN')}) Hi Rakhein
+              </Button>
+
+              <Button
+                type="button"
+                variant="ghost"
+                onClick={() => setShowLcChangeConfirm(false)}
+                className="w-full h-9 rounded-xl text-muted-foreground hover:text-foreground font-bold uppercase text-[11px]"
+              >
+                Cancel (Wapas)
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
 
       <FbrReasonModal
         isOpen={showFbrReasonModal}

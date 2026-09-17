@@ -1,1 +1,0 @@
-ALTER TABLE public.bills ADD COLUMN IF NOT EXISTS del_pending_history jsonb DEFAULT '[]'::jsonb;
