@@ -18,9 +18,21 @@ function createMockPool() {
 
 if (process.env.DATABASE_URL) {
   try {
+    // Disable SSL for local/internal hosts (localhost, 127.0.0.1, compose
+    // service names like "db"); only use SSL for remote managed databases.
+    let dbHost = '';
+    try {
+      dbHost = new URL(process.env.DATABASE_URL).hostname;
+    } catch {
+      dbHost = '';
+    }
+    const isLocalDb =
+      dbHost === 'localhost' ||
+      dbHost === '127.0.0.1' ||
+      dbHost === 'db';
     const realPool = new Pool({
       connectionString: process.env.DATABASE_URL,
-      ssl: process.env.DATABASE_URL.includes('localhost') ? false : { rejectUnauthorized: false },
+      ssl: isLocalDb ? false : { rejectUnauthorized: false },
       connectionTimeoutMillis: 5000,
     });
     realPool.on('error', (err: any) => {
@@ -48,6 +60,13 @@ if (process.env.DATABASE_URL) {
       },
       on: (event: string, listener: any) => {
         realPool.on(event, listener);
+      },
+      end: async () => {
+        try {
+          await realPool.end();
+        } catch (err) {
+          console.warn('[AI Studio] Database pool end failed', err);
+        }
       },
     };
   } catch (err) {
