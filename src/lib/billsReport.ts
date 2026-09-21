@@ -90,7 +90,7 @@ function parseRegister(data: ArrayBuffer, XLSX: any): {
     cellStyles: false,
     cellNF: false,
     cellFormula: false,
-    cellDates: true,
+    cellDates: false,
   });
   const ws = wb.Sheets[wb.SheetNames[0]];
   if (!ws?.['!ref']) throw new Error('Sheet is empty.');

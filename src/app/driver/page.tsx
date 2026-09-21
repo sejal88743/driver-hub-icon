@@ -204,7 +204,7 @@ export default function DriverPage() {
       const dateCounts = new Map<string, number>();
 
       for (const data of buffers) {
-        const wb = safeReadWorkbook(XLSX, data, { cellDates: true });
+        const wb = safeReadWorkbook(XLSX, data, { cellDates: false });
 
         for (const sheetName of wb.SheetNames) {
           const ws = wb.Sheets[sheetName] as Record<string, unknown>;
