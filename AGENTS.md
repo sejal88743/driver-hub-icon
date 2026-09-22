@@ -35,6 +35,19 @@ Strict Rules:
   AI agent feature to work.
 - Supabase credentials are hardcoded in `src/lib/supabase.ts` — no secret needed.
 
+### WhatsApp Bot (linked-device)
+- `server/whatsappBot.ts` runs Baileys (`@whiskeysockets/baileys`, ESM-only pkg,
+  needs `git` at `npm install` time — installed via apt in the compose commands).
+- **Baileys 6.7.x config key is `auth`**, NOT `authState` (silent API change).
+- Session lives in `.wa-session/` (gitignored). Bot start/stop/status via
+  `/api/admin/whatsapp-bot/*`; live events stream over SSE at
+  `/api/admin/whatsapp-bot/events`.
+- The bot's Gemini key comes ONLY from the `settings` table row `gemini_api_key`
+  (saved from the admin UI, never the env/Base44 key). `/api/all` strips that key.
+- Payment extraction is shared: `server/whatsappExtract.ts` (used by both the
+  upload endpoint and the live bot). Saves happen ONLY after the user confirms
+  in the popup (`src/components/WhatsAppPaymentPopup.tsx`).
+
 ### Verify it works
 - `curl localhost:3000/api/health` → `{"ok":true}`
 - `curl localhost:3000/api/all` → JSON with bills/drivers/banks/... arrays

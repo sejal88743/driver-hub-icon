@@ -5,6 +5,8 @@ import { fileURLToPath } from 'url';
 import fs from 'fs';
 import { GoogleGenAI, Type } from '@google/genai';
 import { pool } from './db.js';
+import { extractPaymentEntries } from './whatsappExtract.js';
+import { startBot, stopBot, getBotStatus, setPaymentEventHandler } from './whatsappBot.js';
 
 const __dirname = process.cwd();
 
@@ -183,6 +185,8 @@ app.get('/api/all', async (_req, res) => {
       .map((r: Record<string, unknown>) => ({ name: String(r.name), mobile: String(r.mobile) }));
     const settings: Record<string, string> = {};
     for (const r of settingsRes.rows as { key: string; value: string }[]) settings[r.key] = r.value;
+    // Never expose the admin-saved Gemini API key to clients
+    delete settings['gemini_api_key'];
 
     res.json({ bills, drivers, banks, summaries, partyContacts, salespersonContacts, settings });
   } catch (err) {
@@ -1203,100 +1207,56 @@ app.post('/api/admin/whatsapp-ai', async (req, res) => {
       return res.json({ ok: false, error: 'Unknown action. Use action: "extract".' });
     }
 
-    const hasImage = typeof imageBase64 === 'string' && imageBase64.trim().length > 0;
-    const hasText = typeof text === 'string' && text.trim().length > 0;
-    if (!hasImage && !hasText) {
-      return res.json({ ok: false, error: 'WhatsApp group ka screenshot/image ya paste kiya hua text required hai.' });
-    }
-
-    const now = new Date();
-    const todayDMY = `${String(now.getDate()).padStart(2, '0')}/${String(now.getMonth() + 1).padStart(2, '0')}/${now.getFullYear()}`;
-
-    const ai = new GoogleGenAI({
-      apiKey,
-      httpOptions: { headers: { 'User-Agent': 'aistudio-build' } },
-    });
-
-    const instruction = `You are VitraTrack's WhatsApp Payment Extraction Bot. A WhatsApp group screenshot/image or pasted group text contains payment confirmations from salesmen/drivers. Extract EVERY payment entry you can find.
-
-Today's Date: "${todayDMY}"
-
-From the screenshot or text, identify for each payment:
-- billNo: The bill number / invoice number (e.g. GST123456, MOC789, 123456). Often prefixed like "GST"/"MOC" — keep the prefix as written.
-- amount: The payment amount (number only). If multiple amounts (cash + UPI), give the TOTAL received.
-- paymentMethod: "Cash" | "UPI" | "Cheque" | "Split" | "" (best guess from context like "cash", "online", "gpay", "cheque")
-- date: Payment date in DD/MM/YYYY. If the message says "aaj"/"today" use "${todayDMY}". If no date, use "${todayDMY}".
-- partyName: Party/shop name if visible (optional).
-- remarks: Any extra note (optional).
-
-Rules:
-- Read Hindi, English, Hinglish, Gujarati text and handwriting-style prints in screenshots.
-- If amounts are unclear, still extract the bill number and give your best amount estimate.
-- Do NOT invent bill numbers that are not visible in the image/text.
-
-Respond ONLY with valid JSON matching exactly this schema:
-{"entries":[{"billNo":"string","amount":number,"paymentMethod":"Cash","date":"DD/MM/YYYY","partyName":"string","remarks":"string"}],"summary":"one line Hinglish summary of what was extracted"}`;
-
-    const parts: Array<Record<string, any>> = [{ text: instruction }];
-    if (hasText) {
-      parts.push({ text: `WhatsApp group text content:\n"""\n${String(text).slice(0, 15000)}\n"""` });
-    }
-    if (hasImage) {
-      parts.push({
-        inlineData: {
-          mimeType: imageMime || 'image/jpeg',
-          data: imageBase64.replace(/^data:[^;]+;base64,/, ''),
-        },
-      });
-    }
-
-    // Vision extraction needs longer timeout than the text-only intent parser.
-    const candidateModels = ['gemini-3.8-flash', 'gemini-flash-latest', 'gemini-3.1-flash-lite'];
-    let rawText: string | null = null;
-    for (const model of candidateModels) {
-      try {
-        const generatePromise = ai.models.generateContent({
-          model,
-          contents: [{ role: 'user', parts }],
-          config: { responseMimeType: 'application/json' },
-        });
-        const timeoutPromise = new Promise<never>((_, reject) =>
-          setTimeout(() => reject(new Error(`Timeout calling model ${model}`)), 30000)
-        );
-        const result = await Promise.race([generatePromise, timeoutPromise]);
-        if (result && result.text) {
-          rawText = result.text.trim();
-          break;
-        }
-      } catch (err: any) {
-        console.warn(`[WhatsApp AI] Model ${model} unavailable (${err?.status || err?.message}), trying next fallback...`);
-      }
-    }
-
-    if (!rawText) {
-      return res.status(502).json({ ok: false, error: 'AI extraction failed — thodi der baad dobara try karein.' });
-    }
-
-    let parsed: any;
-    try {
-      parsed = JSON.parse(rawText);
-    } catch {
-      try {
-        parsed = JSON.parse(rawText.replace(/^```(json)?/i, '').replace(/```$/, '').trim());
-      } catch {
-        return res.status(502).json({ ok: false, error: 'AI response could not be parsed.' });
-      }
-    }
-
-    const entries = Array.isArray(parsed?.entries)
-      ? parsed.entries.filter((e: any) => e && String(e.billNo || '').trim())
-      : [];
-
-    return res.json({ ok: true, entries, summary: parsed?.summary || '' });
+    const result = await extractPaymentEntries({ apiKey, text, imageBase64, imageMime });
+    return res.json(result);
   } catch (err) {
     console.error('[POST /api/admin/whatsapp-ai]', err);
     return res.status(500).json({ ok: false, error: String(err) });
   }
+});
+
+// ─── WhatsApp Live Bot control + SSE event stream (linked-device bot) ────────
+const waSseClients = new Set<any>();
+setInterval(() => {
+  for (const c of waSseClients) {
+    try { c.write(': ping\n\n'); } catch {}
+  }
+}, 25000);
+
+// Live bot payment extraction → broadcast to all connected app clients (popup)
+setPaymentEventHandler((event) => {
+  const payload = `data: ${JSON.stringify(event)}\n\n`;
+  for (const c of waSseClients) {
+    try { c.write(payload); } catch {}
+  }
+});
+
+// SSE stream: the app stays connected; payment events arrive in real time
+app.get('/api/admin/whatsapp-bot/events', (req, res) => {
+  res.set({
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache, no-transform',
+    Connection: 'keep-alive',
+    'X-Accel-Buffering': 'no',
+  });
+  res.flushHeaders?.();
+  res.write(`data: ${JSON.stringify({ type: 'status', status: getBotStatus() })}\n\n`);
+  waSseClients.add(res);
+  req.on('close', () => waSseClients.delete(res));
+});
+
+app.post('/api/admin/whatsapp-bot/start', (_req, res) => {
+  startBot();
+  res.json({ ok: true, status: getBotStatus() });
+});
+
+app.post('/api/admin/whatsapp-bot/stop', (_req, res) => {
+  stopBot();
+  res.json({ ok: true, status: getBotStatus() });
+});
+
+app.get('/api/admin/whatsapp-bot/status', (_req, res) => {
+  res.json({ ok: true, status: getBotStatus() });
 });
 
 // ─── Bulk update bill dates (ported from Supabase Edge Function) ──────────────

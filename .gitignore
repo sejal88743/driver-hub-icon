@@ -24,6 +24,9 @@ dist-ssr
 .wrangler/
 .dev.vars
 
+# WhatsApp linked-device bot session
+.wa-session
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

@@ -19,7 +19,7 @@ services:
     volumes:
       - ./:/app
       - app_node_modules:/app/node_modules
-    command: sh -c "npm install --no-audit --no-fund && npx tsx server/migrate.ts"
+    command: sh -c "apt-get update -qq >/dev/null 2>&1; apt-get install -y -qq git >/dev/null 2>&1; npm install --no-audit --no-fund && npx tsx server/migrate.ts"
     environment:
       DATABASE_URL: postgresql://vitratrack:vitratrack_dev@db:5432/vitratrack
     depends_on:
@@ -32,7 +32,7 @@ services:
     volumes:
       - ./:/app
       - app_node_modules:/app/node_modules
-    command: sh -c "npm install --no-audit --no-fund && npm run dev"
+    command: sh -c "apt-get update -qq >/dev/null 2>&1; apt-get install -y -qq git >/dev/null 2>&1; npm install --no-audit --no-fund && npm run dev"
     environment:
       DATABASE_URL: postgresql://vitratrack:vitratrack_dev@db:5432/vitratrack
       NODE_ENV: development

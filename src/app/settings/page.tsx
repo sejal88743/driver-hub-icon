@@ -2,6 +2,7 @@
 import { useState, useRef, useEffect, useMemo } from 'react';
 import { AdminAiAgent } from '@/components/AdminAiAgent';
 import { WhatsAppAiBot } from '@/components/WhatsAppAiBot';
+import { WhatsAppLiveBot } from '@/components/WhatsAppLiveBot';
 import GreenPartyManagerModal from '@/components/GreenPartyManagerModal';
 import { getGreenParties } from '@/lib/greenParties';
 import { FileSpreadsheet, Loader2, Trash2, Plus, Lock, MessageSquare, ShieldCheck, Download, AlertCircle, CheckCircle2, X, Archive, UploadCloud, Type, Smartphone, Phone, Pencil, RotateCcw } from 'lucide-react';
@@ -2612,6 +2613,9 @@ export default function SettingsPage() {
 
         {/* WhatsApp AI Payment Bot */}
         <WhatsAppAiBot />
+
+        {/* WhatsApp Live Bot (Linked Device) */}
+        <WhatsAppLiveBot />
 
         {/* Bills Report Update */}
         <div id="bills-report-update" className="bg-card rounded-xl p-3 border border-amber-200 shadow-sm">

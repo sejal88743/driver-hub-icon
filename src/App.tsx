@@ -2,6 +2,7 @@ import { Routes, Route, Navigate, useLocation } from 'react-router-dom';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { Toaster } from '@/components/ui/toaster';
 import { ConnectionStatus } from '@/components/ConnectionStatus';
+import { WhatsAppPaymentPopup } from '@/components/WhatsAppPaymentPopup';
 import { lazy, Suspense, useState, useEffect } from 'react';
 import Dashboard from '@/app/page';
 import LoginPage from '@/app/login/page';
@@ -141,6 +142,7 @@ export default function App() {
       <OfflineGate>
         <ConnectionStatus />
         <Toaster />
+        {role && <WhatsAppPaymentPopup />}
         
         {/* Floating calculator button in bottom-left corner for mobile/touch screens */}
         {role && (

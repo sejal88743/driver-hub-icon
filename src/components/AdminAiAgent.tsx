@@ -142,6 +142,12 @@ export function AdminAiAgent() {
         localStorage.removeItem('gemini_api_key');
       }
     }
+    // Sync to server settings so the live WhatsApp bot (background) can use this key
+    fetch('/api/settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ key: 'gemini_api_key', value: key.trim() }),
+    }).catch(() => {});
   }
 
   // ── Auto-Detect Column Names from XLS Headers ──
