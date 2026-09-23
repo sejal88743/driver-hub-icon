@@ -40,9 +40,9 @@ export async function extractPaymentEntries(opts: {
 Today's Date: "${todayDMY}"
 
 From the message or screenshot, identify for each payment:
-- billNo: The bill number / invoice number (e.g. GST123456, MOC789, 123456). Often prefixed like "GST"/"MOC" — keep the prefix as written.
+- billNo: The bill number / invoice number. Har screenshot/message me bill no "GST45027" ya "45027" format me likha hota hai — "GST" prefix strip karke SIRF number part do (GST45027 → "45027", GST123 → "123"). Agar koi aur prefix ho (MOC789, IV123) to bhi prefix hata kar sirf number do.
 - amount: The payment amount (number only). If multiple amounts (cash + UPI), give the TOTAL received.
-- paymentMethod: "Cash" | "UPI" | "Cheque" | "Split" | "" (best guess from context like "cash", "online", "gpay", "cheque")
+- paymentMethod: "Cash" | "GPay" | "UPI" | "Cheque" | "Split" | "" — gpay / google pay / online payments ke liye "GPay" use karo, cash ke liye "Cash", cheque ke liye "Cheque" (best guess from context)
 - date: Payment date in DD/MM/YYYY. If the message says "aaj"/"today" use "${todayDMY}". If no date, use "${todayDMY}".
 - partyName: Party/shop name if visible (optional).
 - remarks: Any extra note (optional).

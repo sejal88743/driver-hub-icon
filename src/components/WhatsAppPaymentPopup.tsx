@@ -119,7 +119,10 @@ export function WhatsAppPaymentPopup() {
       const effectiveNet = Math.max(0, netAmt - lineCut);
       const amount = current.entry.amount > 0 ? Math.min(Number(current.entry.amount), effectiveNet) : effectiveNet;
       const outstanding = Math.max(0, effectiveNet - amount);
-      const method = current.entry.paymentMethod || 'Cash';
+      // GPay / UPI / online — sab UPI bucket me; payment usually GPay screenshot se aata hai
+      const rawMethod = current.entry.paymentMethod || 'GPay';
+      const isUpi = /gpay|upi|online|phonepe|paytm|g-pay/i.test(rawMethod);
+      const method = isUpi ? 'GPay' : rawMethod;
 
       const patch = {
         id: bill.id,
@@ -130,8 +133,8 @@ export function WhatsAppPaymentPopup() {
           paymentDate: current.entry.date || todayDMY(),
           collectedAmount: amount,
           outstandingAmount: outstanding,
-          cashAmount: method === 'Cash' ? amount : 0,
-          upiAmount: method === 'UPI' ? amount : 0,
+          cashAmount: !isUpi && method === 'Cash' ? amount : 0,
+          upiAmount: isUpi ? amount : 0,
           chequeAmount: method === 'Cheque' ? amount : 0,
         },
       };
@@ -234,7 +237,7 @@ export function WhatsAppPaymentPopup() {
                   </div>
                   <div>
                     <p className="text-[8.5px] font-black uppercase text-muted-foreground">Method</p>
-                    <p className="text-[12px] font-black text-foreground">{current.entry.paymentMethod || 'Cash'}</p>
+                    <p className="text-[12px] font-black text-foreground">{current.entry.paymentMethod || 'GPay'}</p>
                   </div>
                   <div>
                     <p className="text-[8.5px] font-black uppercase text-muted-foreground">Date</p>
