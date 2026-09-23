@@ -6,7 +6,7 @@ import fs from 'fs';
 import { GoogleGenAI, Type } from '@google/genai';
 import { pool } from './db.js';
 import { extractPaymentEntries } from './whatsappExtract.js';
-import { startBot, stopBot, getBotStatus, setPaymentEventHandler } from './whatsappBot.js';
+import { startBot, stopBot, getBotStatus, setPaymentEventHandler, selectBotGroup } from './whatsappBot.js';
 
 const __dirname = process.cwd();
 
@@ -1256,6 +1256,13 @@ app.post('/api/admin/whatsapp-bot/stop', (_req, res) => {
 });
 
 app.get('/api/admin/whatsapp-bot/status', (_req, res) => {
+  res.json({ ok: true, status: getBotStatus() });
+});
+
+app.post('/api/admin/whatsapp-bot/select-group', async (req, res) => {
+  const jid = String((req.body as any)?.jid || '');
+  const name = String((req.body as any)?.name || '');
+  await selectBotGroup(jid, name);
   res.json({ ok: true, status: getBotStatus() });
 });
 

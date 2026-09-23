@@ -8,12 +8,16 @@ import QRCode from 'qrcode';
 import { extractPaymentEntries, WaExtractEntry } from './whatsappExtract.js';
 import { pool } from './db.js';
 
+export type WaBotGroup = { jid: string; name: string };
+
 export type WaBotStatus = {
   running: boolean;
   connected: boolean;
   qrDataUrl: string | null;
   error: string | null;
   lastMessageAt: string | null;
+  groups: WaBotGroup[];
+  selectedGroup: { jid: string; name: string } | null;
 };
 
 export type WaPaymentEvent = {
@@ -34,11 +38,55 @@ let status: WaBotStatus = {
   qrDataUrl: null,
   error: null,
   lastMessageAt: null,
+  groups: [],
+  selectedGroup: null,
 };
+let groups: WaBotGroup[] = [];
+let selectedGroup: { jid: string; name: string } | null = null;
 let paymentEventHandler: ((event: WaPaymentEvent) => void) | null = null;
 
 export function getBotStatus(): WaBotStatus {
-  return { ...status };
+  return { ...status, groups, selectedGroup };
+}
+
+/** Admin-selected group (persisted in settings) — bot scans only this group. */
+export async function selectBotGroup(jid: string, name: string) {
+  selectedGroup = jid && name ? { jid, name } : null;
+  status.selectedGroup = selectedGroup;
+  try {
+    await pool.query(
+      `INSERT INTO settings (key, value) VALUES ('wa_group_jid', $1), ('wa_group_name', $2)
+       ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`,
+      [jid || '', name || '']
+    );
+  } catch {}
+}
+
+async function loadSavedGroup() {
+  try {
+    const r = await pool.query(
+      `SELECT key, value FROM settings WHERE key IN ('wa_group_jid', 'wa_group_name')`
+    );
+    const map = Object.fromEntries((r.rows as any[]).map((row) => [row.key, String(row.value || '')]));
+    if (map.wa_group_jid && map.wa_group_name) {
+      selectedGroup = { jid: map.wa_group_jid, name: map.wa_group_name };
+      status.selectedGroup = selectedGroup;
+    }
+  } catch {}
+}
+
+/** Fetch all WhatsApp groups the linked account is a member of. */
+async function refreshGroups() {
+  try {
+    const all: any = await (sock as any)?.groupFetchAllParticipating?.();
+    if (all) {
+      groups = Object.values(all).map((g: any) => ({ jid: String(g.id), name: String(g.subject || g.id) }))
+        .sort((a, b) => a.name.localeCompare(b.name));
+      status.groups = groups;
+    }
+  } catch (err) {
+    console.warn('[WhatsApp Bot] group fetch failed:', err);
+  }
 }
 
 export function setPaymentEventHandler(fn: ((event: WaPaymentEvent) => void) | null) {
@@ -79,6 +127,9 @@ async function processMessage(msg: WAMessage) {
     if (!msg.key || msg.key.fromMe) return;
     const jid = String(msg.key.remoteJid || '');
     if (!jid || jid === 'status@broadcast') return;
+    // Only group messages, and only the admin-selected group (if chosen)
+    if (!jid.endsWith('@g.us')) return;
+    if (selectedGroup && jid !== selectedGroup.jid) return;
 
     const m: any = msg.message;
     if (!m) return;
@@ -156,6 +207,7 @@ async function connect() {
         status.qrDataUrl = null;
         status.error = null;
         console.log('[WhatsApp Bot] Connected — linked device ready.');
+        refreshGroups();
       }
       if (connection === 'close') {
         status.connected = false;
@@ -187,6 +239,7 @@ async function connect() {
 
 export function startBot() {
   if (running) return;
+  loadSavedGroup();
   running = true;
   status.running = true;
   status.error = null;

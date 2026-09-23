@@ -1,7 +1,6 @@
 
 import { useState, useRef, useEffect, useMemo } from 'react';
 import { AdminAiAgent } from '@/components/AdminAiAgent';
-import { WhatsAppAiBot } from '@/components/WhatsAppAiBot';
 import { WhatsAppLiveBot } from '@/components/WhatsAppLiveBot';
 import GreenPartyManagerModal from '@/components/GreenPartyManagerModal';
 import { getGreenParties } from '@/lib/greenParties';
@@ -2611,10 +2610,7 @@ export default function SettingsPage() {
         {/* AI Admin Database Agent */}
         <AdminAiAgent />
 
-        {/* WhatsApp AI Payment Bot */}
-        <WhatsAppAiBot />
-
-        {/* WhatsApp Live Bot (Linked Device) */}
+        {/* WhatsApp AI Payment Bot (Live Linked Device) */}
         <WhatsAppLiveBot />
 
         {/* Bills Report Update */}
