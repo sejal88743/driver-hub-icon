@@ -51,6 +51,8 @@ Rules:
 - Read Hindi, English, Hinglish, Gujarati text and handwriting-style prints in screenshots.
 - If amounts are unclear, still extract the bill number and give your best amount estimate.
 - Do NOT invent bill numbers that are not visible in the image/text.
+- Often the bill number comes as a SEPARATE text message right before/after the payment screenshot (e.g. "Billno42911/42842", "42155", "42514"). If the screenshot shows a payment but NO bill number is visible anywhere in this message, return ONE entry with billNo: "" and the correct amount/method/date — do NOT guess a bill number.
+- If one message/caption lists multiple bill numbers for one payment (e.g. "Billno42911/42842"), return a separate entry for EACH bill number, each with the full payment amount.
 
 Respond ONLY with valid JSON matching exactly this schema:
 {"entries":[{"billNo":"string","amount":number,"paymentMethod":"Cash","date":"DD/MM/YYYY","partyName":"string","remarks":"string"}],"summary":"one line Hinglish summary of what was extracted"}`;
@@ -104,8 +106,10 @@ Respond ONLY with valid JSON matching exactly this schema:
     }
   }
 
+  // Keep entries with a billNo OR a payment amount — amount-only entries let the
+  // live bot stash a receipt whose bill number arrives in the next text message.
   const entries: WaExtractEntry[] = Array.isArray(parsed?.entries)
-    ? parsed.entries.filter((e: any) => e && String(e.billNo || '').trim())
+    ? parsed.entries.filter((e: any) => e && (String(e.billNo || '').trim() || Number(e.amount) > 0))
     : [];
 
   return { ok: true, entries, summary: parsed?.summary || '' };

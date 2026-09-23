@@ -110,6 +110,81 @@ async function getGeminiKey(): Promise<string> {
   }
 }
 
+// ── Pending-payment stitch ──────────────────────────────────────────────────
+// Real group flow me payment ka screenshot aur bill number ki text ALAG messages
+// me aate hain: pehle receipt (sirf amount), phir "Billno42911/42842" / "42155"
+// / "42514" jaisi text. Dono sides ko stash karke ek combined event banta hai.
+type PendingPayment = {
+  jid: string;
+  ts: number;
+  amount: number;
+  method: string;
+  date: string;
+  senderName: string;
+  text: string;
+};
+type PendingBillNos = {
+  jid: string;
+  ts: number;
+  billNos: string[];
+  senderName: string;
+  text: string;
+};
+let pendingPayment: PendingPayment | null = null;
+let pendingBillNos: PendingBillNos | null = null;
+const PENDING_TTL_MS = 30 * 60 * 1000;
+
+function isFresh(p: { jid: string; ts: number } | null, jid: string): boolean {
+  return !!p && p.jid === jid && Date.now() - p.ts < PENDING_TTL_MS;
+}
+
+/** Detect bill numbers in a standalone text like "Billno42911/42842", "42155 kgn", "42514". */
+function parseBillNos(text: string): string[] {
+  const t = String(text || '').trim();
+  if (!t || t.length > 200) return [];
+  // Payment amount wali texts Gemini ke through jaati hain — fast path me nahi
+  if (/₹|\brs\.?\b|\bamount\b|\bpaid\b|\bpayment\b|\bbhej\b|upi|gpay|cash|cheque/i.test(t)) return [];
+  const nos: string[] = [];
+  const re = /(?<!\d)(\d{4,7})(?!\d)/g;
+  let match: RegExpExecArray | null;
+  while ((match = re.exec(t))) {
+    const n = match[1];
+    const asNum = Number(n);
+    if (asNum >= 1900 && asNum <= 2099) continue; // years (2026 etc.)
+    if (!nos.includes(n)) nos.push(n);
+  }
+  return nos.slice(0, 6);
+}
+
+function emitPaymentEvent(
+  msg: WAMessage,
+  jid: string,
+  text: string,
+  summary: string,
+  entries: WaExtractEntry[]
+) {
+  const event: WaPaymentEvent = {
+    type: 'wa-payment',
+    id: `${jid}-${msg.key.id || Date.now()}`,
+    fromJid: jid,
+    senderName: String(msg.pushName || ''),
+    text: String(text || '').slice(0, 300),
+    summary,
+    entries,
+  };
+  paymentEventHandler?.(event);
+}
+
+function combinedEntries(billNos: string[], amount: number, method: string, date: string): WaExtractEntry[] {
+  return billNos.map((bn) => ({
+    billNo: bn,
+    amount,
+    paymentMethod: method,
+    date,
+    remarks: `Combined payment ₹${amount} — bills: ${billNos.join(', ')}`,
+  }));
+}
+
 function getMessageText(msg: WAMessage): string {
   const m: any = msg.message;
   if (!m) return '';
@@ -144,6 +219,27 @@ async function processMessage(msg: WAMessage) {
 
     status.lastMessageAt = new Date().toISOString();
 
+    // ── Fast path: bill-number-only text + stashed receipt → combine & emit ──
+    if (!hasImg) {
+      const billNos = parseBillNos(text);
+      if (billNos.length > 0) {
+        if (isFresh(pendingPayment, jid)) {
+          const p = pendingPayment!;
+          pendingPayment = null;
+          pendingBillNos = null;
+          emitPaymentEvent(
+            msg, jid, text,
+            `₹${p.amount} ka ${p.method} payment bills ${billNos.join(', ')} ke against — confirm karein.`,
+            combinedEntries(billNos, p.amount, p.method, p.date)
+          );
+          return;
+        }
+        // Receipt abhi tak nahi aaya — bill numbers stash karo, screenshot aane par jodenge
+        pendingBillNos = { jid, ts: Date.now(), billNos, senderName: String(msg.pushName || ''), text };
+        return;
+      }
+    }
+
     let imageBase64: string | undefined;
     let imageMime: string | undefined;
     if (hasImg) {
@@ -167,16 +263,38 @@ async function processMessage(msg: WAMessage) {
     const result = await extractPaymentEntries({ apiKey, text: text || undefined, imageBase64, imageMime });
     if (!result.ok || result.entries.length === 0) return;
 
-    const event: WaPaymentEvent = {
-      type: 'wa-payment',
-      id: `${jid}-${msg.key.id || Date.now()}`,
-      fromJid: jid,
-      senderName: String(msg.pushName || ''),
-      text: text.slice(0, 300),
-      summary: result.summary,
-      entries: result.entries,
-    };
-    paymentEventHandler?.(event);
+    const withBill = result.entries.filter((e) => String(e.billNo || '').trim());
+    const amountOnly = result.entries.filter((e) => !String(e.billNo || '').trim() && Number(e.amount) > 0);
+
+    // Normal case: bill number + amount dono ek hi message me
+    if (withBill.length > 0) {
+      pendingBillNos = null;
+      emitPaymentEvent(msg, jid, text, result.summary, withBill);
+      return;
+    }
+
+    // Screenshot me sirf payment hai, bill no nahi — pehle se stashed billnos se combine karo
+    if (amountOnly.length > 0) {
+      const r = amountOnly[0];
+      const method = String(r.paymentMethod || 'GPay');
+      const amount = Number(r.amount) || 0;
+      if (isFresh(pendingBillNos, jid)) {
+        const pb = pendingBillNos!;
+        pendingBillNos = null;
+        pendingPayment = null;
+        emitPaymentEvent(
+          msg, jid, pb.text,
+          `₹${amount} ka ${method} payment bills ${pb.billNos.join(', ')} ke against — confirm karein.`,
+          combinedEntries(pb.billNos, amount, method, r.date)
+        );
+        return;
+      }
+      // Bill number abhi tak nahi aaya — receipt stash karo, "Billno..." text aane par jodenge
+      pendingPayment = {
+        jid, ts: Date.now(), amount, method, date: r.date,
+        senderName: String(msg.pushName || ''), text,
+      };
+    }
   } catch (err) {
     console.warn('[WhatsApp Bot] processMessage error:', err);
   }

@@ -47,6 +47,13 @@ Strict Rules:
 - Payment extraction is shared: `server/whatsappExtract.ts` (used by both the
   upload endpoint and the live bot). Saves happen ONLY after the user confirms
   in the popup (`src/components/WhatsAppPaymentPopup.tsx`).
+- **Bill-no stitch**: real groups me receipt-screenshot aur "Billno42911/42842"
+  jaisi bill-number text ALAG messages me aate hain. `server/whatsappBot.ts`
+  dono sides 30 min tak stash karta hai (`pendingPayment` / `pendingBillNos`)
+  aur dono milne par ek combined event emit karta hai.
+- **Incremental sync**: `src/hooks/use-bill-store.ts` boot par full sync NAHI
+  karta jab local cache hai — sirf `doDeltaSync` (updated_at cursor se changed
+  rows). Full sync sirf fresh device ya admin manual action par. Poll 15s.
 
 ### Verify it works
 - `curl localhost:3000/api/health` → `{"ok":true}`

@@ -14,7 +14,7 @@ import { applyDirtyPatches, isDirtyPending, flushDirtyQueue } from '@/lib/localQ
 // - Fast fallback when Realtime WebSocket is offline: 20s
 // - Idle backoff when user is away (> 2 min): 180s (3 min)
 // - Hidden tab / background: 0s (Completely pauses polling)
-const POLL_SAFETY_MS = 60_000;
+const POLL_SAFETY_MS = 15_000;
 const POLL_FAST_MS = 20_000;
 const POLL_IDLE_MS = 180_000;
 const POLL_TICK_MS = 2_000;
@@ -478,9 +478,10 @@ function initGlobalSync() {
       patch({ loading: false });
       const savedTs = typeof window !== 'undefined' ? localStorage.getItem('vitratrack_last_sync_ts') : null;
       deltaCursor = savedTs || new Date(Date.now() - 24 * 3600 * 1000).toISOString();
+      // Cache se boot: SIRF delta sync — last visit ke baad changed rows hi aati hain,
+      // pura 42k bills dobara download NAHI hota. Full sync sirf fresh device par
+      // (khali cache) ya admin ke manual Settings sync par chalega.
       void doDeltaSync();
-      // Ensure all bills from Supabase are completely synced and up to date
-      void doFullSync(true);
     } else {
       // Fresh device or empty local cache: do initial full sync
       void doFullSync(true);

@@ -162,6 +162,7 @@ export function WhatsAppPaymentPopup() {
 
   const bill = current.bill;
   const effectiveNet = bill ? Math.max(0, (Number(bill.billNetAmt) || 0) - (Number(bill.lineCutAmt) || 0)) : 0;
+  const combinedCount = queue.filter((q) => q.eventId === current.eventId).length;
 
   return (
     <div className="fixed inset-0 z-[200] bg-black/70 backdrop-blur-sm flex items-center justify-center p-3">
@@ -246,6 +247,12 @@ export function WhatsAppPaymentPopup() {
                 </div>
                 {current.entry.remarks && (
                   <p className="text-[9.5px] font-medium text-muted-foreground italic">Note: {current.entry.remarks}</p>
+                )}
+                {combinedCount > 1 && (
+                  <p className="text-[9.5px] font-bold text-amber-600 dark:text-amber-400 flex items-center gap-1.5">
+                    <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+                    Ek hi payment {combinedCount} bills ({queue.filter(q => q.eventId === current.eventId).map(q => q.entry.billNo).join(', ')}) ke against hai — har bill apne outstanding tak hi adjust hoga.
+                  </p>
                 )}
               </div>
             </>
