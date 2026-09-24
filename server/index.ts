@@ -10,8 +10,40 @@ import {
   startBot, stopBot, resetBotSession, getBotStatus, setPaymentEventHandler,
   selectBotGroup, initBotOnBoot, startWatchdog, isSessionSaved
 } from './whatsappBot.js';
+import { MASTER_SALESPERSON_DIRECTORY, findServerMasterSalesperson } from './salespersonDirectory.js';
 
 const __dirname = process.cwd();
+
+// Process-level suppression of benign connection drops and socket resets (e.g. Baileys / DB / SSE disconnects)
+process.on('unhandledRejection', (reason: any, promise) => {
+  const msg = String(reason?.message || reason || '');
+  if (
+    msg.includes('Connection Closed') ||
+    msg.includes('connection closed') ||
+    msg.includes('ECONNRESET') ||
+    msg.includes('EPIPE') ||
+    msg.includes('ETIMEDOUT')
+  ) {
+    console.warn('[Server] Handled unhandled rejection (benign transport close):', msg);
+    return;
+  }
+  console.error('[Server] Unhandled Rejection at:', promise, 'reason:', reason);
+});
+
+process.on('uncaughtException', (err: any) => {
+  const msg = String(err?.message || err || '');
+  if (
+    msg.includes('Connection Closed') ||
+    msg.includes('connection closed') ||
+    msg.includes('ECONNRESET') ||
+    msg.includes('EPIPE') ||
+    msg.includes('ETIMEDOUT')
+  ) {
+    console.warn('[Server] Handled uncaught exception (benign transport close):', msg);
+    return;
+  }
+  console.error('[Server] Uncaught Exception:', err);
+});
 
 const app = express();
 const allowedOrigins = (process.env.ALLOWED_ORIGIN ?? '')
@@ -183,9 +215,26 @@ app.get('/api/all', async (_req, res) => {
     const partyContacts = contactsRes.rows
       .filter((r: Record<string, unknown>) => r.type === 'party')
       .map((r: Record<string, unknown>) => ({ name: String(r.name), mobile: String(r.mobile) }));
-    const salespersonContacts = contactsRes.rows
-      .filter((r: Record<string, unknown>) => r.type === 'salesperson')
-      .map((r: Record<string, unknown>) => ({ name: String(r.name), mobile: String(r.mobile) }));
+
+    const spMap = new Map<string, { name: string; mobile: string }>();
+    for (const r of contactsRes.rows as Record<string, unknown>[]) {
+      if (r.type === 'salesperson') {
+        const name = String(r.name || '').trim();
+        if (!name) continue;
+        const master = findServerMasterSalesperson(name);
+        spMap.set(name.toLowerCase(), { name, mobile: master?.mobile || String(r.mobile || '') });
+      }
+    }
+    // Guarantee all 31 master salesmen are permanently included
+    for (const m of MASTER_SALESPERSON_DIRECTORY) {
+      const k = m.name.toLowerCase();
+      if (!spMap.has(k)) {
+        spMap.set(k, { name: m.name, mobile: m.mobile });
+      } else if (spMap.get(k)!.mobile !== m.mobile) {
+        spMap.get(k)!.mobile = m.mobile;
+      }
+    }
+    const salespersonContacts = Array.from(spMap.values());
     const settings: Record<string, string> = {};
     for (const r of settingsRes.rows as { key: string; value: string }[]) settings[r.key] = r.value;
     // Never expose the admin-saved Gemini API key to clients
@@ -422,19 +471,41 @@ app.post('/api/contacts/party', async (req, res) => {
 // ─── Push salesperson contacts ────────────────────────────────────────────────
 app.post('/api/contacts/salesperson', async (req, res) => {
   const contacts: { name: string; mobile: string }[] = req.body.contacts ?? [];
-  const CHUNK = 500;
   const client = await pool.connect();
   try {
+    const spMap = new Map<string, { name: string; mobile: string }>();
+    for (const c of contacts) {
+      const name = String(c.name || '').trim();
+      if (!name) continue;
+      const master = findServerMasterSalesperson(name);
+      spMap.set(name.toLowerCase(), { name, mobile: master?.mobile || c.mobile || '' });
+    }
+    for (const m of MASTER_SALESPERSON_DIRECTORY) {
+      const k = m.name.toLowerCase();
+      if (!spMap.has(k)) {
+        spMap.set(k, { name: m.name, mobile: m.mobile });
+      } else if (spMap.get(k)!.mobile !== m.mobile) {
+        spMap.get(k)!.mobile = m.mobile;
+      }
+    }
+
+    const mergedList = Array.from(spMap.values());
     await client.query('BEGIN');
     await client.query("DELETE FROM contacts WHERE type = 'salesperson'");
-    for (let i = 0; i < contacts.length; i += CHUNK) {
-      const slice = contacts.slice(i, i + CHUNK);
+    const CHUNK = 500;
+    for (let i = 0; i < mergedList.length; i += CHUNK) {
+      const slice = mergedList.slice(i, i + CHUNK);
       if (slice.length === 0) continue;
-      const rows = slice.map((c, ri) => ({ id: `salesperson_${i + ri}`, type: 'salesperson', name: c.name, mobile: c.mobile }));
+      const rows = slice.map((c, ri) => ({
+        id: `sp_${c.name.toLowerCase().replace(/[^a-z0-9]/g, '_').substring(0, 44)}_${i + ri}`,
+        type: 'salesperson',
+        name: c.name,
+        mobile: c.mobile,
+      }));
       await pgUpsert('contacts', rows, 'id', false, client);
     }
     await client.query('COMMIT');
-    res.json({ count: contacts.length });
+    res.json({ count: mergedList.length });
   } catch (err) {
     await client.query('ROLLBACK');
     console.error('[POST /api/contacts/salesperson]', err);
@@ -1316,7 +1387,7 @@ async function setupViteOrStatic() {
     const vite = await createViteServer({
       server: {
         middlewareMode: true,
-        hmr: process.env.DISABLE_HMR === 'true' ? false : undefined,
+        hmr: false,
       },
       appType: 'spa',
     });
@@ -1331,9 +1402,42 @@ async function setupViteOrStatic() {
     }
   }
 
+async function seedMasterSalespersonContacts() {
+  try {
+    const { rows: existing } = await pool.query("SELECT id, name, mobile FROM contacts WHERE type = 'salesperson'");
+    const existingMap = new Map<string, { id: string; mobile: string }>();
+    for (const r of (existing as any[])) {
+      existingMap.set(String(r.name || '').trim().toLowerCase(), { id: String(r.id), mobile: String(r.mobile || '') });
+    }
+
+    const toUpsert: Array<{ id: string; type: string; name: string; mobile: string }> = [];
+    for (const m of MASTER_SALESPERSON_DIRECTORY) {
+      const k = m.name.trim().toLowerCase();
+      const ex = existingMap.get(k);
+      const stableId = `sp_${k.replace(/[^a-z0-9]/g, '_').substring(0, 44)}`;
+      if (!ex || ex.mobile !== m.mobile) {
+        toUpsert.push({
+          id: ex?.id || stableId,
+          type: 'salesperson',
+          name: m.name.trim(),
+          mobile: m.mobile,
+        });
+      }
+    }
+
+    if (toUpsert.length > 0) {
+      await pgUpsert('contacts', toUpsert, 'id', true);
+      console.log(`[seedMasterSalespersonContacts] Upserted ${toUpsert.length} master salesperson contacts into PostgreSQL.`);
+    }
+  } catch (err) {
+    console.warn('[seedMasterSalespersonContacts] Note:', err);
+  }
+}
+
   const PORT = 3000;
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`[API] Server running on http://0.0.0.0:${PORT}`);
+    seedMasterSalespersonContacts();
     initBotOnBoot();
     startWatchdog();
   });

@@ -2897,7 +2897,8 @@ export default function SettingsPage() {
                               const res = await mergeTwoSalespersons(spMergeFrom, spMergeTo);
                               if (res.ok) {
                                 setSpMergeStatus('done');
-                                setSpMergeMsg(`✓ ${res.billsUpdated} bills "${spMergeFrom}" → "${spMergeTo}" merge ho gaye.`);
+                                const mobInfo = res.targetMobile ? ` (Mobile: ${res.targetMobile})` : '';
+                                setSpMergeMsg(`✓ ${res.billsUpdated} bills merge ho gaye aur number${mobInfo} new name "${spMergeTo}" me update ho gaya.`);
                                 setSpMergeFrom('');
                                 setSpMergeTo('');
                               } else {
@@ -3375,7 +3376,8 @@ export default function SettingsPage() {
                               const res = await mergeTwoSalespersons(spMergeFrom, spMergeTo);
                               if (res.ok) {
                                 setSpMergeStatus('done');
-                                setPurgeMsg(`✓ ${res.billsUpdated} bills "${spMergeFrom}" → "${spMergeTo}" me merge ho gaye.`);
+                                const mobInfo = res.targetMobile ? ` (Mobile: ${res.targetMobile})` : '';
+                                setPurgeMsg(`✓ ${res.billsUpdated} bills merge ho gaye aur number${mobInfo} new name "${spMergeTo}" me update ho gaya.`);
                                 setSpMergeFrom('');
                                 setSpMergeTo('');
                                 setTimeout(() => setPurgeMsg(''), 8000);

@@ -1143,15 +1143,41 @@ export async function apiPushSalespersonContacts(contacts: Contact[], onProgress
   if (contacts.length === 0) return { count: 0 };
   try {
     const { cleanSalespersonName } = await import('./nameStandardizer');
-    const tagged = contacts.map(c => {
+    const { MASTER_SALESPERSON_DIRECTORY, findMasterSalesperson } = await import('./salespersonDirectory');
+
+    const map = new Map<string, any>();
+    for (const c of contacts) {
       const cleanName = cleanSalespersonName(c.name || '').trim() || (c.name || '').trim();
-      return {
-        id:     c.id || contactId('sp', cleanName),
-        name:   cleanName,
-        mobile: c.mobile,
-        type:   'salesperson',
-      };
-    });
+      if (!cleanName) continue;
+      const master = findMasterSalesperson(cleanName);
+      const mobile = (master?.mobile) || c.mobile || '';
+      const id = c.id || contactId('sp', cleanName);
+      map.set(cleanName.toLowerCase(), {
+        id,
+        name: cleanName,
+        mobile,
+        type: 'salesperson',
+      });
+    }
+
+    // Ensure all 31 master salesmen are always present in the push
+    for (const m of MASTER_SALESPERSON_DIRECTORY) {
+      const cleanM = cleanSalespersonName(m.name).trim() || m.name.trim();
+      const k = cleanM.toLowerCase();
+      const existing = map.get(k);
+      if (!existing) {
+        map.set(k, {
+          id: contactId('sp', cleanM),
+          name: cleanM,
+          mobile: m.mobile,
+          type: 'salesperson',
+        });
+      } else if (existing.mobile !== m.mobile) {
+        existing.mobile = m.mobile;
+      }
+    }
+
+    const tagged = Array.from(map.values());
     const saved = await upsertContactsChunked(tagged, onProgress);
     return { count: saved };
   } catch (err) {
@@ -1479,14 +1505,18 @@ export async function apiFixBills(): Promise<{ ok: boolean; fixed: number; spAdd
     const { data: existingContacts } = await supabase!.from('contacts').select('name').eq('type', 'salesperson');
     const existingSet = new Set((existingContacts || []).map((c: any) => String(c.name || '').toLowerCase()));
 
+    const { findMasterSalesperson } = await import('./salespersonDirectory');
     const toInsert = Array.from(spNames)
       .filter(name => !existingSet.has(name.toLowerCase()))
-      .map(name => ({
-        id: `sp_${name.toLowerCase().replace(/[^a-z0-9]/g, '_').substring(0, 40)}`,
-        type: 'salesperson',
-        name,
-        mobile: '',
-      }));
+      .map(name => {
+        const master = findMasterSalesperson(name);
+        return {
+          id: `sp_${name.toLowerCase().replace(/[^a-z0-9]/g, '_').substring(0, 40)}`,
+          type: 'salesperson',
+          name,
+          mobile: master?.mobile || '',
+        };
+      });
 
     let spAdded = 0;
     if (toInsert.length > 0) {
@@ -1715,34 +1745,30 @@ export async function apiMergeTwoSalespersons(
         return name === toTrim.toLowerCase() || (toCleanLower && clean === toCleanLower) || areSalespersonNamesEquivalent(c.name || '', toTrim);
       });
 
+      const { findMasterSalesperson } = await import('./salespersonDirectory');
+      const masterTo = findMasterSalesperson(toBaseClean);
+      const masterFrom = findMasterSalesperson(fromTrim);
+      const masterMobile = masterTo?.mobile || masterFrom?.mobile;
+
       const fromContactWithMobile = fromContacts.find(c => c.mobile && String(c.mobile).trim());
-      const effectiveMobile = (toContact?.mobile && String(toContact.mobile).trim())
-        ? String(toContact.mobile).trim()
-        : (fromContactWithMobile?.mobile ? String(fromContactWithMobile.mobile).trim() : '');
+      const effectiveMobile = masterMobile
+        || (toContact?.mobile && String(toContact.mobile).trim())
+        || (fromContactWithMobile?.mobile ? String(fromContactWithMobile.mobile).trim() : '');
 
-      if (toContact) {
-        await supabase
-          .from('contacts')
-          .update({
-            name: toBaseClean,
-            ...(effectiveMobile ? { mobile: effectiveMobile } : {})
-          })
-          .eq('id', toContact.id);
-      } else if (effectiveMobile || toBaseClean) {
-        const newId = contactId('sp', toBaseClean);
-        await supabase
-          .from('contacts')
-          .insert({
-            id: newId,
-            name: toBaseClean,
-            mobile: effectiveMobile || '',
-            type: 'salesperson',
-          });
-      }
+      const targetId = toContact?.id || contactId('sp', toBaseClean);
 
-      // Delete fromName contact(s)
+      await supabase
+        .from('contacts')
+        .upsert({
+          id: targetId,
+          name: toBaseClean,
+          mobile: effectiveMobile || '',
+          type: 'salesperson',
+        }, { onConflict: 'id' });
+
+      // Delete fromName contact(s) that are different from the target
       for (const fc of fromContacts) {
-        if (fc.id !== toContact?.id) {
+        if (fc.id !== targetId && fc.id !== toContact?.id) {
           await supabase.from('contacts').delete().eq('id', fc.id);
         }
       }

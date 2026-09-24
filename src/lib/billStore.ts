@@ -1,5 +1,6 @@
 import { markWriteStart, markWriteEnd } from './syncState';
 import { cleanSalespersonName, cleanPartyName, standardizeBills, calculateSimilarity, isSimilar, findCanonicalName, buildCanonicalMap, areSalespersonNamesEquivalent } from './nameStandardizer';
+import { MASTER_SALESPERSON_DIRECTORY, findMasterSalesperson, getMasterSalespersonMobile } from './salespersonDirectory';
 import { getRole } from './auth';
 import { getGreenPartyNameByCode, loadGreenPartiesFromSettings, getGreenParties } from './greenParties';
 import { excelSerialToDate, isoToDisplay, displayToIso } from './dateUtils';
@@ -9,7 +10,52 @@ function getTodayISO() {
   return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
 }
 
-export { cleanSalespersonName, cleanPartyName, standardizeBills, calculateSimilarity, isSimilar, findCanonicalName, buildCanonicalMap, areSalespersonNamesEquivalent };
+export { cleanSalespersonName, cleanPartyName, standardizeBills, calculateSimilarity, isSimilar, findCanonicalName, buildCanonicalMap, areSalespersonNamesEquivalent, MASTER_SALESPERSON_DIRECTORY, findMasterSalesperson, getMasterSalespersonMobile };
+
+/**
+ * Ensures that all master salesperson contacts are present with their permanent verified mobile numbers.
+ * This guarantees salesman mobile numbers are never lost and always preserved.
+ */
+export function ensureMasterSalespersonContacts(contacts: Contact[]): { contacts: Contact[]; changed: boolean } {
+  let changed = false;
+  const list = [...(contacts || [])];
+
+  for (const master of MASTER_SALESPERSON_DIRECTORY) {
+    const cleanMaster = cleanSalespersonName(master.name).trim() || master.name.trim();
+    const cleanMasterLower = cleanMaster.toLowerCase();
+    const stableId = `sp_${cleanMasterLower.replace(/[^a-z0-9]/g, '_').slice(0, 44)}`;
+
+    // Look for existing contact matching this master
+    let idx = list.findIndex(c => (c.name || '').trim().toLowerCase() === cleanMasterLower);
+    if (idx === -1) {
+      idx = list.findIndex(c => {
+        const cClean = cleanSalespersonName(c.name || '').trim().toLowerCase();
+        return cClean === cleanMasterLower || areSalespersonNamesEquivalent(c.name || '', cleanMaster);
+      });
+    }
+
+    if (idx >= 0) {
+      if (list[idx].mobile !== master.mobile || list[idx].name !== cleanMaster) {
+        list[idx] = {
+          ...list[idx],
+          id: list[idx].id || stableId,
+          name: cleanMaster,
+          mobile: master.mobile,
+        };
+        changed = true;
+      }
+    } else {
+      list.push({
+        id: stableId,
+        name: cleanMaster,
+        mobile: master.mobile,
+      });
+      changed = true;
+    }
+  }
+
+  return { contacts: list, changed };
+}
 
 /** One immutable audit line for a bill — who did what, when. Never overwritten. */
 export type BillEditEntry = {
@@ -422,6 +468,7 @@ if (typeof window !== 'undefined') {
       const parsed = JSON.parse(rawSalesContacts);
       if (Array.isArray(parsed) && parsed.length > 0) _salespersonContacts = parsed;
     }
+    _salespersonContacts = ensureMasterSalespersonContacts(_salespersonContacts).contacts;
   } catch (e) {
     console.warn('[billStore] Sync hydration error', e);
   }
@@ -510,6 +557,12 @@ function _initIdbHydration(): Promise<void> {
       if (salesChanged) updated = true;
     }
 
+    const verified = ensureMasterSalespersonContacts(_salespersonContacts);
+    if (verified.changed) {
+      _salespersonContacts = verified.contacts;
+      updated = true;
+    }
+
     if (updated) {
       dispatchUpdate();
     }
@@ -576,11 +629,12 @@ export function loadCreditAssigns(serverAssigns: Record<string, CreditAssign>) {
   dispatchUpdate();
 }
 
-let _pwSuffix: string = localStorage.getItem(LS_PW_SUFFIX) || 'manoj';
-let _billSearchAutoResetSec: number = Number(localStorage.getItem(LS_SEARCH_RESET_SEC) ?? 4);
+let _pwSuffix: string = (typeof window !== 'undefined' ? localStorage.getItem(LS_PW_SUFFIX) : null) || 'manoj';
+let _billSearchAutoResetSec: number = typeof window !== 'undefined' ? Number(localStorage.getItem(LS_SEARCH_RESET_SEC) ?? 4) : 4;
 let _waTemplates: WhatsAppTemplates | null = null;
 // User permissions: name → {canEdit, canAdd, canBackDate}
 let _userPerms: Record<string, { canEdit: boolean; canAdd: boolean; canBackDate?: boolean }> = (() => {
+  if (typeof window === 'undefined') return {};
   try {
     return JSON.parse(localStorage.getItem(LS_USER_PERMS) || '{}');
   } catch {
@@ -589,6 +643,7 @@ let _userPerms: Record<string, { canEdit: boolean; canAdd: boolean; canBackDate?
 })();
 // User passwords: name → custom password string (owner can set per-user)
 let _userPasswords: Record<string, string> = (() => {
+  if (typeof window === 'undefined') return {};
   try {
     return JSON.parse(localStorage.getItem(LS_USER_PASSWORDS) || '{}');
   } catch {
@@ -694,7 +749,7 @@ export function setServerData(data: {
     for (const [k, l] of localMap) {
       if (k && !serverKeys.has(k) && l.mobile) merged.push({ ...l, name: cleanSalespersonName(l.name || '').trim() || l.name });
     }
-    _salespersonContacts = merged;
+    _salespersonContacts = ensureMasterSalespersonContacts(merged).contacts;
   }
 
   persistLocalState();
@@ -953,11 +1008,16 @@ export function getDrivers(): Driver[] {
 export function getBanks(): Bank[] { return _banks; }
 export function getSummaries(): DriverDailySummary[] { return _summaries; }
 export function getPartyContacts(): Contact[] { return _partyContacts; }
-export function getSalespersonContacts(): Contact[] { return _salespersonContacts; }
+export function getSalespersonContacts(): Contact[] {
+  if (_salespersonContacts.length === 0) {
+    _salespersonContacts = ensureMasterSalespersonContacts([]).contacts;
+  }
+  return _salespersonContacts;
+}
 
 /**
  * Robust lookup helper for salesperson contact:
- * Handles exact match, clean names (without (ME), TL, (TL), (FL) suffix or prefix codes),
+ * Handles master directory permanent numbers, exact match, clean names,
  * token reordering (surname front/back), ID match, and case-insensitive matching.
  */
 export function findSalespersonContact(spName: string): Contact | undefined {
@@ -975,11 +1035,19 @@ export function findSalespersonContact(spName: string): Contact | undefined {
       if (cached) contacts = JSON.parse(cached);
     } catch {}
   }
-  if (!contacts || contacts.length === 0) return undefined;
+  contacts = ensureMasterSalespersonContacts(contacts || []).contacts;
+
+  // Master directory check (permanent numbers)
+  const masterMatch = findMasterSalesperson(raw) || findMasterSalesperson(clean);
 
   // 1. Exact name match
   let found = contacts.find(c => (c.name || '').trim().toLowerCase() === rawLower);
-  if (found) return found;
+  if (found) {
+    if (masterMatch?.mobile && (!found.mobile || found.mobile !== masterMatch.mobile)) {
+      return { ...found, mobile: masterMatch.mobile };
+    }
+    return found;
+  }
 
   // 2. Clean name match (e.g. without code prefix/suffix or (ME)/(TL)/(FL))
   if (cleanLower) {
@@ -988,17 +1056,32 @@ export function findSalespersonContact(spName: string): Contact | undefined {
       const cRaw = (c.name || '').trim().toLowerCase();
       return cClean === cleanLower || cRaw === cleanLower;
     });
-    if (found) return found;
+    if (found) {
+      if (masterMatch?.mobile && (!found.mobile || found.mobile !== masterMatch.mobile)) {
+        return { ...found, mobile: masterMatch.mobile };
+      }
+      return found;
+    }
   }
 
   // 3. Match equivalent salesperson name (handles surname front vs back e.g. "SHARMA RAHUL" vs "RAHUL SHARMA")
   found = contacts.find(c => areSalespersonNamesEquivalent(c.name || '', raw) || areSalespersonNamesEquivalent(c.name || '', clean));
-  if (found) return found;
+  if (found) {
+    if (masterMatch?.mobile && (!found.mobile || found.mobile !== masterMatch.mobile)) {
+      return { ...found, mobile: masterMatch.mobile };
+    }
+    return found;
+  }
 
   // 4. Match by ID
   const spId = `sp_${cleanLower.replace(/[^a-z0-9]/g, '_').slice(0, 44)}`;
   found = contacts.find(c => (c.id && (c.id.toLowerCase() === rawLower || c.id.toLowerCase() === spId)));
-  if (found) return found;
+  if (found) {
+    if (masterMatch?.mobile && (!found.mobile || found.mobile !== masterMatch.mobile)) {
+      return { ...found, mobile: masterMatch.mobile };
+    }
+    return found;
+  }
 
   // 5. Match if names contain each other (for minor differences)
   if (cleanLower.length >= 3) {
@@ -1006,7 +1089,12 @@ export function findSalespersonContact(spName: string): Contact | undefined {
       const cClean = cleanSalespersonName(c.name || '').trim().toLowerCase();
       return (cClean.length >= 3 && (cleanLower.includes(cClean) || cClean.includes(cleanLower)));
     });
-    if (found) return found;
+    if (found) {
+      if (masterMatch?.mobile && (!found.mobile || found.mobile !== masterMatch.mobile)) {
+        return { ...found, mobile: masterMatch.mobile };
+      }
+      return found;
+    }
   }
 
   // 6. Fuzzy similarity match (>= 70%)
@@ -1022,7 +1110,18 @@ export function findSalespersonContact(spName: string): Contact | undefined {
         bestMatch = c;
       }
     }
-    if (bestMatch) return bestMatch;
+    if (bestMatch) {
+      if (masterMatch?.mobile && (!bestMatch.mobile || bestMatch.mobile !== masterMatch.mobile)) {
+        return { ...bestMatch, mobile: masterMatch.mobile };
+      }
+      return bestMatch;
+    }
+  }
+
+  // 7. Directly return master contact if verified in directory
+  if (masterMatch) {
+    const stableId = `sp_${masterMatch.name.toLowerCase().replace(/[^a-z0-9]/g, '_').slice(0, 44)}`;
+    return { id: stableId, name: masterMatch.name, mobile: masterMatch.mobile };
   }
 
   return undefined;
@@ -1572,12 +1671,16 @@ export async function mergeTwoSalespersons(
     return b;
   });
 
-  // 2. Merge contacts in memory: preserve mobile number!
+  // 2. Merge contacts in memory: mobile number MUST BE UPDATED TO THE NEW NAME!
   const fromContact = findSalespersonContact(fromClean);
   const toContact = findSalespersonContact(toClean);
-  const inheritedMobile = (toContact?.mobile && toContact.mobile.trim())
-    ? toContact.mobile.trim()
-    : (fromContact?.mobile ? fromContact.mobile.trim() : '');
+  const masterTo = findMasterSalesperson(toClean);
+  const masterFrom = findMasterSalesperson(fromClean);
+  const masterMobile = masterTo?.mobile || masterFrom?.mobile;
+
+  const inheritedMobile = masterMobile
+    || (toContact?.mobile && toContact.mobile.trim())
+    || (fromContact?.mobile ? fromContact.mobile.trim() : '');
 
   // Filter out any contact matching fromName (or fromBaseClean)
   const remaining = _salespersonContacts.filter((c) => {
@@ -1592,7 +1695,7 @@ export async function mergeTwoSalespersons(
     return !isMatch;
   });
 
-  // Update or insert toName contact with preserved mobile number
+  // Update or insert toName contact with the updated mobile number
   const toIdx = remaining.findIndex((c) => {
     const cLower = (c.name || '').trim().toLowerCase();
     const cClean = cleanSalespersonName(c.name || '').trim().toLowerCase();
@@ -1609,7 +1712,7 @@ export async function mergeTwoSalespersons(
       mobile: inheritedMobile || remaining[toIdx].mobile || '',
     };
   } else {
-    // toName was not in contacts yet - create it so the number is NEVER lost!
+    // toName was not in contacts yet - create it with updated mobile number!
     remaining.push({
       id: stableToId,
       name: toBaseClean,
@@ -1617,7 +1720,7 @@ export async function mergeTwoSalespersons(
     });
   }
 
-  _salespersonContacts = remaining;
+  _salespersonContacts = ensureMasterSalespersonContacts(remaining).contacts;
 
   // 3. Update dirty queue so pending write patches don't send stale salesperson name
   try {
@@ -1656,7 +1759,12 @@ export async function mergeTwoSalespersons(
     const m = await import('@/lib/apiSync');
     await m.apiPushSalespersonContacts(_salespersonContacts);
     const result = await m.apiMergeTwoSalespersons(fromClean, toClean);
-    return { ok: true, billsUpdated: Math.max(changed, result.billsUpdated) };
+    return {
+      ok: true,
+      billsUpdated: Math.max(changed, result.billsUpdated),
+      targetMobile: inheritedMobile,
+      newName: toBaseClean,
+    };
   } catch (err: any) {
     return { billsUpdated: changed, ok: false, error: String(err?.message ?? err) };
   } finally {
@@ -1891,7 +1999,7 @@ export async function consolidateSimilarSalespersonsOnly(threshold = 0.50): Prom
     }
   }
 
-  _salespersonContacts = mergedContacts;
+  _salespersonContacts = ensureMasterSalespersonContacts(mergedContacts).contacts;
   if (changed > 0) {
     _bills = updatedBills;
   }

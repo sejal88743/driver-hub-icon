@@ -129,17 +129,35 @@ async function loadSavedGroup() {
   } catch {}
 }
 
+let lastGroupsFetchedAt = 0;
+
 /** Fetch all WhatsApp groups the linked account is a member of. */
-async function refreshGroups() {
+async function refreshGroups(force = false) {
   try {
-    const all: any = await (sock as any)?.groupFetchAllParticipating?.();
-    if (all) {
+    if (!sock) return;
+    // Throttle group fetching to at most once per 15 minutes unless forced or empty
+    const now = Date.now();
+    if (!force && groups.length > 0 && now - lastGroupsFetchedAt < 15 * 60 * 1000) {
+      return;
+    }
+    const all: any = await (sock as any)?.groupFetchAllParticipating?.().catch((err: any) => {
+      const msg = String(err?.message || err || '');
+      if (msg.includes('Connection Closed') || msg.includes('connection closed') || msg.includes('rate-overlimit')) {
+        return null;
+      }
+      return null;
+    });
+    if (all && typeof all === 'object') {
       groups = Object.values(all).map((g: any) => ({ jid: String(g.id), name: String(g.subject || g.id) }))
         .sort((a, b) => a.name.localeCompare(b.name));
       status.groups = groups;
+      lastGroupsFetchedAt = Date.now();
     }
-  } catch (err) {
-    console.warn('[WhatsApp Bot] group fetch failed:', err);
+  } catch (err: any) {
+    const msg = String(err?.message || err || '');
+    if (!msg.includes('Connection Closed') && !msg.includes('connection closed') && !msg.includes('rate-overlimit')) {
+      console.warn('[WhatsApp Bot] group fetch failed:', err);
+    }
   }
 }
 
@@ -357,11 +375,19 @@ async function processMessage(msg: WAMessage) {
 function cleanupSocket() {
   if (!sock) return;
   try {
+    const ws = (sock as any)?.ws;
+    if (ws) {
+      try {
+        ws.on('error', () => {}); // swallow close/destroy errors
+        ws.close?.();
+      } catch {}
+    }
     sock.ev?.removeAllListeners('creds.update');
     sock.ev?.removeAllListeners('connection.update');
     sock.ev?.removeAllListeners('messages.upsert');
-    sock.ws?.close?.();
-    sock.end?.(undefined as any);
+    try {
+      sock.end?.(undefined as any);
+    } catch {}
   } catch {}
   sock = null;
 }
@@ -404,6 +430,18 @@ async function connect() {
       syncFullHistory: false,
     });
 
+    // Prevent unhandled WebSocket error events from crashing Node process or bubbling as unhandled
+    const wsInstance = (sock as any)?.ws;
+    if (wsInstance && typeof wsInstance.on === 'function') {
+      wsInstance.on('error', (wsErr: any) => {
+        const msg = String(wsErr?.message || wsErr || '');
+        if (msg.includes('Connection Closed') || msg.includes('connection closed') || msg.includes('ECONNRESET')) {
+          return;
+        }
+        console.warn('[WhatsApp Bot] WebSocket error:', msg);
+      });
+    }
+
     sock.ev.on('creds.update', saveCreds);
 
     sock.ev.on('connection.update', (u: any) => {
@@ -435,13 +473,26 @@ async function connect() {
         const code = (lastDisconnect?.error as any)?.output?.statusCode;
         console.log('[WhatsApp Bot] Connection closed. StatusCode:', code);
 
+        const isLoggedOut = code === DisconnectReason?.loggedOut || code === 401 || code === 403;
+        if (isLoggedOut) {
+          console.warn('[WhatsApp Bot] Device logged out. Halting auto-reconnect. Please re-link in Admin.');
+          running = false;
+          status.running = false;
+          status.error = 'WhatsApp session logged out from device. Please re-link device.';
+          clearTimeout(reconnectTimer);
+          reconnectTimer = null;
+          return;
+        }
+
         // Keep running flag true so it stays active
         if (running || isSessionSaved()) {
           running = true;
           status.running = true;
           clearTimeout(reconnectTimer);
-          const delay = (code === DisconnectReason?.loggedOut) ? 10000 : 3000;
+          // If code 440 (connectionReplaced) or 429 (rate-overlimit), wait 45s to avoid tight reconnect storms
+          const delay = (code === 440 || code === 429) ? 45000 : 5000;
           reconnectTimer = setTimeout(() => {
+            reconnectTimer = null;
             if (running || isSessionSaved()) connect();
           }, delay);
         }
@@ -461,8 +512,9 @@ async function connect() {
     if (running || isSessionSaved()) {
       clearTimeout(reconnectTimer);
       reconnectTimer = setTimeout(() => {
+        reconnectTimer = null;
         if (running || isSessionSaved()) connect();
-      }, 5000);
+      }, 10000);
     }
   }
 }
@@ -489,6 +541,7 @@ export function stopBot() {
   status.qrDataUrl = null;
   status.error = null;
   clearTimeout(reconnectTimer);
+  reconnectTimer = null;
   try {
     pool.query(
       `INSERT INTO settings (key, value) VALUES ('wa_bot_enabled', 'false')
@@ -528,11 +581,11 @@ export function startWatchdog() {
   if (watchdogInterval) return;
   watchdogInterval = setInterval(() => {
     const hasCreds = isSessionSaved();
-    if ((running || hasCreds) && !status.connected && !isConnecting) {
+    if ((running || hasCreds) && !status.connected && !isConnecting && !reconnectTimer) {
       console.log('[WhatsApp Bot Watchdog] Session is active but socket disconnected. Reviving connection...');
       running = true;
       status.running = true;
       connect();
     }
-  }, 10000);
+  }, 25000);
 }
