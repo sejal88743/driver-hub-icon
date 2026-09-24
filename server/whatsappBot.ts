@@ -59,6 +59,7 @@ export type WaBotStatus = {
   lastMessageAt: string | null;
   groups: WaBotGroup[];
   selectedGroup: { jid: string; name: string } | null;
+  hasSession?: boolean;
 };
 
 export type WaPaymentEvent = {
@@ -73,6 +74,10 @@ export type WaPaymentEvent = {
 
 let sock: WASocket | null = null;
 let running = false;
+let isConnecting = false;
+let reconnectTimer: any = null;
+let watchdogInterval: any = null;
+
 let status: WaBotStatus = {
   running: false,
   connected: false,
@@ -86,8 +91,16 @@ let groups: WaBotGroup[] = [];
 let selectedGroup: { jid: string; name: string } | null = null;
 let paymentEventHandler: ((event: WaPaymentEvent) => void) | null = null;
 
+export function isSessionSaved(): boolean {
+  try {
+    return fs.existsSync('.wa-session/creds.json');
+  } catch {
+    return false;
+  }
+}
+
 export function getBotStatus(): WaBotStatus {
-  return { ...status, groups, selectedGroup };
+  return { ...status, groups, selectedGroup, hasSession: isSessionSaved() };
 }
 
 /** Admin-selected group (persisted in settings) — bot scans only this group. */
@@ -341,10 +354,31 @@ async function processMessage(msg: WAMessage) {
   }
 }
 
+function cleanupSocket() {
+  if (!sock) return;
+  try {
+    sock.ev?.removeAllListeners('creds.update');
+    sock.ev?.removeAllListeners('connection.update');
+    sock.ev?.removeAllListeners('messages.upsert');
+    sock.ws?.close?.();
+    sock.end?.(undefined as any);
+  } catch {}
+  sock = null;
+}
+
 async function connect() {
+  if (isConnecting) return;
+  isConnecting = true;
+  clearTimeout(reconnectTimer);
+
   try {
     const loaded = await loadBaileys();
-    if (!loaded) return;
+    if (!loaded) {
+      isConnecting = false;
+      return;
+    }
+
+    cleanupSocket();
 
     const { state, saveCreds } = await useMultiFileAuthState('.wa-session');
 
@@ -387,23 +421,29 @@ async function connect() {
       }
       if (connection === 'open') {
         status.connected = true;
+        status.running = true;
+        running = true;
+        isConnecting = false;
         status.qrDataUrl = null;
         status.error = null;
-        console.log('[WhatsApp Bot] Connected — linked device ready.');
+        console.log('[WhatsApp Bot] Connected — linked device ready & active.');
         refreshGroups();
       }
       if (connection === 'close') {
         status.connected = false;
+        isConnecting = false;
         const code = (lastDisconnect?.error as any)?.output?.statusCode;
-        if (running && code !== DisconnectReason?.loggedOut) {
-          setTimeout(() => { if (running) connect(); }, 3000);
-        } else {
-          if (code === DisconnectReason?.loggedOut) {
-            running = false;
-            status.running = false;
-            status.error = 'WhatsApp device logout ho gaya — dobara QR scan karke link karein.';
-            try { fs.rmSync('.wa-session', { recursive: true, force: true }); } catch {}
-          }
+        console.log('[WhatsApp Bot] Connection closed. StatusCode:', code);
+
+        // Keep running flag true so it stays active
+        if (running || isSessionSaved()) {
+          running = true;
+          status.running = true;
+          clearTimeout(reconnectTimer);
+          const delay = (code === DisconnectReason?.loggedOut) ? 10000 : 3000;
+          reconnectTimer = setTimeout(() => {
+            if (running || isSessionSaved()) connect();
+          }, delay);
         }
       }
     });
@@ -415,9 +455,15 @@ async function connect() {
       }
     });
   } catch (err: any) {
+    isConnecting = false;
     console.error('[WhatsApp Bot] connect failed:', err?.message || err);
     status.error = 'WhatsApp connect failed: ' + (err?.message || err);
-    if (running) setTimeout(() => { if (running) connect(); }, 5000);
+    if (running || isSessionSaved()) {
+      clearTimeout(reconnectTimer);
+      reconnectTimer = setTimeout(() => {
+        if (running || isSessionSaved()) connect();
+      }, 5000);
+    }
   }
 }
 
@@ -427,6 +473,12 @@ export function startBot() {
   status.running = true;
   status.error = null;
   status.qrDataUrl = null;
+  try {
+    pool.query(
+      `INSERT INTO settings (key, value) VALUES ('wa_bot_enabled', 'true')
+       ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`
+    ).catch(() => {});
+  } catch {}
   connect();
 }
 
@@ -436,8 +488,14 @@ export function stopBot() {
   status.connected = false;
   status.qrDataUrl = null;
   status.error = null;
-  try { sock?.end?.(undefined as any); } catch {}
-  sock = null;
+  clearTimeout(reconnectTimer);
+  try {
+    pool.query(
+      `INSERT INTO settings (key, value) VALUES ('wa_bot_enabled', 'false')
+       ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`
+    ).catch(() => {});
+  } catch {}
+  cleanupSocket();
 }
 
 export function resetBotSession() {
@@ -445,4 +503,36 @@ export function resetBotSession() {
   try {
     fs.rmSync('.wa-session', { recursive: true, force: true });
   } catch {}
+  startBot();
+}
+
+export async function initBotOnBoot() {
+  try {
+    const hasCreds = isSessionSaved();
+    let isEnabled = false;
+    try {
+      const { rows } = await pool.query(`SELECT value FROM settings WHERE key = 'wa_bot_enabled'`);
+      isEnabled = rows?.[0]?.value === 'true';
+    } catch {}
+
+    if (hasCreds || isEnabled) {
+      console.log('[WhatsApp Bot] Persistent session detected or bot enabled on server boot. Auto-starting...');
+      startBot();
+    }
+  } catch (err) {
+    console.warn('[WhatsApp Bot] initBotOnBoot error:', err);
+  }
+}
+
+export function startWatchdog() {
+  if (watchdogInterval) return;
+  watchdogInterval = setInterval(() => {
+    const hasCreds = isSessionSaved();
+    if ((running || hasCreds) && !status.connected && !isConnecting) {
+      console.log('[WhatsApp Bot Watchdog] Session is active but socket disconnected. Reviving connection...');
+      running = true;
+      status.running = true;
+      connect();
+    }
+  }, 10000);
 }

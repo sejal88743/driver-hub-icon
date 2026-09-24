@@ -14,6 +14,7 @@ type BotStatus = {
   lastMessageAt?: string | null;
   groups: { jid: string; name: string }[];
   selectedGroup: { jid: string; name: string } | null;
+  hasSession?: boolean;
 };
 
 export function WhatsAppLiveBot() {
@@ -38,7 +39,16 @@ export function WhatsAppLiveBot() {
           return;
         }
         const data = await res.json();
-        if (data?.ok) setStatus(data.status);
+        if (data?.ok) {
+          setStatus(data.status);
+          // Auto-start if session exists but bot was idle
+          if (data.status?.hasSession && !data.status?.running) {
+            fetch('/api/admin/whatsapp-bot/start', { method: 'POST' })
+              .then((r) => r.json())
+              .then((d) => { if (d?.ok) setStatus(d.status); })
+              .catch(() => {});
+          }
+        }
       } catch {}
     }
     poll();
@@ -48,6 +58,12 @@ export function WhatsAppLiveBot() {
   }, [status?.running, status?.connected]);
 
   async function control(action: 'start' | 'stop' | 'reset') {
+    if (action === 'stop') {
+      const ok = window.confirm(
+        'Kya aap sach me WhatsApp bot stop karna chahte hain? Stop karne par group messages auto-scan nahi honge.'
+      );
+      if (!ok) return;
+    }
     setBusy(true);
     try {
       const res = await fetch(`/api/admin/whatsapp-bot/${action}`, { method: 'POST' });
@@ -129,6 +145,11 @@ export function WhatsAppLiveBot() {
                 {!connected && running ? <><Loader2 className="w-3 h-3 animate-spin" /> WAITING FOR QR SCAN</> : null}
                 {!running ? <><XCircle className="w-3 h-3" /> OFF</> : null}
               </span>
+              {connected && (
+                <span className="text-[9.5px] font-black px-2.5 py-0.5 rounded-full bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border border-emerald-500/30 flex items-center gap-1 shadow-xs">
+                  ⚡ ALWAYS ACTIVE (Auto-Reconnect Enabled)
+                </span>
+              )}
             </div>
             <p className="text-xs text-muted-foreground font-semibold mt-0.5">
               Bot aapke WhatsApp se live linked rehta hai — group me payment message aate hi khud scan karke app me confirmation popup dikhata hai. Koi manual upload nahi chahiye.

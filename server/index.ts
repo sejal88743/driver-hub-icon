@@ -6,7 +6,10 @@ import fs from 'fs';
 import { GoogleGenAI, Type } from '@google/genai';
 import { pool } from './db.js';
 import { extractPaymentEntries } from './whatsappExtract.js';
-import { startBot, stopBot, resetBotSession, getBotStatus, setPaymentEventHandler, selectBotGroup } from './whatsappBot.js';
+import {
+  startBot, stopBot, resetBotSession, getBotStatus, setPaymentEventHandler,
+  selectBotGroup, initBotOnBoot, startWatchdog, isSessionSaved
+} from './whatsappBot.js';
 
 const __dirname = process.cwd();
 
@@ -1261,6 +1264,10 @@ app.post('/api/admin/whatsapp-bot/reset', (_req, res) => {
 });
 
 app.get('/api/admin/whatsapp-bot/status', (_req, res) => {
+  const current = getBotStatus();
+  if (!current.running && isSessionSaved()) {
+    startBot();
+  }
   res.json({ ok: true, status: getBotStatus() });
 });
 
@@ -1327,6 +1334,8 @@ async function setupViteOrStatic() {
   const PORT = 3000;
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`[API] Server running on http://0.0.0.0:${PORT}`);
+    initBotOnBoot();
+    startWatchdog();
   });
 }
 
