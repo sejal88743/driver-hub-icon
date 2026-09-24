@@ -1,0 +1,4 @@
+project_id = "zybrzzouzleacqjvfiiu"
+
+[functions.bulk-update-dates]
+verify_jwt = false

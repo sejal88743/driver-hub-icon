@@ -1,0 +1,276 @@
+1. GRAND TOTAL / TOTAL ROW MUST NEVER IMPORT
+   ====================================================
+
+Apply to ALL XLS uploads:
+
+* Master Ledger Upload
+* Rec Payment Upload
+* Bills Report Upload
+* Party Contacts Upload
+* Salesperson Contacts Upload
+
+Before processing any row:
+
+Ignore row if any of below found:
+
+billNo contains:
+"GRAND TOTAL"
+"TOTAL"
+"SUB TOTAL"
+"NET TOTAL"
+
+or amount columns contain summary rows.
+
+These rows must never be inserted, updated or counted.
+
+Current issue:
+
+cancelLine column is being used for amount related logic.
+lineCutAmt is not stored correctly.
+
+Required:
+
+cancelLine:
+
+* Must store ONLY cancellation / FBR / line cut reason text.
+  Examples:
+  "Expired Stock"
+  "Damage"
+  "Sales Return"
+  "Short Supply"
+
+lineCutAmt:
+
+* Must store numeric deduction amount only.
+
+Examples:
+
+Bill Amount = 1000
+Line Cut = 150
+
+cancelLine = "Damage"
+lineCutAmt = 150
+
+Do not mix amount and reason.
+
+Current Bills Report Upload:
+
+Negative values are detected.
+
+Required:
+
+Group rows by Bill No.
+
+Positive amounts:
+add into billAmt.
+
+Negative amounts:
+sum absolute values into lineCutAmt.
+
+Example:
+
+Bill No 123
+
++1000
+-100
+-50
+
+Result:
+
+billAmt = 1000
+lineCutAmt = 150
+
+Store lineCutAmt in database.
+
+If lineCutAmt >= billAmt (difference <= 1):
+
+paymentMode = "FBR"
+
+Otherwise normal logic.
+
+Create proper database column:
+
+line_cut_amt NUMERIC
+
+Migration required.
+
+Update:
+
+billToDb()
+dbToBill()
+all inserts
+all updates
+all sync functions
+
+to persist lineCutAmt permanently.
+
+No silent dropping.
+
+Business Rule:
+
+User wants only 3 final statuses:
+
+Paid
+FBR
+Unpaid
+
+Everything else is only payment collection method.
+
+Create separate field:
+
+paymentMethod
+
+Possible values:
+
+Cash
+UPI
+Cheque
+Split
+
+Keep paymentMode ONLY for final status.
+
+Examples:
+
+Collected by Cash:
+paymentMethod = Cash
+paymentMode = Paid
+
+Collected by UPI:
+paymentMethod = UPI
+paymentMode = Paid
+
+Collected by Split:
+paymentMethod = Split
+paymentMode = Paid
+
+FBR:
+paymentMode = FBR
+
+No collection:
+paymentMode = Unpaid
+
+Do NOT save these values inside paymentMode:
+
+Cash
+UPI
+Cheque
+Split
+Credit
+Del Pending
+Cancel
+
+These must not be treated as final status.
+
+Only:
+
+Paid
+FBR
+Unpaid
+
+allowed in paymentMode.
+
+Current bug:
+
+Owner dashboard and Driver dashboard use different counting rules.
+
+Fix:
+
+Use single common function.
+
+Paid Count:
+
+paymentMode = Paid
+OR
+paymentMode = FBR
+
+FBR must always be included in Paid count.
+
+Unpaid Count:
+
+paymentMode = Unpaid
+OR empty/null
+
+No separate logic for Owner and Driver.
+
+Counts must match everywhere.
+
+Current bug:
+
+line-cut completed bills become Paid but count logic ignores them.
+
+Fix:
+
+Whenever:
+
+billNetAmt - lineCutAmt - collectedAmount <= 1
+
+Automatically set:
+
+paymentMode = Paid
+
+And Paid count must include them.
+
+FBR must:
+
+show in Paid dashboard count.
+
+show in Paid reports.
+
+show in Paid filters.
+
+show in Paid export.
+
+FBR is considered completed.
+
+isSelectedBillPaid()
+
+must return TRUE when:
+
+paymentMode = Paid
+OR
+paymentMode = FBR
+
+Otherwise FALSE.
+
+Database:
+
+Add UNIQUE constraint on bill_no.
+
+Before insert:
+
+If bill already exists:
+
+Update existing record.
+
+Do not create duplicate bill rows.
+
+Convert old records:
+
+Cash -> Paid
+UPI -> Paid
+Cheque -> Paid
+Split -> Paid
+Credit -> Unpaid
+Del Pending -> Unpaid
+Cancel -> FBR
+
+Preserve payment amounts.
+
+Keep:
+
+Dashboard workflow
+Payment save workflow
+Overflow payment workflow
+Party upload
+Salesperson upload
+Bill search
+Reports
+Supabase integration
+
+Only fix above issues.
+
+Run full regression testing after implementation.
+
+No UI redesign.
+No workflow changes.
+Only business-rule corrections.

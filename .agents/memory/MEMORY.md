@@ -1,0 +1,9 @@
+- [3-status payment system](payment-status-system.md) — STALE, superseded by credit-fbr-status-integrity.md; Credit/Del Pending are now real statuses, not folded into Unpaid
+- [Credit/FBR status integrity](credit-fbr-status-integrity.md) — Credit/FBR must strictly match saved paymentMode (never merge 'Pending'); how mislabeled paid bills were data-fixed
+- [Supabase-only DB](supabase-only.md) — user explicitly keeps Lovable Supabase; never migrate to Replit PostgreSQL; all data ops go through src/lib/apiSync.ts using supabase client directly
+- [Driver page cards filter](driver-cards-filter.md) — driver cards show only drivers with loadBillCount > 0 for selected date; pending delivery table unchanged
+- [Supabase column mapping](supabase-column-mapping.md) — Supabase bills table is snake_case; use mapBillFromSupabase() to read, billToSupabase() to write — ALL write ops (upsert/update/patch) must convert via billToSupabase() first or Supabase returns PGRST204 column-not-found
+- [No Express data path](no-express-data-path.md) — frontend never calls /api/* for data; all reads/writes use Supabase directly; Express server runs but is not the primary data layer
+- [Assigned status reset bug](assigned-status-reset-bug.md) — any bill-status sweep must treat collectedAmount>0 as genuinely paid, never key off outstandingAmount alone
+- [Credit line-cut balance](credit-line-cut-credit-balance.md) — Credit preserves cumulative line cuts; remaining balance is bill minus line cut minus collected, including plus-sum entry
+- [Sales Register update rules](sales-register-update.md) — Bill Wise uploads are update-only; positive metadata is party-code canonicalized and negative line cuts are idempotently set

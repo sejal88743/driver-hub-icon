@@ -1,0 +1,148 @@
+Current issue:
+Frontend loads, but Supabase data no longer appears.
+Console error:
+
+[apiSync] Server down — received HTML instead of JSON. Backend not running.
+
+This project was originally connected correctly to Supabase through the existing GitHub repo. After editing in Replit and pushing changes, the connection broke.
+
+Your task is to fully restore the ORIGINAL working Supabase connection and frontend/backend behavior WITHOUT changing UI, layout, styling, pages, routing, functionality, database structure, table names, or business logic.
+
+IMPORTANT:
+
+Do NOT redesign anything
+Do NOT remove existing features
+Do NOT create a new Supabase project
+Do NOT replace the database
+Do NOT modify tables or auth structure
+Restore the existing connection exactly as before
+
+Perform ALL checks and fixes below:
+
+==================================================
+
+VERIFY ENVIRONMENT VARIABLES
+==================================================
+
+Find all required environment variables.
+
+Ensure the app uses ONLY Vite environment variables:
+
+VITE_SUPABASE_URL
+VITE_SUPABASE_ANON_KEY
+
+Remove or replace:
+
+process.env.REACT_APP_
+localhost URLs
+hardcoded API URLs
+invalid environment references
+
+Ensure all environment variables are loaded correctly through:
+
+import.meta.env.VITE_SUPABASE_URL
+import.meta.env.VITE_SUPABASE_ANON_KEY
+
+Locate the existing Supabase client file, such as:
+
+src/integrations/supabase/client.ts
+src/lib/supabase.ts
+supabaseClient.js
+
+Ensure the client is initialized EXACTLY like this:
+
+import { createClient } from '@supabase/supabase-js'
+
+const supabaseUrl = import.meta.env.VITE_SUPABASE_URL
+const supabaseKey = import.meta.env.VITE_SUPABASE_ANON_KEY
+
+export const supabase = createClient(
+supabaseUrl,
+supabaseKey
+)
+
+Do NOT create duplicate clients.
+
+Search entire project for:
+
+fetch('/api')
+axios('/api')
+localhost
+127.0.0.1
+Express
+Node backend routes
+
+Remove or fix all broken relative backend API calls.
+
+This app must connect directly to Supabase or existing Supabase Edge Functions.
+
+Lovable preview does NOT run Express backend servers.
+
+If frontend expects JSON but receives HTML, identify the broken endpoint and replace it with the original Supabase query implementation.
+
+Restore ALL original:
+
+Supabase queries
+authentication flow
+CRUD operations
+realtime subscriptions
+inserts
+updates
+selects
+storage access
+row level security compatibility
+
+Ensure all pages display original database data again.
+
+Verify package.json scripts.
+
+Ensure app uses Vite properly:
+
+"scripts": {
+"dev": "vite",
+"build": "vite build",
+"preview": "vite preview"
+}
+
+Remove accidental backend-only startup scripts that break Lovable deployment.
+
+Run:
+
+npm install
+npm run build
+
+Fix ALL build errors.
+
+Ensure production build completes successfully.
+
+Ensure compatibility with:
+
+Lovable
+Vercel
+Netlify
+static Vite hosting
+
+Remove anything requiring local backend runtime unless it is a Supabase Edge Function.
+
+DO NOT:
+
+change UI
+rename pages
+change routing
+alter CSS
+remove components
+rewrite app architecture
+replace Supabase with another backend
+
+ONLY restore the original working backend/frontend connection.
+
+After fixes:
+
+frontend must load correctly
+Supabase data must display again
+no HTML response errors
+no API JSON parse errors
+no console connection errors
+no blank pages
+
+Then commit all fixes cleanly.

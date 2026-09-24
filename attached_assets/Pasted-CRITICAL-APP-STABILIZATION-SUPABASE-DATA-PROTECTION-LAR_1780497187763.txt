@@ -1,0 +1,292 @@
+CRITICAL APP STABILIZATION + SUPABASE DATA PROTECTION + LARGE XLS SUPPORT
+
+Project Overview:
+
+This application uses Supabase as the primary database and supports XLS/XLSX Import, Backup, Restore, and Sync operations.
+
+Current Issues:
+
+1. Data appears after restore/import and then disappears.
+2. Records are removed from both UI and Supabase.
+3. Some PATCH requests fail due to schema mismatch.
+4. Need complete audit of all data write operations.
+5. Need reliable support for very large XLS/XLSX files (50,000+ rows).
+6. Need protection against accidental data deletion and overwrite.
+
+====================================================
+PHASE 1 – FULL DATA LOSS INVESTIGATION
+====================================================
+
+Search entire codebase for:
+
+delete(
+.remove(
+truncate
+upsert(
+insert(
+update(
+rpc(
+sync
+restore
+backup
+upload
+import
+replace
+replaceAll
+clear
+reset
+cleanup
+migration
+
+Also search for:
+
+payment_method
+paymentMode
+payment_mode
+
+Find every place where Supabase data can be modified.
+
+Audit:
+
+- bills
+- contacts
+- ledger
+- drivers
+- collections
+- users
+- settings
+
+Trace all write operations.
+
+Check:
+
+- App startup
+- main.tsx
+- App.tsx
+- useEffect hooks
+- background sync
+- service workers
+- scheduled jobs
+- auto save logic
+- restore logic
+- import logic
+
+Determine whether:
+
+- empty arrays are synced to Supabase
+- cache overwrites database
+- restore replaces tables
+- failed imports trigger deletion
+- startup sync clears records
+- stale state overwrites records
+
+Add logs before every database write:
+
+console.log("TABLE", tableName)
+console.log("ACTION", action)
+console.log("PAYLOAD", payload)
+
+Report:
+
+- File name
+- Function name
+- Line number
+- Root cause
+- Impact
+- Fix
+
+====================================================
+PHASE 2 – SCHEMA VALIDATION
+====================================================
+
+Actual Bills Table Columns:
+
+id
+sr_no
+date
+salesperson_name
+collection_code
+bill_no
+party_code
+party_hul_code
+party_name
+beat_name
+bill_net_amt
+collected_amount
+outstanding_amount
+bill_ageing
+payment_mode
+payment_date
+payment_time
+driver_name
+delivery_date
+cheque_no
+cheque_date
+bank_name
+next_bill_no
+cancel_line
+discrepancy_reason
+cash_amount
+upi_amount
+cheque_amount
+updated_at
+line_cut_amt
+
+Find all invalid references such as:
+
+payment_method
+paymentMethod
+paymentMode
+
+Replace with actual database field:
+
+payment_mode
+
+Validate all update/insert payloads against actual schema.
+
+No payload should contain fields that do not exist in Supabase.
+
+====================================================
+PHASE 3 – PREVENT DATA LOSS
+====================================================
+
+Implement safety rules:
+
+1. Never delete records before validation.
+2. Never clear tables automatically.
+3. Never overwrite database with empty arrays.
+4. Never run destructive sync on startup.
+5. Require confirmation before bulk delete.
+6. Create automatic backup before restore.
+7. Add transaction-safe restore workflow.
+8. Abort restore if validation fails.
+9. Show row counts before import.
+10. Log all destructive actions.
+
+====================================================
+PHASE 4 – LARGE XLS/XLSX SUPPORT
+====================================================
+
+Requirements:
+
+Support:
+
+- 10,000 rows
+- 25,000 rows
+- 50,000 rows
+- 100,000+ rows
+
+Features:
+
+1. Upload XLS/XLSX
+2. Backup XLS/XLSX
+3. Restore XLS/XLSX
+
+Rules:
+
+- Multiple sheets supported.
+- Preserve all columns.
+- Preserve dates.
+- Preserve numeric values.
+- Preserve sheet names.
+
+Performance:
+
+- Chunk processing.
+- Batch uploads.
+- Streaming where possible.
+- No browser freezing.
+- No memory overflow.
+
+Supabase Upload:
+
+- Never upload 50,000 rows at once.
+- Upload in batches.
+
+Example:
+
+Batch 1 → 1000 rows
+Batch 2 → 1000 rows
+Batch 3 → 1000 rows
+
+Continue until complete.
+
+Retry failed batches.
+
+====================================================
+PHASE 5 – UI IMPROVEMENTS
+====================================================
+
+Add:
+
+Upload Progress Bar
+
+Show:
+- Total rows
+- Processed rows
+- Remaining rows
+- Upload speed
+- ETA
+
+Restore Progress Bar
+
+Show:
+- Current sheet
+- Current batch
+- Records completed
+- Records failed
+
+Backup Progress
+
+Show:
+- Tables exported
+- Rows exported
+- Download generation progress
+
+====================================================
+PHASE 6 – RELIABILITY
+====================================================
+
+Add:
+
+- Error recovery
+- Retry mechanism
+- Import validation
+- Restore validation
+- Duplicate detection
+- Failed row reporting
+- Audit logs
+
+Create detailed logs for:
+
+- Import
+- Restore
+- Delete
+- Update
+- Insert
+- Sync
+
+====================================================
+PHASE 7 – FINAL REPORT
+====================================================
+
+After analysis and fixes provide:
+
+1. Root cause of disappearing records.
+2. Files modified.
+3. Functions modified.
+4. Lines changed.
+5. Schema mismatches fixed.
+6. Data-loss bugs fixed.
+7. XLS improvements added.
+8. Maximum tested row count.
+9. Commit hash.
+10. Deployment status.
+
+PRIMARY GOAL:
+
+1. Stop all accidental data deletion.
+2. Ensure restored/imported data never disappears.
+3. Fix all Supabase schema mismatches.
+4. Make XLS Backup/Restore work with 50,000–100,000+ rows safely.
+5. Keep existing UI and business logic unchanged.
