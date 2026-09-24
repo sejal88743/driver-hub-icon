@@ -1,8 +1,14 @@
 import type { WASocket, WAMessage } from '@whiskeysockets/baileys';
 import QRCode from 'qrcode';
 import fs from 'fs';
-import { extractPaymentEntries, WaExtractEntry } from './whatsappExtract.js';
+import { extractPaymentEntries, extractPaymentEntriesLocal, WaExtractEntry } from './whatsappExtract.js';
 import { pool } from './db.js';
+import {
+  getWaBotConfig,
+  setSavedGroup,
+  setWaBotEnabled,
+  getEffectiveGeminiApiKey,
+} from './waBotConfig.js';
 
 let BaileysModule: any = null;
 let makeWASocket: any = null;
@@ -100,33 +106,37 @@ export function isSessionSaved(): boolean {
 }
 
 export function getBotStatus(): WaBotStatus {
-  return { ...status, groups, selectedGroup, hasSession: isSessionSaved() };
+  const conf = getWaBotConfig();
+  const currentSel = conf.selectedGroup || selectedGroup;
+
+  // Ensure the selected group is included in groups list so the UI dropdown can always show it
+  const allGroups = [...groups];
+  if (currentSel && currentSel.name) {
+    const exists = allGroups.some(
+      (g) => (currentSel.jid && g.jid === currentSel.jid) || g.name.toLowerCase() === currentSel.name.toLowerCase()
+    );
+    if (!exists) {
+      allGroups.unshift({ jid: currentSel.jid || `saved-${Date.now()}`, name: currentSel.name });
+    }
+  }
+
+  return { ...status, groups: allGroups, selectedGroup: currentSel, hasSession: isSessionSaved() };
 }
 
-/** Admin-selected group (persisted in settings) — bot scans only this group. */
+/** Admin-selected group (persisted in config & settings) — bot scans only this group. */
 export async function selectBotGroup(jid: string, name: string) {
-  selectedGroup = jid && name ? { jid, name } : null;
+  const saved = await setSavedGroup(jid, name);
+  selectedGroup = saved;
   status.selectedGroup = selectedGroup;
-  try {
-    await pool.query(
-      `INSERT INTO settings (key, value) VALUES ('wa_group_jid', $1), ('wa_group_name', $2)
-       ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`,
-      [jid || '', name || '']
-    );
-  } catch {}
+  return selectedGroup;
 }
 
 async function loadSavedGroup() {
-  try {
-    const r = await pool.query(
-      `SELECT key, value FROM settings WHERE key IN ('wa_group_jid', 'wa_group_name')`
-    );
-    const map = Object.fromEntries((r.rows as any[]).map((row) => [row.key, String(row.value || '')]));
-    if (map.wa_group_jid && map.wa_group_name) {
-      selectedGroup = { jid: map.wa_group_jid, name: map.wa_group_name };
-      status.selectedGroup = selectedGroup;
-    }
-  } catch {}
+  const conf = getWaBotConfig();
+  if (conf.selectedGroup && conf.selectedGroup.name) {
+    selectedGroup = conf.selectedGroup;
+    status.selectedGroup = selectedGroup;
+  }
 }
 
 let lastGroupsFetchedAt = 0;
@@ -184,7 +194,7 @@ async function getGeminiKey(): Promise<string> {
 
 // ── Pending-payment stitch ──────────────────────────────────────────────────
 // Real group flow me payment ka screenshot aur bill number ki text ALAG messages
-// me aate hain: pehle receipt (sirf amount), phir "Billno42911/42842" / "42155"
+// me aate hain: pehle receipt (sirf amount & A/C), phir "Billno42911/42842" / "42155"
 // / "42514" jaisi text. Dono sides ko stash karke ek combined event banta hai.
 type PendingPayment = {
   jid: string;
@@ -192,6 +202,10 @@ type PendingPayment = {
   amount: number;
   method: string;
   date: string;
+  accountName?: string;
+  senderAccountName?: string;
+  partyName?: string;
+  upiId?: string;
   senderName: string;
   text: string;
 };
@@ -244,16 +258,27 @@ function emitPaymentEvent(
     summary,
     entries,
   };
+  console.log(`[WhatsApp Bot] 🚀 PAYMENT EVENT EMITTED: ${event.id} | Entries: ${entries.length} | Summary: "${summary}"`);
   paymentEventHandler?.(event);
 }
 
-function combinedEntries(billNos: string[], amount: number, method: string, date: string): WaExtractEntry[] {
+function combinedEntries(
+  billNos: string[],
+  amount: number,
+  method: string,
+  date: string,
+  extra?: { accountName?: string; senderAccountName?: string; partyName?: string; upiId?: string }
+): WaExtractEntry[] {
   return billNos.map((bn) => ({
     billNo: bn,
     amount,
     paymentMethod: method,
     date,
-    remarks: `Combined payment ₹${amount} — bills: ${billNos.join(', ')}`,
+    accountName: extra?.accountName,
+    senderAccountName: extra?.senderAccountName,
+    partyName: extra?.partyName,
+    upiId: extra?.upiId,
+    remarks: `Combined payment ₹${amount} — bills: ${billNos.join(', ')}${extra?.accountName ? ` [A/C: ${extra.accountName}]` : ''}`,
   }));
 }
 
@@ -274,9 +299,8 @@ async function processMessage(msg: WAMessage) {
     if (!msg.key || msg.key.fromMe) return;
     const jid = String(msg.key.remoteJid || '');
     if (!jid || jid === 'status@broadcast') return;
-    // Only group messages, and only the admin-selected group (if chosen)
+    // Only group messages
     if (!jid.endsWith('@g.us')) return;
-    if (selectedGroup && jid !== selectedGroup.jid) return;
 
     const m: any = msg.message;
     if (!m) return;
@@ -286,8 +310,32 @@ async function processMessage(msg: WAMessage) {
     const text = getMessageText(msg);
     const hasImg = Boolean(m.imageMessage);
 
-    // Only process messages that plausibly contain a bill no / amount (digits) or a screenshot
-    if (!hasImg && (!text || !/\d/.test(text))) return;
+    // Group matching: check against persistent config
+    const conf = getWaBotConfig();
+    const currentSelected = conf.selectedGroup || selectedGroup;
+    if (currentSelected && currentSelected.name) {
+      const targetJid = String(currentSelected.jid || '').trim();
+      const targetName = String(currentSelected.name || '').trim().toLowerCase();
+
+      // Find group subject/name if available in fetched groups
+      const grp = groups.find((g) => g.jid === jid);
+      const grpName = String(grp?.name || '').toLowerCase();
+
+      const jidMatches = Boolean(targetJid && (jid === targetJid || jid.startsWith(targetJid) || targetJid.startsWith(jid)));
+      const nameMatches = Boolean(targetName && grpName && (grpName.includes(targetName) || targetName.includes(grpName)));
+
+      if (!jidMatches && !nameMatches) {
+        // Skip messages from other groups
+        return;
+      }
+
+      // If matched by name but JID was not saved or changed, auto-bind JID
+      if (!targetJid && jid) {
+        selectBotGroup(jid, currentSelected.name).catch(() => {});
+      }
+    }
+
+    console.log(`[WhatsApp Bot] 📩 Incoming group message: ${jid} | Sender: ${msg.pushName || 'User'} | Text: "${text.slice(0, 100)}" | HasImg: ${hasImg}`);
 
     status.lastMessageAt = new Date().toISOString();
 
@@ -299,6 +347,7 @@ async function processMessage(msg: WAMessage) {
           const p = pendingPayment!;
           pendingPayment = null;
           pendingBillNos = null;
+          console.log(`[WhatsApp Bot] 🔗 Combining stashed payment ₹${p.amount} with incoming bill numbers: ${billNos.join(', ')}`);
           emitPaymentEvent(
             msg, jid, text,
             `₹${p.amount} ka ${p.method} payment bills ${billNos.join(', ')} ke against — confirm karein.`,
@@ -306,7 +355,16 @@ async function processMessage(msg: WAMessage) {
           );
           return;
         }
+
+        // Check if the text also contains an amount or payment keyword
+        const localExt = extractPaymentEntriesLocal(text);
+        if (localExt.ok && localExt.entries.length > 0 && localExt.entries.some((e) => e.amount > 0)) {
+          emitPaymentEvent(msg, jid, text, localExt.summary, localExt.entries);
+          return;
+        }
+
         // Receipt abhi tak nahi aaya — bill numbers stash karo, screenshot aane par jodenge
+        console.log(`[WhatsApp Bot] ⏳ Stashing bill numbers: ${billNos.join(', ')} for incoming receipt`);
         pendingBillNos = { jid, ts: Date.now(), billNos, senderName: String(msg.pushName || ''), text };
         return;
       }
@@ -326,46 +384,72 @@ async function processMessage(msg: WAMessage) {
       }
     }
 
-    const apiKey = await getGeminiKey();
-    if (!apiKey) {
-      console.warn('[WhatsApp Bot] gemini_api_key settings me saved nahi hai — message skip hua.');
+    const apiKey = getEffectiveGeminiApiKey();
+    const result = await extractPaymentEntries({ apiKey, text: text || undefined, imageBase64, imageMime });
+    if (!result.ok || result.entries.length === 0) {
+      console.log('[WhatsApp Bot] Extraction returned 0 entries:', (result as any).error || 'No entries');
       return;
     }
 
-    const result = await extractPaymentEntries({ apiKey, text: text || undefined, imageBase64, imageMime });
-    if (!result.ok || result.entries.length === 0) return;
-
     const withBill = result.entries.filter((e) => String(e.billNo || '').trim());
-    const amountOnly = result.entries.filter((e) => !String(e.billNo || '').trim() && Number(e.amount) > 0);
+    const amountOnly = result.entries.filter((e) => !String(e.billNo || '').trim() && (Number(e.amount) > 0 || Boolean(e.accountName)));
 
-    // Normal case: bill number + amount dono ek hi message me
+    // Case 1: Bill number + amount dono ek hi message me
     if (withBill.length > 0) {
       pendingBillNos = null;
+      console.log(`[WhatsApp Bot] ✅ Emitting payment event for bill(s): ${withBill.map((e) => e.billNo).join(', ')}`);
       emitPaymentEvent(msg, jid, text, result.summary, withBill);
       return;
     }
 
-    // Screenshot me sirf payment hai, bill no nahi — pehle se stashed billnos se combine karo
+    // Case 2: Screenshot/message me amount ya account name mila, lekin bill no nahi mila
     if (amountOnly.length > 0) {
       const r = amountOnly[0];
       const method = String(r.paymentMethod || 'GPay');
       const amount = Number(r.amount) || 0;
+      const accountName = r.accountName || '';
+
       if (isFresh(pendingBillNos, jid)) {
         const pb = pendingBillNos!;
         pendingBillNos = null;
         pendingPayment = null;
+        console.log(`[WhatsApp Bot] 🔗 Combining receipt ₹${amount} (A/C: "${accountName}") with previously stashed bills: ${pb.billNos.join(', ')}`);
         emitPaymentEvent(
           msg, jid, pb.text,
           `₹${amount} ka ${method} payment bills ${pb.billNos.join(', ')} ke against — confirm karein.`,
-          combinedEntries(pb.billNos, amount, method, r.date)
+          combinedEntries(pb.billNos, amount, method, r.date, {
+            accountName: r.accountName,
+            senderAccountName: r.senderAccountName,
+            partyName: r.partyName,
+            upiId: r.upiId,
+          })
         );
         return;
       }
-      // Bill number abhi tak nahi aaya — receipt stash karo, "Billno..." text aane par jodenge
+
+      // Receipt ko stash karo taki agar 30 min me driver/salesman bill number text bheje to auto-stitch ho sake
+      console.log(`[WhatsApp Bot] ⏳ Stashing receipt ₹${amount} (${method}, A/C: "${accountName}") for incoming bill number text`);
       pendingPayment = {
-        jid, ts: Date.now(), amount, method, date: r.date,
-        senderName: String(msg.pushName || ''), text,
+        jid,
+        ts: Date.now(),
+        amount,
+        method,
+        date: r.date,
+        accountName: r.accountName,
+        senderAccountName: r.senderAccountName,
+        partyName: r.partyName,
+        upiId: r.upiId,
+        senderName: String(msg.pushName || ''),
+        text,
       };
+
+      // CRITICAL: App me payment popup turant show karo taki user ko screenshot aate hi dikhe
+      const summaryText = accountName
+        ? `₹${amount} ka ${method} payment detected [A/C: ${accountName}]`
+        : `₹${amount} ka ${method} payment detected`;
+      console.log(`[WhatsApp Bot] 🚀 Emitting immediate payment popup for scanned image: ₹${amount} | A/C: "${accountName}"`);
+      emitPaymentEvent(msg, jid, text, summaryText, amountOnly);
+      return;
     }
   } catch (err) {
     console.warn('[WhatsApp Bot] processMessage error:', err);
@@ -525,6 +609,7 @@ export function startBot() {
   status.running = true;
   status.error = null;
   status.qrDataUrl = null;
+  setWaBotEnabled(true).catch(() => {});
   try {
     pool.query(
       `INSERT INTO settings (key, value) VALUES ('wa_bot_enabled', 'true')
@@ -542,6 +627,7 @@ export function stopBot() {
   status.error = null;
   clearTimeout(reconnectTimer);
   reconnectTimer = null;
+  setWaBotEnabled(false).catch(() => {});
   try {
     pool.query(
       `INSERT INTO settings (key, value) VALUES ('wa_bot_enabled', 'false')
@@ -562,10 +648,10 @@ export function resetBotSession() {
 export async function initBotOnBoot() {
   try {
     const hasCreds = isSessionSaved();
-    let isEnabled = false;
+    let isEnabled = getWaBotConfig().enabled;
     try {
       const { rows } = await pool.query(`SELECT value FROM settings WHERE key = 'wa_bot_enabled'`);
-      isEnabled = rows?.[0]?.value === 'true';
+      if (rows?.[0]?.value === 'true') isEnabled = true;
     } catch {}
 
     if (hasCreds || isEnabled) {

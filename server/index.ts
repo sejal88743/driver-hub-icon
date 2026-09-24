@@ -8,8 +8,9 @@ import { pool } from './db.js';
 import { extractPaymentEntries } from './whatsappExtract.js';
 import {
   startBot, stopBot, resetBotSession, getBotStatus, setPaymentEventHandler,
-  selectBotGroup, initBotOnBoot, startWatchdog, isSessionSaved
+  selectBotGroup, initBotOnBoot, startWatchdog, isSessionSaved, WaPaymentEvent
 } from './whatsappBot.js';
+import { setGeminiApiKey, setWaBotEnabled } from './waBotConfig.js';
 import { MASTER_SALESPERSON_DIRECTORY, findServerMasterSalesperson } from './salespersonDirectory.js';
 
 const __dirname = process.cwd();
@@ -519,6 +520,11 @@ app.post('/api/contacts/salesperson', async (req, res) => {
 app.post('/api/settings', async (req, res) => {
   const { key, value } = req.body as { key: string; value: string };
   try {
+    if (key === 'gemini_api_key') {
+      await setGeminiApiKey(value);
+    } else if (key === 'wa_bot_enabled') {
+      await setWaBotEnabled(value === 'true');
+    }
     await pool.query(
       'INSERT INTO settings (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value',
       [key, value]
@@ -1291,6 +1297,9 @@ app.post('/api/admin/whatsapp-ai', async (req, res) => {
 
 // ─── WhatsApp Live Bot control + SSE event stream (linked-device bot) ────────
 const waSseClients = new Set<any>();
+const recentPaymentEvents: WaPaymentEvent[] = [];
+const dismissedEventIds = new Set<string>();
+
 setInterval(() => {
   for (const c of waSseClients) {
     try { c.write(': ping\n\n'); } catch {}
@@ -1299,7 +1308,11 @@ setInterval(() => {
 
 // Live bot payment extraction → broadcast to all connected app clients (popup)
 setPaymentEventHandler((event) => {
+  recentPaymentEvents.push(event);
+  if (recentPaymentEvents.length > 50) recentPaymentEvents.shift();
+
   const payload = `data: ${JSON.stringify(event)}\n\n`;
+  console.log(`[SSE] Broadcasting WhatsApp payment event (${event.id}) to ${waSseClients.size} client(s)...`);
   for (const c of waSseClients) {
     try { c.write(payload); } catch {}
   }
@@ -1315,8 +1328,55 @@ app.get('/api/admin/whatsapp-bot/events', (req, res) => {
   });
   res.flushHeaders?.();
   res.write(`data: ${JSON.stringify({ type: 'status', status: getBotStatus() })}\n\n`);
+
+  // Replay recent un-dismissed payment events (e.g. from last 2 hours)
+  for (const ev of recentPaymentEvents) {
+    if (!dismissedEventIds.has(ev.id)) {
+      res.write(`data: ${JSON.stringify(ev)}\n\n`);
+    }
+  }
+
   waSseClients.add(res);
   req.on('close', () => waSseClients.delete(res));
+});
+
+app.post('/api/admin/whatsapp-bot/dismiss', (req, res) => {
+  const { eventId } = req.body || {};
+  if (eventId) dismissedEventIds.add(String(eventId));
+  res.json({ ok: true });
+});
+
+// Test trigger for admin to verify popup in 1 click
+app.post('/api/admin/whatsapp-bot/test-event', async (req, res) => {
+  const billNo = String(req.body?.billNo || '42911');
+  const amount = Number(req.body?.amount) || 5000;
+  const method = String(req.body?.method || 'GPay');
+  const accountName = String(req.body?.accountName || 'LAXMI TRADERS');
+
+  const testEvent: WaPaymentEvent = {
+    type: 'wa-payment',
+    id: `test-${Date.now()}`,
+    fromJid: 'test-group@g.us',
+    senderName: 'Test Driver / Salesman',
+    text: `Payment receipt ₹${amount} [Paid to: ${accountName}] via ${method}`,
+    summary: `Test payment popup: ₹${amount} [A/C: ${accountName}] (${method})`,
+    entries: [{
+      billNo,
+      amount,
+      paymentMethod: method,
+      date: new Date().toLocaleDateString('en-GB'),
+      accountName,
+      remarks: `Test screenshot scan [A/C: ${accountName}]`,
+    }],
+  };
+
+  recentPaymentEvents.push(testEvent);
+  const payload = `data: ${JSON.stringify(testEvent)}\n\n`;
+  for (const c of waSseClients) {
+    try { c.write(payload); } catch {}
+  }
+
+  res.json({ ok: true, event: testEvent, clientCount: waSseClients.size });
 });
 
 app.post('/api/admin/whatsapp-bot/start', (_req, res) => {
@@ -1434,7 +1494,16 @@ async function seedMasterSalespersonContacts() {
   }
 }
 
-  const PORT = 3000;
+  let parsedPort = 3000;
+  const portArgIdx = process.argv.indexOf('--port');
+  if (portArgIdx !== -1 && process.argv[portArgIdx + 1]) {
+    const p = Number(process.argv[portArgIdx + 1]);
+    if (!isNaN(p) && p > 0) parsedPort = p;
+  } else if (process.env.PORT) {
+    const p = Number(process.env.PORT);
+    if (!isNaN(p) && p > 0) parsedPort = p;
+  }
+  const PORT = parsedPort;
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`[API] Server running on http://0.0.0.0:${PORT}`);
     seedMasterSalespersonContacts();

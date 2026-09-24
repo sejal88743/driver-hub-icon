@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import {
-  MessageSquare, QrCode, Loader2, Power, PowerOff, CheckCircle2, XCircle,
-  Users, Smartphone,
+  MessageSquare, Loader2, Power, PowerOff, CheckCircle2, XCircle,
+  Users, Smartphone, BellRing, Sparkles, Check, Edit3,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
@@ -18,8 +18,30 @@ type BotStatus = {
 };
 
 export function WhatsAppLiveBot() {
-  const [status, setStatus] = useState<BotStatus | null>(null);
+  const [status, setStatus] = useState<BotStatus | null>(() => {
+    // Initial optimistic hydrate from local storage
+    try {
+      const saved = localStorage.getItem('wa_bot_saved_group');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        return {
+          running: false,
+          connected: false,
+          qrDataUrl: null,
+          error: null,
+          groups: parsed.name ? [{ jid: parsed.jid || '', name: parsed.name }] : [],
+          selectedGroup: parsed,
+        };
+      }
+    } catch {}
+    return null;
+  });
+
   const [busy, setBusy] = useState(false);
+  const [customGroupName, setCustomGroupName] = useState('');
+  const [isEditingGroupName, setIsEditingGroupName] = useState(false);
+  const [testTriggering, setTestTriggering] = useState(false);
+  const [testSuccess, setTestSuccess] = useState(false);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // Poll bot status so QR + connection state stay live
@@ -28,19 +50,24 @@ export function WhatsAppLiveBot() {
       try {
         const res = await fetch('/api/admin/whatsapp-bot/status');
         if (res.status === 404 || !(res.headers.get('content-type') || '').includes('application/json')) {
-          setStatus({
+          setStatus((prev) => ({
             running: false,
             connected: false,
             qrDataUrl: null,
             error: 'WhatsApp Bot ke liye Node.js server chahiye. Lovable static hosting me bot run nahi ho sakta.',
-            groups: [],
-            selectedGroup: null,
-          });
+            groups: prev?.groups || [],
+            selectedGroup: prev?.selectedGroup || null,
+          }));
           return;
         }
         const data = await res.json();
-        if (data?.ok) {
+        if (data?.ok && data.status) {
           setStatus(data.status);
+          if (data.status.selectedGroup) {
+            try {
+              localStorage.setItem('wa_bot_saved_group', JSON.stringify(data.status.selectedGroup));
+            } catch {}
+          }
           // Auto-start if session exists but bot was idle
           if (data.status?.hasSession && !data.status?.running) {
             fetch('/api/admin/whatsapp-bot/start', { method: 'POST' })
@@ -51,6 +78,7 @@ export function WhatsAppLiveBot() {
         }
       } catch {}
     }
+
     poll();
     const intervalMs = status?.running && !status?.connected ? 1500 : 4000;
     pollRef.current = setInterval(poll, intervalMs);
@@ -60,29 +88,16 @@ export function WhatsAppLiveBot() {
   async function control(action: 'start' | 'stop' | 'reset') {
     if (action === 'stop') {
       const ok = window.confirm(
-        'Kya aap sach me WhatsApp bot stop karna chahte hain? Stop karne par group messages auto-scan nahi honge.'
+        'Kya aap WhatsApp bot stop karna chahte hain? Stop karne par group messages auto-scan nahi honge.'
       );
       if (!ok) return;
     }
     setBusy(true);
     try {
       const res = await fetch(`/api/admin/whatsapp-bot/${action}`, { method: 'POST' });
-      if (res.status === 404 || !(res.headers.get('content-type') || '').includes('application/json')) {
-        setStatus({
-          running: false,
-          connected: false,
-          qrDataUrl: null,
-          error: 'WhatsApp Bot ke liye Node.js server chahiye. Static hosting me ye feature supported nahi hai.',
-          groups: [],
-          selectedGroup: null,
-        });
-        setBusy(false);
-        return;
-      }
       const data = await res.json();
       if (data?.ok) setStatus(data.status);
 
-      // Fast polls immediately after trigger to grab the QR code without waiting
       if (action === 'start' || action === 'reset') {
         setTimeout(async () => {
           try {
@@ -90,34 +105,70 @@ export function WhatsAppLiveBot() {
             const d = await r.json();
             if (d?.ok) setStatus(d.status);
           } catch {}
-        }, 800);
-        setTimeout(async () => {
-          try {
-            const r = await fetch('/api/admin/whatsapp-bot/status');
-            const d = await r.json();
-            if (d?.ok) setStatus(d.status);
-          } catch {}
-        }, 2000);
+        }, 1000);
       }
     } catch {}
     setBusy(false);
   }
 
-  async function pickGroup(jid: string) {
-    const group = status?.groups?.find((g) => g.jid === jid);
+  async function pickGroup(jid: string, manualName?: string) {
+    let name = manualName;
+    if (!name) {
+      const group = status?.groups?.find((g) => g.jid === jid);
+      name = group?.name || jid;
+    }
+
     try {
       const res = await fetch('/api/admin/whatsapp-bot/select-group', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ jid: group?.jid || '', name: group?.name || '' }),
+        body: JSON.stringify({ jid: jid || '', name: name || '' }),
       });
       const data = await res.json();
-      if (data?.ok) setStatus(data.status);
+      if (data?.ok) {
+        setStatus(data.status);
+        if (data.status.selectedGroup) {
+          localStorage.setItem('wa_bot_saved_group', JSON.stringify(data.status.selectedGroup));
+        }
+        setIsEditingGroupName(false);
+      }
     } catch {}
   }
 
-  const connected = status?.connected;
-  const running = status?.running;
+  async function saveManualGroup() {
+    const trimmed = customGroupName.trim();
+    if (!trimmed) return;
+    // Check if matches an existing fetched group
+    const matched = status?.groups?.find((g) => g.name.toLowerCase() === trimmed.toLowerCase());
+    await pickGroup(matched ? matched.jid : '', trimmed);
+    setCustomGroupName('');
+  }
+
+  async function triggerTestPopup() {
+    setTestTriggering(true);
+    setTestSuccess(false);
+    try {
+      const res = await fetch('/api/admin/whatsapp-bot/test-event', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          billNo: '42911',
+          amount: 5000,
+          method: 'GPay',
+          accountName: 'LAXMI TRADERS',
+        }),
+      });
+      const d = await res.json();
+      if (d?.ok) {
+        setTestSuccess(true);
+        setTimeout(() => setTestSuccess(false), 3000);
+      }
+    } catch {}
+    setTestTriggering(false);
+  }
+
+  const connected = Boolean(status?.connected);
+  const running = Boolean(status?.running);
   const groups = status?.groups || [];
   const selectedGroup = status?.selectedGroup;
 
@@ -147,16 +198,31 @@ export function WhatsAppLiveBot() {
               </span>
               {connected && (
                 <span className="text-[9.5px] font-black px-2.5 py-0.5 rounded-full bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border border-emerald-500/30 flex items-center gap-1 shadow-xs">
-                  ⚡ ALWAYS ACTIVE (Auto-Reconnect Enabled)
+                  ⚡ ALWAYS ACTIVE (Auto-Scan On)
                 </span>
               )}
             </div>
             <p className="text-xs text-muted-foreground font-semibold mt-0.5">
-              Bot aapke WhatsApp se live linked rehta hai — group me payment message aate hi khud scan karke app me confirmation popup dikhata hai. Koi manual upload nahi chahiye.
+              WhatsApp group me salesman ya driver ka payment message ya screenshot aate hi, bot auto-detect karke screen par confirmation popup show karega.
             </p>
           </div>
         </div>
-        <div className="flex items-center gap-2">
+
+        <div className="flex items-center gap-2 flex-wrap">
+          {/* Test Popup Trigger */}
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={triggerTestPopup}
+            disabled={testTriggering}
+            className="font-bold text-[10px] uppercase tracking-wider px-3 py-1.5 rounded-xl border-emerald-500/40 text-emerald-700 dark:text-emerald-300 hover:bg-emerald-500/10 flex items-center gap-1.5"
+            title="App me payment popup test karne ke liye click karein"
+          >
+            {testTriggering ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : testSuccess ? <Check className="w-3.5 h-3.5 text-green-600" /> : <BellRing className="w-3.5 h-3.5" />}
+            {testSuccess ? 'Popup Sent!' : 'Test Popup'}
+          </Button>
+
           {running && (
             <Button
               type="button"
@@ -170,6 +236,7 @@ export function WhatsAppLiveBot() {
               Reset Session
             </Button>
           )}
+
           <Button
             type="button"
             size="sm"
@@ -200,47 +267,114 @@ export function WhatsAppLiveBot() {
                 <Smartphone className="w-5 h-5 text-green-600 shrink-0 mt-0.5" />
                 <p className="text-[11px] font-bold text-foreground leading-relaxed">
                   Phone me WhatsApp kholo → <span className="text-green-700">Settings → Linked Devices → Link a Device</span> → ye QR scan karo.
-                  <span className="block text-[10px] text-muted-foreground font-semibold mt-1">QR code har 20 second refresh hota hai — purana scan na ho paye to naya aane do.</span>
+                  <span className="block text-[10px] text-muted-foreground font-semibold mt-1">QR code scan karne ke baad bot automatically connected ho jayega.</span>
                 </p>
               </div>
             </div>
           ) : (
             <div className="flex items-center justify-center gap-2 py-6 text-xs font-bold text-muted-foreground">
-              <Loader2 className="w-4 h-4 animate-spin" /> QR code generate ho raha hai...
+              <Loader2 className="w-4 h-4 animate-spin" /> WhatsApp QR code connect ho raha hai...
             </div>
           )}
         </div>
       )}
 
-      {/* ── Connected: group name ── */}
-      {connected && (
-        <div className="bg-green-500/10 border border-green-500/40 rounded-xl px-3.5 py-3 space-y-2.5">
-          <div className="flex items-center gap-2 text-[11px] font-bold text-green-700 dark:text-green-300">
-            <Users className="w-4 h-4 shrink-0" />
-            Scan Group:
-            {selectedGroup ? (
-              <span className="bg-green-600 text-white px-2.5 py-0.5 rounded-full text-[10px] font-black uppercase tracking-wide">{selectedGroup.name}</span>
+      {/* ── Group Selection & Permanent Persistence ── */}
+      <div className="bg-green-500/10 border-2 border-green-500/40 rounded-xl p-3.5 space-y-3">
+        <div className="flex items-center justify-between flex-wrap gap-2">
+          <div className="flex items-center gap-2 text-xs font-black text-green-800 dark:text-green-200">
+            <Users className="w-4 h-4 shrink-0 text-green-600" />
+            <span>Active WhatsApp Group:</span>
+            {selectedGroup?.name ? (
+              <span className="bg-green-600 text-white px-3 py-1 rounded-full text-[11px] font-black uppercase tracking-wide flex items-center gap-1 shadow-sm">
+                <Check className="w-3 h-3" /> {selectedGroup.name}
+              </span>
             ) : (
-              <span className="text-muted-foreground text-[10px] uppercase tracking-wide">Koi group select nahi hua</span>
+              <span className="text-amber-700 dark:text-amber-300 text-[10px] font-bold uppercase tracking-wide bg-amber-500/20 px-2 py-0.5 rounded-full">
+                Koi Group Add / Select Nahi Hai
+              </span>
             )}
           </div>
-          <select
-            value={selectedGroup?.jid || ''}
-            onChange={(e) => pickGroup(e.target.value)}
-            className="w-full text-xs px-3.5 py-2 rounded-xl border border-input bg-background font-bold focus:outline-none focus:ring-2 focus:ring-green-500/40"
-          >
-            <option value="">-- Scan karne ke liye group select karo --</option>
-            {groups.map((g) => (
-              <option key={g.jid} value={g.jid}>{g.name}</option>
-            ))}
-          </select>
-          <p className="text-[9.5px] text-muted-foreground font-medium leading-relaxed">
-            {selectedGroup
-              ? `Bot sirf "${selectedGroup.name}" group ke messages scan karega — payment message aate hi confirmation popup aayega, confirm karne ke bad hi entry save hogi.`
-              : 'Upar apna WhatsApp group select karo — tabhi bot us group ke payment messages scan karega. (Admin page ki saved Gemini key bot khud use karta hai.)'}
-          </p>
+
+          <div className="flex items-center gap-1.5">
+            <span className="text-[10px] font-bold text-emerald-700 dark:text-emerald-300 bg-emerald-500/15 border border-emerald-500/30 px-2.5 py-0.5 rounded-full flex items-center gap-1">
+              <Sparkles className="w-3 h-3 text-emerald-600" /> Permanent Saved (Bar-bar select karne ki zaroorat nahi)
+            </span>
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              onClick={() => {
+                setIsEditingGroupName(!isEditingGroupName);
+                setCustomGroupName(selectedGroup?.name || '');
+              }}
+              className="h-7 text-[10.5px] font-bold text-muted-foreground hover:text-foreground px-2"
+            >
+              <Edit3 className="w-3.5 h-3.5 mr-1" /> {isEditingGroupName ? 'Cancel' : 'Change / Add'}
+            </Button>
+          </div>
         </div>
-      )}
+
+        {/* Dropdown to pick from connected groups */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+          <div className="space-y-1">
+            <label className="text-[10px] font-black uppercase tracking-wider text-muted-foreground">
+              WhatsApp Groups List me se chunein:
+            </label>
+            <select
+              value={selectedGroup?.jid || ''}
+              onChange={(e) => pickGroup(e.target.value)}
+              className="w-full text-xs px-3 py-2 rounded-xl border border-input bg-background font-bold focus:outline-none focus:ring-2 focus:ring-green-500/40"
+            >
+              <option value="">-- Dropdown se group select karein --</option>
+              {groups.map((g) => (
+                <option key={g.jid} value={g.jid}>
+                  {g.name} {selectedGroup?.name === g.name ? '★ (Selected)' : ''}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          {/* Manual group name input */}
+          <div className="space-y-1">
+            <label className="text-[10px] font-black uppercase tracking-wider text-muted-foreground">
+              Ya Group Ka Naam Type / Add Karein:
+            </label>
+            <div className="flex gap-1.5">
+              <input
+                type="text"
+                placeholder="e.g. KGN TRANSPORT ya DISPATCH GROUP"
+                value={customGroupName}
+                onChange={(e) => setCustomGroupName(e.target.value)}
+                onKeyDown={(e) => { if (e.key === 'Enter') saveManualGroup(); }}
+                className="flex-1 text-xs px-3 py-2 rounded-xl border border-input bg-background font-bold focus:outline-none focus:ring-2 focus:ring-green-500/40"
+              />
+              <Button
+                type="button"
+                size="sm"
+                onClick={saveManualGroup}
+                disabled={!customGroupName.trim()}
+                className="bg-green-600 hover:bg-green-700 text-white font-black text-[10px] uppercase px-3 rounded-xl shrink-0"
+              >
+                Save
+              </Button>
+            </div>
+          </div>
+        </div>
+
+        <div className="flex items-center justify-between text-[10px] text-muted-foreground font-semibold flex-wrap gap-2 pt-1 border-t border-green-500/20">
+          <p>
+            {selectedGroup?.name
+              ? `✓ Bot ab sirf "${selectedGroup.name}" group ke messages monitor karega. Server restart ya refresh hone par bhi yehi group locked rahega.`
+              : 'Ek baar group name save kar dijiye — bot hamesha usi group me payment messages scan karega.'}
+          </p>
+          {status?.lastMessageAt && (
+            <span className="text-[9.5px] font-mono text-foreground bg-muted/60 px-2 py-0.5 rounded-md">
+              Last message scanned: {new Date(status.lastMessageAt).toLocaleTimeString()}
+            </span>
+          )}
+        </div>
+      </div>
 
       {status?.error && (
         <div className="bg-red-500/10 border border-red-500/40 text-red-600 dark:text-red-400 px-3.5 py-2.5 rounded-xl text-[11px] font-bold flex items-center justify-between gap-2 flex-wrap">
