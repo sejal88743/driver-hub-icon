@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { X, Calendar, Check, Loader2, Edit2 } from 'lucide-react';
+import { X, Calendar, Check, Loader2, Edit2, FileText } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type { Bill } from '@/lib/billStore';
 import { patchBillDirect } from '@/lib/billStore';
@@ -17,6 +17,11 @@ export default function BillDetailsModal({ billNo, bill, onClose, onOpenEntry }:
   const [recDateVal, setRecDateVal] = useState(() => displayToIso(bill?.paymentDate || ''));
   const [savingDate, setSavingDate] = useState(false);
   const [dateSavedMsg, setDateSavedMsg] = useState(false);
+
+  const [isEditingNote, setIsEditingNote] = useState(false);
+  const [noteVal, setNoteVal] = useState(() => bill?.discrepancyReason || '');
+  const [savingNote, setSavingNote] = useState(false);
+  const [noteSavedMsg, setNoteSavedMsg] = useState(false);
 
   useEffect(() => {
     if (!billNo || !bill) return;
@@ -52,6 +57,18 @@ export default function BillDetailsModal({ billNo, bill, onClose, onOpenEntry }:
       setDateSavedMsg(true);
       setIsEditingRecDate(false);
       setTimeout(() => setDateSavedMsg(false), 2000);
+    }
+  }
+
+  async function handleSaveNote() {
+    setSavingNote(true);
+    const cleanNote = noteVal.trim();
+    const ok = await patchBillDirect(bill!.billNo, { discrepancyReason: cleanNote || undefined });
+    setSavingNote(false);
+    if (ok) {
+      setNoteSavedMsg(true);
+      setIsEditingNote(false);
+      setTimeout(() => setNoteSavedMsg(false), 2000);
     }
   }
 
@@ -149,6 +166,71 @@ export default function BillDetailsModal({ billNo, bill, onClose, onOpenEntry }:
 
             {dateSavedMsg && (
               <p className="text-[8px] font-black text-emerald-600 uppercase mt-1 text-right">REC Date Updated ✓</p>
+            )}
+          </div>
+
+          {/* Editable NOTE (REMARK) */}
+          <div className="border-b border-border/30 pb-2 bg-amber-50/50 dark:bg-amber-950/20 p-2 rounded-xl">
+            <div className="flex justify-between items-center">
+              <span className="text-[9px] font-black text-amber-800 dark:text-amber-300 uppercase flex items-center gap-1">
+                <FileText className="w-3 h-3 text-amber-600" /> NOTE (REMARK)
+              </span>
+              {!isEditingNote ? (
+                <div className="flex items-center gap-1.5">
+                  <span className="text-[11px] font-bold text-foreground max-w-[140px] truncate" title={bill.discrepancyReason || 'No note'}>
+                    {bill.discrepancyReason || '—'}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setNoteVal(bill.discrepancyReason || '');
+                      setIsEditingNote(true);
+                    }}
+                    className="p-1 text-amber-700 hover:bg-amber-200 dark:hover:bg-amber-900 rounded-md transition-colors cursor-pointer"
+                    title={bill.discrepancyReason ? "Change Note" : "Add Note"}
+                  >
+                    <Edit2 className="w-3 h-3" />
+                  </button>
+                </div>
+              ) : null}
+            </div>
+
+            {isEditingNote && (
+              <div className="mt-2 flex flex-col gap-1.5">
+                <input
+                  type="text"
+                  placeholder="Enter note / remark..."
+                  value={noteVal}
+                  autoFocus
+                  onChange={e => setNoteVal(e.target.value)}
+                  onKeyDown={e => {
+                    if (e.key === 'Enter') handleSaveNote();
+                    else if (e.key === 'Escape') setIsEditingNote(false);
+                  }}
+                  className="w-full h-8 px-2 bg-white dark:bg-card rounded-lg text-[11px] font-medium border border-amber-300 outline-none"
+                />
+                <div className="flex justify-end gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => setIsEditingNote(false)}
+                    className="h-6 px-2 bg-muted text-muted-foreground rounded-lg text-[9px] font-bold uppercase cursor-pointer"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    disabled={savingNote}
+                    onClick={handleSaveNote}
+                    className="h-6 px-2.5 bg-amber-600 hover:bg-amber-700 text-white rounded-lg text-[9px] font-black uppercase flex items-center gap-1 cursor-pointer"
+                  >
+                    {savingNote ? <Loader2 className="w-2.5 h-2.5 animate-spin" /> : <Check className="w-2.5 h-2.5 stroke-[3]" />} Save Note
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {noteSavedMsg && (
+              <p className="text-[8px] font-black text-emerald-600 uppercase mt-1 text-right">Note Updated in Supabase ✓</p>
             )}
           </div>
 

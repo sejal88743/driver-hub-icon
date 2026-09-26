@@ -1330,6 +1330,11 @@ export default function DriverDayTable({ bills, selectedDriver, displayDate, onS
                     )}>
                       {(b.partyName || '—').slice(0, 14)}
                     </span>
+                    {b.discrepancyReason && (
+                      <div className="text-[7.5px] font-bold text-amber-700 dark:text-amber-400 truncate max-w-[110px] leading-tight" title={`Note: ${b.discrepancyReason}`}>
+                        📝 {b.discrepancyReason}
+                      </div>
+                    )}
                   </td>
                   <td className="px-0.5 py-0 text-right font-black">₹{b.billNetAmt.toLocaleString('en-IN')}</td>
                   <td className="px-0.5 py-0 text-center font-black text-muted-foreground">{b.deliveryDate || '—'}</td>

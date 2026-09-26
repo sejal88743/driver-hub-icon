@@ -27,6 +27,7 @@ export default function BillDetailModal({ bill, onClose }: Props) {
     { label: 'Bill Net Amount',   value: `₹${Number(bill.billNetAmt).toLocaleString('en-IN')}` },
     { label: 'Line Cut Amt',      value: lc > 0 ? `₹${lc.toLocaleString('en-IN')}` : '—' },
     { label: 'Cancel Reason',     value: reason || '—' },
+    { label: 'Note / Remark',     value: bill.discrepancyReason || '—' },
     { label: 'Collected Amount',  value: `₹${Number(bill.collectedAmount || 0).toLocaleString('en-IN')}` },
     { label: 'Outstanding',       value: `₹${outstandingAmt.toLocaleString('en-IN')}` },
     { label: 'Bill Ageing',       value: `${bill.billAgeing} days` },
