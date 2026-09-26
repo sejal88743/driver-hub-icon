@@ -8,9 +8,12 @@ import { pool } from './db.js';
 import { extractPaymentEntries } from './whatsappExtract.js';
 import {
   startBot, stopBot, resetBotSession, getBotStatus, setPaymentEventHandler,
-  selectBotGroup, initBotOnBoot, startWatchdog, isSessionSaved, WaPaymentEvent
+  setStatusChangeHandler,
+  selectBotGroup, initBotOnBoot, startWatchdog, isSessionSaved, WaPaymentEvent,
+  forceRefreshGroups
 } from './whatsappBot.js';
 import { setGeminiApiKey, setWaBotEnabled } from './waBotConfig.js';
+import { isEventDismissed, markEventDismissed } from './waDedupe.js';
 import { MASTER_SALESPERSON_DIRECTORY, findServerMasterSalesperson } from './salespersonDirectory.js';
 
 const __dirname = process.cwd();
@@ -1308,11 +1311,35 @@ setInterval(() => {
 
 // Live bot payment extraction → broadcast to all connected app clients (popup)
 setPaymentEventHandler((event) => {
-  recentPaymentEvents.push(event);
-  if (recentPaymentEvents.length > 50) recentPaymentEvents.shift();
+  // If this event replaces an older pending event (e.g. unlinked receipt combined with bill numbers)
+  if (event.replacesEventId) {
+    const idx = recentPaymentEvents.findIndex((e) => e.id === event.replacesEventId);
+    if (idx !== -1) {
+      recentPaymentEvents.splice(idx, 1);
+    }
+    dismissedEventIds.add(event.replacesEventId);
+    markEventDismissed(event.replacesEventId);
+  }
+
+  // Deduplicate in recentPaymentEvents
+  const existingIdx = recentPaymentEvents.findIndex((e) => e.id === event.id);
+  if (existingIdx !== -1) {
+    recentPaymentEvents[existingIdx] = event;
+  } else {
+    recentPaymentEvents.push(event);
+    if (recentPaymentEvents.length > 50) recentPaymentEvents.shift();
+  }
 
   const payload = `data: ${JSON.stringify(event)}\n\n`;
   console.log(`[SSE] Broadcasting WhatsApp payment event (${event.id}) to ${waSseClients.size} client(s)...`);
+  for (const c of waSseClients) {
+    try { c.write(payload); } catch {}
+  }
+});
+
+// Live bot status change (QR code generated, connected, disconnected) → broadcast to all SSE clients in real-time
+setStatusChangeHandler((newStatus) => {
+  const payload = `data: ${JSON.stringify({ type: 'status', status: newStatus })}\n\n`;
   for (const c of waSseClients) {
     try { c.write(payload); } catch {}
   }
@@ -1331,7 +1358,7 @@ app.get('/api/admin/whatsapp-bot/events', (req, res) => {
 
   // Replay recent un-dismissed payment events (e.g. from last 2 hours)
   for (const ev of recentPaymentEvents) {
-    if (!dismissedEventIds.has(ev.id)) {
+    if (!dismissedEventIds.has(ev.id) && !isEventDismissed(ev.id)) {
       res.write(`data: ${JSON.stringify(ev)}\n\n`);
     }
   }
@@ -1341,8 +1368,11 @@ app.get('/api/admin/whatsapp-bot/events', (req, res) => {
 });
 
 app.post('/api/admin/whatsapp-bot/dismiss', (req, res) => {
-  const { eventId } = req.body || {};
-  if (eventId) dismissedEventIds.add(String(eventId));
+  const { eventId, paymentDetails } = req.body || {};
+  if (eventId) {
+    dismissedEventIds.add(String(eventId));
+    markEventDismissed(String(eventId), paymentDetails);
+  }
   res.json({ ok: true });
 });
 
@@ -1384,8 +1414,10 @@ app.post('/api/admin/whatsapp-bot/start', (_req, res) => {
   res.json({ ok: true, status: getBotStatus() });
 });
 
-app.post('/api/admin/whatsapp-bot/stop', (_req, res) => {
-  stopBot();
+app.post('/api/admin/whatsapp-bot/stop', (req, res) => {
+  const shutdown = (req.query as any)?.shutdown === 'true' || (req.body as any)?.shutdown === true;
+  // Default: Wipes old session credentials and generates fresh NEW QR code for new connection
+  stopBot(!shutdown);
   res.json({ ok: true, status: getBotStatus() });
 });
 
@@ -1407,6 +1439,15 @@ app.post('/api/admin/whatsapp-bot/select-group', async (req, res) => {
   const name = String((req.body as any)?.name || '');
   await selectBotGroup(jid, name);
   res.json({ ok: true, status: getBotStatus() });
+});
+
+app.post('/api/admin/whatsapp-bot/refresh-groups', async (_req, res) => {
+  try {
+    await forceRefreshGroups();
+    res.json({ ok: true, status: getBotStatus() });
+  } catch (err: any) {
+    res.status(500).json({ ok: false, error: err?.message || err, status: getBotStatus() });
+  }
 });
 
 // ─── Bulk update bill dates (ported from Supabase Edge Function) ──────────────

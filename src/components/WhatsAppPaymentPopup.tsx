@@ -39,7 +39,42 @@ type PendingItem = {
   summary: string;
   matched: boolean;
   bill?: Bill;
+  isAlreadyPaid?: boolean;
 };
+
+const SEEN_STORAGE_KEY = 'vitratrack_wa_seen_payments_v3';
+
+function getStoredSeen(): Set<string> {
+  try {
+    const raw = localStorage.getItem(SEEN_STORAGE_KEY);
+    if (raw) {
+      const arr = JSON.parse(raw);
+      if (Array.isArray(arr)) return new Set(arr);
+    }
+  } catch {}
+  return new Set();
+}
+
+function storeSeen(idOrSig: string) {
+  if (!idOrSig) return;
+  try {
+    const s = getStoredSeen();
+    s.add(idOrSig);
+    const arr = Array.from(s).slice(-1000);
+    localStorage.setItem(SEEN_STORAGE_KEY, JSON.stringify(arr));
+  } catch {}
+}
+
+function getPaymentSig(entry: WaEntry): string {
+  const upi = String(entry.upiId || '').trim().toLowerCase();
+  if (upi && upi.length >= 6) return `utr:${upi}`;
+  const bn = String(entry.billNo || '').trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
+  const amt = Math.round(Number(entry.amount) || 0);
+  const ac = String(entry.accountName || '').trim().toLowerCase().slice(0, 15);
+  const dt = String(entry.date || '').trim();
+  if (bn && amt > 0) return `bill_amt:${bn}:${amt}`;
+  return `pay:${amt}:${ac}:${dt}`;
+}
 
 function todayDMY() {
   const now = new Date();
@@ -110,11 +145,21 @@ export function WhatsAppPaymentPopup() {
           try {
             const data = JSON.parse(ev.data);
             if (data?.type !== 'wa-payment' || !Array.isArray(data.entries)) return;
-            if (seenIdsRef.current.has(data.id)) return;
+
+            const storedSeen = getStoredSeen();
+            if (storedSeen.has(data.id) || seenIdsRef.current.has(data.id)) return;
             seenIdsRef.current.add(data.id);
 
             const allBills = getBills ? getBills() : [];
-            const items: PendingItem[] = data.entries.map((entry: WaEntry) => {
+            const newItems: PendingItem[] = [];
+
+            for (const entry of data.entries) {
+              const sig = getPaymentSig(entry);
+              if (storedSeen.has(sig)) {
+                console.log('[Popup] Skipping already seen/processed payment signature:', sig);
+                continue;
+              }
+
               // 1. Try matching by bill number
               let bill = findBill(entry.billNo);
 
@@ -136,7 +181,15 @@ export function WhatsAppPaymentPopup() {
                 }
               }
 
-              return {
+              // Check if bill in app is already marked Paid
+              const isAlreadyPaid = Boolean(
+                bill && (
+                  bill.paymentMode === 'Paid' ||
+                  (Number(bill.outstandingAmount) <= 0 && Number(bill.collectedAmount) > 0)
+                )
+              );
+
+              newItems.push({
                 eventId: data.id,
                 entry,
                 senderName: data.senderName || '',
@@ -145,9 +198,30 @@ export function WhatsAppPaymentPopup() {
                 summary: data.summary || '',
                 matched: Boolean(bill),
                 bill,
-              };
+                isAlreadyPaid,
+              });
+            }
+
+            if (newItems.length === 0) return;
+
+            setQueue((prev) => {
+              let list = prev;
+              // If this event replaces an earlier unlinked event (replacesEventId):
+              if (data.replacesEventId) {
+                list = list.filter((p) => p.eventId !== data.replacesEventId);
+              }
+
+              // Filter out duplicates that might already be in queue
+              const uniqueNew = newItems.filter((ni) => {
+                const niSig = getPaymentSig(ni.entry);
+                return !list.some((existing) => {
+                  if (existing.eventId === ni.eventId && existing.entry.billNo === ni.entry.billNo) return true;
+                  return getPaymentSig(existing.entry) === niSig;
+                });
+              });
+
+              return [...list, ...uniqueNew];
             });
-            setQueue((prev) => [...prev, ...items]);
           } catch {}
         };
 
@@ -214,18 +288,34 @@ export function WhatsAppPaymentPopup() {
     }
   }, [current, allBills]);
 
-  function tellServerDismiss(eventId: string) {
+  function tellServerDismiss(eventId: string, entry?: WaEntry) {
     try {
+      storeSeen(eventId);
+      if (entry) storeSeen(getPaymentSig(entry));
       fetch('/api/admin/whatsapp-bot/dismiss', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ eventId }),
+        body: JSON.stringify({
+          eventId,
+          paymentDetails: entry ? {
+            billNo: entry.billNo,
+            amount: entry.amount,
+            paymentMethod: entry.paymentMethod,
+            accountName: entry.accountName,
+            upiId: entry.upiId,
+            date: entry.date,
+          } : undefined,
+        }),
       }).catch(() => {});
     } catch {}
   }
 
   function dismiss() {
-    if (current) tellServerDismiss(current.eventId);
+    if (current) {
+      tellServerDismiss(current.eventId, current.entry);
+      storeSeen(getPaymentSig(current.entry));
+      storeSeen(current.eventId);
+    }
     setManualBillSearch('');
     setQueue((prev) => prev.slice(1));
   }
@@ -234,10 +324,15 @@ export function WhatsAppPaymentPopup() {
     setQueue((prev) => {
       if (!prev[0]) return prev;
       const copy = [...prev];
+      const isAlreadyPaid = Boolean(
+        b.paymentMode === 'Paid' ||
+        (Number(b.outstandingAmount) <= 0 && Number(b.collectedAmount) > 0)
+      );
       copy[0] = {
         ...copy[0],
         matched: true,
         bill: b,
+        isAlreadyPaid,
         entry: { ...copy[0].entry, billNo: b.billNo },
       };
       return copy;
@@ -288,7 +383,9 @@ export function WhatsAppPaymentPopup() {
       await bulkPatchBillsInMemory([patch]);
 
       // Notify server dismissal so it won't replay on client refresh
-      tellServerDismiss(current.eventId);
+      tellServerDismiss(current.eventId, current.entry);
+      storeSeen(getPaymentSig(current.entry));
+      storeSeen(current.eventId);
 
       // Backend Postgres sync (best-effort)
       try {
@@ -507,6 +604,19 @@ export function WhatsAppPaymentPopup() {
                 </div>
               </div>
 
+              {/* Warning if bill is already paid */}
+              {current.isAlreadyPaid && (
+                <div className="bg-amber-500/15 border-2 border-amber-500/40 rounded-xl p-2.5 space-y-1 animate-in fade-in">
+                  <p className="text-[11px] font-black text-amber-800 dark:text-amber-200 flex items-center gap-1.5">
+                    <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0" />
+                    Warning: Bill #{bill!.billNo} pehle se Paid hai (Outstanding: ₹0)
+                  </p>
+                  <p className="text-[10px] font-semibold text-muted-foreground">
+                    Is bill ka payment pehle hi app me save ho chuka hai. Dobara save karne par duplicate payment create ho sakta hai.
+                  </p>
+                </div>
+              )}
+
               {/* Adjustment info */}
               <div className="bg-green-500/10 border border-green-500/30 rounded-xl px-3 py-2 text-xs space-y-1 text-center">
                 <p className="text-[10px] font-bold text-muted-foreground">Payment to be applied:</p>
@@ -541,10 +651,13 @@ export function WhatsAppPaymentPopup() {
                 type="button"
                 onClick={confirmAndSave}
                 disabled={saving}
-                className="flex-1 bg-green-600 hover:bg-green-700 text-white font-black text-[11px] uppercase tracking-wider px-4 py-2.5 rounded-xl shadow-md flex items-center justify-center gap-1.5 transition-all active:scale-95"
+                className={cn(
+                  'flex-1 text-white font-black text-[11px] uppercase tracking-wider px-4 py-2.5 rounded-xl shadow-md flex items-center justify-center gap-1.5 transition-all active:scale-95',
+                  current.isAlreadyPaid ? 'bg-amber-600 hover:bg-amber-700' : 'bg-green-600 hover:bg-green-700'
+                )}
               >
                 {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <CheckCircle2 className="w-4 h-4" />}
-                Confirm & Save Payment
+                {current.isAlreadyPaid ? 'Already Paid (Overwrite)' : 'Confirm & Save Payment'}
               </button>
             )}
             <button
@@ -554,7 +667,7 @@ export function WhatsAppPaymentPopup() {
                 'flex-1 bg-muted hover:bg-destructive/10 text-foreground hover:text-destructive font-black text-[11px] uppercase tracking-wider px-4 py-2.5 rounded-xl border border-border flex items-center justify-center gap-1.5 transition-all active:scale-95'
               )}
             >
-              <XCircle className="w-4 h-4" /> {current.matched ? 'Skip / Cancel' : 'Close'}
+              <XCircle className="w-4 h-4" /> {current.isAlreadyPaid ? 'Already Recorded (Skip)' : (current.matched ? 'Skip / Cancel' : 'Close')}
             </button>
           </div>
           <p className="text-[9px] text-center font-bold text-muted-foreground">
