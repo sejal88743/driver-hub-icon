@@ -127,13 +127,8 @@ function parseRegister(data: ArrayBuffer, XLSX: any): {
     throw new Error(`Required columns not found (BillRefNo, BillValue). Found: ${keys.slice(0, 14).join(', ')}`);
   }
 
-  // Beat Name is compulsory — reject the file if the column is absent.
-  if (!beatKey) {
-    throw new Error(
-      `Beat Name column nahi mila. File mein "Beat" ya "Beat Name" column hona zaroori hai. ` +
-      `Mile columns: ${keys.slice(0, 14).join(', ')}`
-    );
-  }
+  // Beat Name is optional (standard LeverEDGE Sales Register files may not have Beat column)
+  // If present, beat name will be updated; otherwise existing beat name in bills is preserved.
 
   const groups = new Map<string, BillGroup>();
   let positiveRows = 0;

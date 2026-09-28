@@ -11,16 +11,25 @@ const LOCKED_SUPABASE_PUBLISHABLE_KEY = 'sb_publishable_gkwGkK0YvU8q_GjkkcRNOg_X
 const LOCKED_SUPABASE_SECRET_KEY = 'sb_secret_CB00c8sgEOlaKcf5I2h35Q_TOAg9W7S';
 const LOCKED_SUPABASE_JWKS_URL = 'https://zybrzzouzleacqjvfiiu.supabase.co/auth/v1/.well-known/jwks.json';
 
+const metaEnv = (typeof import.meta !== 'undefined' && (import.meta as any)?.env) || {};
+const procEnv = (typeof process !== 'undefined' && process?.env) || {};
+
 const SUPABASE_URL =
-  import.meta.env.VITE_SUPABASE_URL ||
-  import.meta.env.SUPABASE_URL ||
+  metaEnv.VITE_SUPABASE_URL ||
+  metaEnv.SUPABASE_URL ||
+  procEnv.VITE_SUPABASE_URL ||
+  procEnv.SUPABASE_URL ||
   LOCKED_SUPABASE_URL;
 
 const SUPABASE_ANON_KEY =
-  import.meta.env.VITE_SUPABASE_ANON_KEY ||
-  import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY ||
-  import.meta.env.SUPABASE_PUBLISHABLE_KEY ||
-  import.meta.env.SUPABASE_ANON_KEY ||
+  metaEnv.VITE_SUPABASE_ANON_KEY ||
+  metaEnv.VITE_SUPABASE_PUBLISHABLE_KEY ||
+  metaEnv.SUPABASE_PUBLISHABLE_KEY ||
+  metaEnv.SUPABASE_ANON_KEY ||
+  procEnv.VITE_SUPABASE_ANON_KEY ||
+  procEnv.VITE_SUPABASE_PUBLISHABLE_KEY ||
+  procEnv.SUPABASE_PUBLISHABLE_KEY ||
+  procEnv.SUPABASE_ANON_KEY ||
   LOCKED_SUPABASE_PUBLISHABLE_KEY;
 
 // Enforce that connection always points to the approved Supabase host (zybrzzouzleacqjvfiiu)

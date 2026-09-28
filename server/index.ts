@@ -1450,6 +1450,29 @@ app.post('/api/admin/whatsapp-bot/refresh-groups', async (_req, res) => {
   }
 });
 
+app.post('/api/admin/update-salespersons', async (req, res) => {
+  const updates = (req.body as any)?.updates;
+  if (!Array.isArray(updates) || updates.length === 0) {
+    return res.status(400).json({ ok: false, error: 'No updates provided' });
+  }
+  let localUpdated = 0;
+  if (pool) {
+    try {
+      for (const item of updates) {
+        if (!item.billNo || !item.salespersonName) continue;
+        const result = await pool.query(
+          `UPDATE bills SET salesperson_name = $1, updated_at = NOW() WHERE bill_no = $2 OR bill_no = $3`,
+          [item.salespersonName, item.billNo, item.billNo.replace(/^GST[-_]?/i, '')]
+        );
+        if (result.rowCount) localUpdated += result.rowCount;
+      }
+    } catch (e: any) {
+      console.warn('[Server] local db update-salespersons error:', e);
+    }
+  }
+  res.json({ ok: true, localUpdated, total: updates.length });
+});
+
 // ─── Bulk update bill dates (ported from Supabase Edge Function) ──────────────
 app.post('/api/admin/bulk-update-dates', async (req, res) => {
   const updates: Array<{ bn: string; d: string }> = req.body.updates ?? [];

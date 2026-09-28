@@ -86,15 +86,22 @@ export function areSalespersonNamesEquivalent(name1: string, name2: string): boo
     if (set2.has(t)) common++;
   }
   const tokenDice = (2 * common) / (tokens1.length + tokens2.length);
-  if (tokenDice >= 0.50) return true;
 
-  // Substring inclusion (e.g. "JIGNESH" in "JIGNESH PATEL" or vice versa)
-  if (c1.length >= 3 && c2.length >= 3 && (c1.includes(c2) || c2.includes(c1))) {
+  // If both names have multiple tokens and share zero words in common, they cannot be equivalent
+  if (tokens1.length >= 2 && tokens2.length >= 2 && common === 0) {
+    return false;
+  }
+
+  // Token containment or high overlap
+  if (tokens1.length >= 2 && tokens2.length >= 2 && tokenDice >= 0.50) return true;
+
+  // Substring inclusion (e.g. "JIGNESH" in "JIGNESH PATEL" or vice versa) only if word boundary or 4+ chars
+  if (c1.length >= 4 && c2.length >= 4 && (c1.includes(c2) || c2.includes(c1))) {
     return true;
   }
 
-  // 50% match requirement for salespersons!
-  return calculateSimilarity(c1, c2) >= 0.50;
+  // High similarity requirement (70%+) to avoid false positives like FENISH PARMAR matching DINESH PADIHIR
+  return calculateSimilarity(c1, c2) >= 0.70;
 }
 
 // ── Clean Party Name ─────────────────────────────────────────────────────────
