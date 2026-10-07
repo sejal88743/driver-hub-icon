@@ -19,7 +19,9 @@ import {
   ArrowUp,
   ArrowDown,
   Lock,
-  RotateCcw
+  RotateCcw,
+  Download,
+  CalendarDays
 } from 'lucide-react';
 import { useBillStore } from '@/hooks/use-bill-store';
 import TopNav from '@/components/TopNav';
@@ -38,6 +40,8 @@ import {
   CreditAssign
 } from '@/lib/billStore';
 import { Button } from '@/components/ui/button';
+import jsPDF from 'jspdf';
+import autoTable from 'jspdf-autotable';
 
 type SortField = 'billNo' | 'billDate' | 'partyName' | 'billAmt' | 'delDate' | 'giveDate' | 'givenTo' | 'time';
 type SortOrder = 'asc' | 'desc';
@@ -156,6 +160,7 @@ const SP_COLOR_THEMES = [
 export default function OutstandingPage() {
   const { bills, loading } = useBillStore();
   const [selectedSalesperson, setSelectedSalesperson] = useState<string | null>(null);
+  const [selectedDelDate, setSelectedDelDate] = useState<string>(''); // YYYY-MM-DD or empty for all
   const [tableSearch, setTableSearch] = useState('');
   const [assigns, setAssigns] = useState<Record<string, CreditAssign>>(getCreditAssigns);
 
@@ -229,17 +234,8 @@ export default function OutstandingPage() {
     return { billAmt, collected, lineCutTotal, outstanding: billAmt - lineCutTotal - collected };
   }, [bills]);
 
-  // Unique list of all salespersons for the "Kon Legaya" dropdown
-  const allSalespersons = useMemo(() => {
-    const set = new Set<string>();
-    bills.forEach(b => {
-      if (b.salespersonName?.trim()) set.add(b.salespersonName.trim());
-    });
-    return Array.from(set).sort((a, b) => a.localeCompare(b));
-  }, [bills]);
-
-  // Salespersons who have credit bills (Sorted strictly A to Z)
-  const creditSalespersons = useMemo(() => {
+  // Unique list of all delivery dates among credit bills (formatted YYYY-MM-DD for value, DD/MM/YYYY for label)
+  const availableDelDates = useMemo(() => {
     const set = new Set<string>();
     bills.forEach(b => {
       const mode = (b.paymentMode || '').trim().toLowerCase();
@@ -250,19 +246,66 @@ export default function OutstandingPage() {
         (Number(b.chequeAmount) || 0) > 0 ||
         !!b.paymentDate;
 
+      if (isCredit && !hasMoneyReceived) {
+        const raw = (b.deliveryDate || b.date || '').trim();
+        if (raw) {
+          const disp = formatDisplayDate(raw);
+          if (disp && disp !== '-') {
+            // convert DD/MM/YYYY to YYYY-MM-DD
+            if (/^\d{2}\/\d{2}\/\d{4}$/.test(disp)) {
+              const [d, m, y] = disp.split('/');
+              set.add(`${y}-${m}-${d}`);
+            } else if (/^\d{4}-\d{2}-\d{2}$/.test(disp)) {
+              set.add(disp);
+            }
+          }
+        }
+      }
+    });
+    return Array.from(set).sort((a, b) => b.localeCompare(a)); // Newest first
+  }, [bills]);
+
+  // Unique list of all salespersons for the "Kon Legaya" dropdown
+  const allSalespersons = useMemo(() => {
+    const set = new Set<string>();
+    bills.forEach(b => {
+      if (b.salespersonName?.trim()) set.add(b.salespersonName.trim());
+    });
+    return Array.from(set).sort((a, b) => a.localeCompare(b));
+  }, [bills]);
+
+  // Salespersons who have credit bills (Sorted strictly A to Z, filtered by selectedDelDate if set)
+  const creditSalespersons = useMemo(() => {
+    const set = new Set<string>();
+    const selectedDisp = selectedDelDate ? formatDisplayDate(selectedDelDate) : '';
+
+    bills.forEach(b => {
+      const mode = (b.paymentMode || '').trim().toLowerCase();
+      const isCredit = mode === 'credit';
+      const hasMoneyReceived = (Number(b.collectedAmount) || 0) > 0 ||
+        (Number(b.cashAmount) || 0) > 0 ||
+        (Number(b.upiAmount) || 0) > 0 ||
+        (Number(b.chequeAmount) || 0) > 0 ||
+        !!b.paymentDate;
+
       if (isCredit && !hasMoneyReceived && b.salespersonName?.trim()) {
+        if (selectedDelDate) {
+          const raw = (b.deliveryDate || b.date || '').trim();
+          const disp = formatDisplayDate(raw);
+          if (disp !== selectedDisp && raw !== selectedDelDate) return;
+        }
         set.add(b.salespersonName.trim());
       }
     });
 
-    if (set.size === 0) {
+    if (set.size === 0 && !selectedDelDate) {
       bills.forEach(b => {
         if (b.salespersonName?.trim()) set.add(b.salespersonName.trim());
       });
     }
 
     return Array.from(set).sort((a, b) => a.localeCompare(b));
-  }, [bills]);
+  }, [bills, selectedDelDate]);
 
   // Handle Sort Toggle
   const handleSort = (field: SortField) => {
@@ -274,9 +317,11 @@ export default function OutstandingPage() {
     }
   };
 
-  // Credit bills for the selected salesperson (or all credit bills if selectedSalesperson is null)
+  // Credit bills for the selected salesperson & delivery date
   // JAB BILL ME PAYMENT REC HOGA VAH AUTOMATIC TABLE SE REMOVE HOGA
   const creditBills = useMemo(() => {
+    const selectedDisp = selectedDelDate ? formatDisplayDate(selectedDelDate) : '';
+
     const filtered = bills.filter(b => {
       const mode = (b.paymentMode || '').trim().toLowerCase();
       const isCredit = mode === 'credit';
@@ -288,6 +333,15 @@ export default function OutstandingPage() {
 
       // Must be Credit mode AND no payment received yet
       if (!isCredit || hasMoneyReceived) return false;
+
+      // Filter by selected Delivery Date if set
+      if (selectedDelDate) {
+        const raw = (b.deliveryDate || b.date || '').trim();
+        const disp = formatDisplayDate(raw);
+        if (disp !== selectedDisp && raw !== selectedDelDate) {
+          return false;
+        }
+      }
 
       // If a specific salesperson card was clicked, show ONLY that salesperson's bills
       if (selectedSalesperson) {
@@ -377,7 +431,7 @@ export default function OutstandingPage() {
       const strB = String(valB);
       return sortOrder === 'asc' ? strA.localeCompare(strB) : strB.localeCompare(strA);
     });
-  }, [bills, selectedSalesperson, tableSearch, sortField, sortOrder, assigns]);
+  }, [bills, selectedSalesperson, selectedDelDate, tableSearch, sortField, sortOrder, assigns]);
 
   const creditTableTotalAmt = useMemo(() => {
     return creditBills.reduce((sum, b) => sum + Number(b.billNetAmt || 0), 0);
@@ -584,6 +638,157 @@ Kripya in credit bills ka collection coordinate karein.`;
     setTimeout(() => setAlertNotice(null), 4000);
   };
 
+  // PDF Download: Salesman Wise Grouped Table with Bill No, Del Date, Bill Amount, Give Date, Salesman Jis Ko Give Kiya
+  const handleDownloadPdf = () => {
+    // Collect all credit bills (matching selectedDelDate if set, otherwise all credit bills across all salespersons)
+    const selectedDisp = selectedDelDate ? formatDisplayDate(selectedDelDate) : '';
+
+    const billsForPdf = bills.filter(b => {
+      const mode = (b.paymentMode || '').trim().toLowerCase();
+      const isCredit = mode === 'credit';
+      const hasMoneyReceived = (Number(b.collectedAmount) || 0) > 0 ||
+        (Number(b.cashAmount) || 0) > 0 ||
+        (Number(b.upiAmount) || 0) > 0 ||
+        (Number(b.chequeAmount) || 0) > 0 ||
+        !!b.paymentDate;
+
+      if (!isCredit || hasMoneyReceived) return false;
+
+      if (selectedDelDate) {
+        const raw = (b.deliveryDate || b.date || '').trim();
+        const disp = formatDisplayDate(raw);
+        if (disp !== selectedDisp && raw !== selectedDelDate) {
+          return false;
+        }
+      }
+
+      return true;
+    });
+
+    if (billsForPdf.length === 0) {
+      alert(selectedDelDate ? `Delivery Date ${selectedDisp} ke liye koi credit bill nahi hai.` : 'Koi credit bill uplabdh nahi hai.');
+      return;
+    }
+
+    // Group bills by salesman name
+    const spGroups = new Map<string, Bill[]>();
+    billsForPdf.forEach(b => {
+      const sp = (b.salespersonName || '').trim() || 'UNASSIGNED';
+      if (!spGroups.has(sp)) spGroups.set(sp, []);
+      spGroups.get(sp)!.push(b);
+    });
+
+    // Sort salesmen alphabetically
+    const sortedSpNames = Array.from(spGroups.keys()).sort((a, b) => a.localeCompare(b));
+
+    // A4 Portrait PDF
+    const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
+
+    const title = selectedDelDate
+      ? `CREDIT BILLS OUTSTANDING REPORT — DEL DATE: ${selectedDisp}`
+      : 'CREDIT BILLS OUTSTANDING REPORT (ALL SALESMEN)';
+    const now = new Date();
+    const stamp = `${String(now.getDate()).padStart(2, '0')}/${String(now.getMonth() + 1).padStart(2, '0')}/${now.getFullYear()} ${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(13);
+    doc.text(title, 14, 13);
+
+    doc.setFontSize(8);
+    doc.setFont('helvetica', 'normal');
+    const totalPdfAmt = billsForPdf.reduce((sum, b) => sum + Number(b.billNetAmt || 0), 0);
+    doc.text(`Generated: ${stamp}  |  Total Bills: ${billsForPdf.length}  |  Total Amount: Rs. ${totalPdfAmt.toLocaleString('en-IN')}`, 14, 18);
+
+    // Build Table Rows: Group header row per salesman, then bill rows, then subtotal row
+    const head = [['#', 'Bill No', 'Del Date', 'Bill Amount', 'Give Date', 'Salesman Jis Ko Give Kiya']];
+    const body: (string | number)[][] = [];
+
+    let overallIdx = 1;
+
+    sortedSpNames.forEach(spName => {
+      const groupBills = spGroups.get(spName)!;
+      // Sort group bills by Bill No numeric
+      groupBills.sort((a, b) => {
+        const numA = parseInt((a.billNo || '').replace(/\D/g, ''), 10) || 0;
+        const numB = parseInt((b.billNo || '').replace(/\D/g, ''), 10) || 0;
+        return numA - numB;
+      });
+
+      const spTotalAmt = groupBills.reduce((sum, b) => sum + Number(b.billNetAmt || 0), 0);
+
+      // Group Header row
+      body.push([
+        { content: `SALESPERSON: ${spName} (${groupBills.length} Bills - Total: Rs. ${spTotalAmt.toLocaleString('en-IN')})`, colSpan: 6, styles: { fillColor: [240, 240, 245], fontStyle: 'bold', textColor: [20, 20, 40] } } as any
+      ]);
+
+      groupBills.forEach(b => {
+        const key = b.id || b.billNo;
+        const assign = assigns[key] || {};
+        const delDate = formatDisplayDate(b.deliveryDate || b.date);
+        const giveDate = assign.giveDate || '—';
+        const givenToSalesman = assign.givenTo || b.salespersonName || '—';
+        const amt = Number(b.billNetAmt || 0).toLocaleString('en-IN');
+
+        body.push([
+          String(overallIdx++),
+          b.billNo,
+          delDate,
+          `Rs. ${amt}`,
+          giveDate,
+          givenToSalesman
+        ]);
+      });
+    });
+
+    // Grand Total row
+    body.push([
+      { content: 'GRAND TOTAL', colSpan: 3, styles: { fontStyle: 'bold', halign: 'right', fillColor: [220, 230, 245] } } as any,
+      { content: `Rs. ${totalPdfAmt.toLocaleString('en-IN')}`, styles: { fontStyle: 'bold', fillColor: [220, 230, 245] } } as any,
+      { content: `${billsForPdf.length} Bills`, colSpan: 2, styles: { fontStyle: 'bold', fillColor: [220, 230, 245] } } as any
+    ]);
+
+    autoTable(doc, {
+      startY: 22,
+      head,
+      body,
+      styles: {
+        font: 'helvetica',
+        fontStyle: 'normal',
+        fontSize: 8,
+        cellPadding: { top: 1.8, bottom: 1.8, left: 2, right: 2 },
+        lineColor: [210, 210, 215],
+        lineWidth: 0.1
+      },
+      headStyles: {
+        fillColor: [30, 41, 59],
+        textColor: [255, 255, 255],
+        fontStyle: 'bold',
+        fontSize: 8.5
+      },
+      columnStyles: {
+        0: { cellWidth: 10, halign: 'center' },
+        1: { cellWidth: 32, fontStyle: 'bold' },
+        2: { cellWidth: 26, halign: 'center' },
+        3: { cellWidth: 32, halign: 'right', fontStyle: 'bold' },
+        4: { cellWidth: 28, halign: 'center' },
+        5: { cellWidth: 'auto', fontStyle: 'bold' }
+      },
+      didDrawPage: (data) => {
+        // Page number footer
+        const pageCount = (doc as any).internal.getNumberOfPages();
+        doc.setFontSize(7);
+        doc.setTextColor(130);
+        doc.text(`Page ${data.pageNumber} of ${pageCount}`, doc.internal.pageSize.width - 25, doc.internal.pageSize.height - 7);
+      }
+    });
+
+    const fileName = selectedDelDate
+      ? `Credit_Bills_${selectedDisp.replace(/\//g, '-')}.pdf`
+      : `Credit_Bills_All_${getTodayDMY().replace(/\//g, '-')}.pdf`;
+
+    doc.save(fileName);
+  };
+
   // Render Sort Header Indicator
   const renderSortIndicator = (field: SortField) => {
     if (sortField !== field) {
@@ -738,6 +943,16 @@ Kripya in credit bills ka collection coordinate karein.`;
                         <Send className="w-3 h-3" />
                         GIVE {selectedBillsList.length > 0 ? `(${selectedBillsList.length})` : ''}
                       </Button>
+
+                      {/* ── PDF DOWNLOAD BUTTON ── */}
+                      <Button
+                        onClick={handleDownloadPdf}
+                        className="h-7 px-3 rounded-lg font-black text-[10px] uppercase flex items-center gap-1.5 bg-red-600 hover:bg-red-700 text-white shadow-sm transition-all cursor-pointer"
+                        title={selectedDelDate ? `Delivery Date ${formatDisplayDate(selectedDelDate)} ke sabhi bills ka Salesman-wise PDF download karein` : "Sabhi credit bills ka Salesman-wise PDF download karein"}
+                      >
+                        <Download className="w-3.5 h-3.5" />
+                        PDF DOWNLOAD
+                      </Button>
                     </div>
                     <p className="text-[8.5px] font-bold text-muted-foreground uppercase">
                       Dashboard entry me Credit bills yahan show honge. Give karne par bills RED font me lock ho jayenge. Payment receive hote hi auto remove honge.
@@ -745,8 +960,35 @@ Kripya in credit bills ka collection coordinate karein.`;
                   </div>
                 </div>
 
-                <div className="flex items-center gap-2 flex-1 max-w-xs justify-end">
-                  <div className="relative flex-1">
+                <div className="flex items-center gap-2 flex-wrap md:flex-nowrap justify-end">
+                  {/* Delivery Date Selection Dropdown */}
+                  <div className="flex items-center gap-1 bg-muted px-2.5 py-1 rounded-xl border border-border shrink-0">
+                    <CalendarDays className="w-3.5 h-3.5 text-primary shrink-0" />
+                    <span className="text-[9px] font-black uppercase text-muted-foreground whitespace-nowrap">DEL DATE:</span>
+                    <select
+                      value={selectedDelDate}
+                      onChange={e => setSelectedDelDate(e.target.value)}
+                      className="bg-transparent text-[10.5px] font-black uppercase text-foreground outline-none cursor-pointer max-w-[140px]"
+                    >
+                      <option value="">ALL DATES ({bills.filter(b => (b.paymentMode || '').trim().toLowerCase() === 'credit' && !((Number(b.collectedAmount) || 0) > 0 || (Number(b.cashAmount) || 0) > 0 || (Number(b.upiAmount) || 0) > 0 || (Number(b.chequeAmount) || 0) > 0 || !!b.paymentDate)).length} Bills)</option>
+                      {availableDelDates.map(isoDate => (
+                        <option key={isoDate} value={isoDate}>
+                          {formatDisplayDate(isoDate)}
+                        </option>
+                      ))}
+                    </select>
+                    {selectedDelDate && (
+                      <button
+                        onClick={() => setSelectedDelDate('')}
+                        title="Clear Date Filter"
+                        className="p-0.5 text-muted-foreground hover:text-foreground rounded"
+                      >
+                        <X className="w-3 h-3" />
+                      </button>
+                    )}
+                  </div>
+
+                  <div className="relative w-48 sm:w-56">
                     <Search className="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-foreground" />
                     <input
                       type="text"

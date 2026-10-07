@@ -3529,7 +3529,17 @@ export default function Dashboard() {
             </div>
             {/* Multi Bill Entry Button */}
             <button
-              onClick={() => setShowMultiBillModal(true)}
+              onClick={() => {
+                if (!selectedDriver) {
+                  toast({
+                    title: 'Driver Select Karein',
+                    description: 'Multi bill entry ke liye pehle driver select karein.',
+                    variant: 'destructive',
+                  });
+                  return;
+                }
+                setShowMultiBillModal(true);
+              }}
               title="Multi Bill Entry"
               className="shrink-0 h-9 px-2.5 flex items-center gap-1 bg-primary/10 hover:bg-primary/20 text-primary rounded-xl border border-primary/20 transition-colors shadow-sm"
             >

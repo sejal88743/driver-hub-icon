@@ -38,7 +38,45 @@ const isApprovedHost = typeof SUPABASE_URL === 'string' && SUPABASE_URL.includes
 const FINAL_URL = isApprovedHost ? SUPABASE_URL : LOCKED_SUPABASE_URL;
 const FINAL_KEY = (isApprovedHost && SUPABASE_ANON_KEY) ? SUPABASE_ANON_KEY : LOCKED_SUPABASE_PUBLISHABLE_KEY;
 
-export const supabase = createClient(FINAL_URL, FINAL_KEY);
+export const supabase = createClient(FINAL_URL, FINAL_KEY, {
+  realtime: {
+    // Custom robust decoder to safely handle incoming Realtime WebSocket messages.
+    // In @supabase/realtime-js, the default v2 decoder expects `const [join_ref, ref, topic, event, payload] = jsonPayload;`
+    // If the server sends an object error (e.g. { error: "..." } or non-array JSON), JSON.parse returns a non-array
+    // which throws "TypeError: jsonPayload is not iterable" inside Serializer.decode.
+    decode: (rawPayload: ArrayBuffer | string, callback: (msg: any) => void) => {
+      try {
+        if (rawPayload && typeof rawPayload === 'object' && 'byteLength' in (rawPayload as any)) {
+          // Binary user broadcast decode fallback
+          const serializer = (supabase as any)?.realtime?.serializer;
+          if (serializer && typeof serializer.decode === 'function') {
+            return serializer.decode(rawPayload, callback);
+          }
+        }
+        if (typeof rawPayload === 'string') {
+          const jsonPayload = JSON.parse(rawPayload);
+          if (Array.isArray(jsonPayload)) {
+            const [join_ref, ref, topic, event, payload] = jsonPayload;
+            return callback({ join_ref, ref, topic, event, payload });
+          } else if (jsonPayload && typeof jsonPayload === 'object') {
+            // Server returned non-array payload (e.g. error, status or handshake message)
+            const { join_ref, ref, topic, event, payload } = jsonPayload;
+            return callback({
+              join_ref: join_ref ?? null,
+              ref: ref ?? null,
+              topic: topic ?? '',
+              event: event ?? '',
+              payload: payload ?? jsonPayload,
+            });
+          }
+        }
+      } catch (err) {
+        console.warn('[Supabase Realtime decode error gracefully handled]:', err);
+      }
+      return callback({});
+    },
+  },
+});
 export const SUPABASE_URL_USED = FINAL_URL;
 export const SUPABASE_KEY_USED = FINAL_KEY;
 

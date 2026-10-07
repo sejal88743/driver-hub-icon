@@ -130,20 +130,55 @@ export default function MultiBillEntryModal({ bills, banks, selectedDriver, disp
     return m;
   }, [bills]);
 
-  // Driver bills for selectedDriver and active delivery date
+  // Strict check: ONLY bills assigned to selectedDriver are allowed!
+  const isBillAllowed = useCallback((b: Bill | undefined | null): { allowed: boolean; reason?: string } => {
+    if (!b) return { allowed: false, reason: 'Bill data nahi mila' };
+    if (!selectedDriver || !selectedDriver.trim()) {
+      return { allowed: false, reason: 'Pehle Dashboard par Driver select karein!' };
+    }
+    const selUpper = selectedDriver.trim().toUpperCase();
+    if (selUpper === 'OWNER') {
+      return { allowed: true };
+    }
+    const bDriver = (b.driverName || '').trim().toUpperCase();
+    if (!bDriver) {
+      return { allowed: false, reason: `Bill #${b.billNo} kisi driver ko assign nahi hai! Sirf '${selectedDriver}' ke bills allowed hain.` };
+    }
+    if (bDriver !== selUpper) {
+      return { allowed: false, reason: `Bill #${b.billNo} '${b.driverName || 'dusre driver'}' ka hai, '${selectedDriver}' ka nahi!` };
+    }
+    return { allowed: true };
+  }, [selectedDriver]);
+
+  // Driver bills strictly restricted to selectedDriver
   const driverBills = useMemo(() => {
+    if (!selectedDriver || !selectedDriver.trim()) return [];
+    const selUpper = selectedDriver.trim().toUpperCase();
     return bills.filter(b => {
-      if (selectedDriver && selectedDriver !== 'OWNER') {
-        if (b.driverName !== selectedDriver) return false;
-      }
-      if (displayDate || dashDate) {
-        const bd = b.deliveryDate || '';
-        const match = bd === displayDate || bd === dashDate || isoToDisplay(bd) === displayDate;
-        if (!match) return false;
+      if (selUpper !== 'OWNER') {
+        const bDriver = (b.driverName || '').trim().toUpperCase();
+        if (bDriver !== selUpper) return false;
       }
       return true;
     });
-  }, [bills, selectedDriver, displayDate, dashDate]);
+  }, [bills, selectedDriver]);
+
+  // Sorted so active date bills appear first in suggestions & voice matching
+  const sortedDriverBills = useMemo(() => {
+    const list = [...driverBills];
+    const disp = (displayDate || '').trim();
+    const dIso = (dashDate || '').trim();
+    list.sort((a, b) => {
+      const aDate = (a.deliveryDate || a.date || '').trim();
+      const bDate = (b.deliveryDate || b.date || '').trim();
+      const aMatch = aDate && (aDate === disp || aDate === dIso || isoToDisplay(aDate) === disp);
+      const bMatch = bDate && (bDate === disp || bDate === dIso || isoToDisplay(bDate) === disp);
+      if (aMatch && !bMatch) return -1;
+      if (!aMatch && bMatch) return 1;
+      return 0;
+    });
+    return list;
+  }, [driverBills, displayDate, dashDate]);
 
   // Fast TTS speech feedback helper
   const speakFeedback = useCallback((text: string) => {
@@ -158,33 +193,29 @@ export default function MultiBillEntryModal({ bills, banks, selectedDriver, disp
     } catch {}
   }, []);
 
+  // Dropdown suggestions: ONLY show bills assigned to selectedDriver
   const getFilteredBillNos = useCallback((query: string, excludeNos: string[]) => {
     if (!query.trim()) return [];
+    if (!selectedDriver || !selectedDriver.trim()) return [];
     const q = query.toLowerCase().trim();
     const excludeSet = new Set(excludeNos);
     const results: string[] = [];
     const seen = new Set<string>();
-    for (const b of bills) {
-      if (selectedDriver && selectedDriver !== 'OWNER') {
-        if (b.driverName !== selectedDriver) continue;
-      }
-      if (displayDate || dashDate) {
-        const bd = b.deliveryDate || '';
-        const match = bd === displayDate || bd === dashDate || isoToDisplay(bd) === displayDate;
-        if (!match) continue;
-      }
+
+    for (const b of sortedDriverBills) {
       if (excludeSet.has(b.billNo)) continue;
       if (seen.has(b.billNo)) continue;
       const bl = b.billNo.toLowerCase();
+      const bs = stripGST(b.billNo).toLowerCase();
       const pl = (b.partyName || '').toLowerCase();
-      if (bl.startsWith(q) || bl.includes(q) || pl.startsWith(q) || pl.includes(q)) {
+      if (bl.startsWith(q) || bs.startsWith(q) || bl.includes(q) || bs.includes(q) || pl.startsWith(q) || pl.includes(q)) {
         results.push(b.billNo);
         seen.add(b.billNo);
-        if (results.length >= 8) break;
+        if (results.length >= 10) break;
       }
     }
     return results;
-  }, [bills, selectedDriver, displayDate]);
+  }, [sortedDriverBills, selectedDriver]);
 
   function updateRow(id: string, patch: Partial<BillRow>) {
     setRows(prev => prev.map(r => r.id === id ? { ...r, ...patch } : r));
@@ -205,6 +236,13 @@ export default function MultiBillEntryModal({ bills, banks, selectedDriver, disp
 
   // Add a specific bill to the rows list
   const addBillToRows = useCallback((bill: Bill) => {
+    const check = isBillAllowed(bill);
+    if (!check.allowed) {
+      speakFeedback("Driver mismatch");
+      setVoiceFeedback(check.reason || "Driver mismatch");
+      return;
+    }
+
     const cleanNo = bill.billNo;
     // Check if already in rows
     const isAlreadyAdded = rowsRef.current.some(r => r.billNo === cleanNo);
@@ -215,31 +253,42 @@ export default function MultiBillEntryModal({ bills, banks, selectedDriver, disp
     }
 
     const fullAmt = bill.billNetAmt || 0;
+    let targetRowId = '';
 
     // Find first empty row
     const emptyRowIdx = rowsRef.current.findIndex(r => !r.billNo.trim());
     if (emptyRowIdx !== -1) {
-      const rowId = rowsRef.current[emptyRowIdx].id;
-      setRows(prev => prev.map(r => r.id === rowId ? {
+      targetRowId = rowsRef.current[emptyRowIdx].id;
+      setRows(prev => prev.map(r => r.id === targetRowId ? {
         ...r,
         billNo: cleanNo,
         lineCutAmt: '',
         recAmt: fullAmt > 0 ? String(fullAmt) : '',
         showDropdown: false,
       } : r));
-      setErrors(p => { const n = { ...p }; delete n[rowId]; return n; });
+      setErrors(p => { const n = { ...p }; delete n[targetRowId]; return n; });
     } else {
       // Append new row
       const newRow = makeRow();
       newRow.billNo = cleanNo;
       newRow.lineCutAmt = '';
       newRow.recAmt = fullAmt > 0 ? String(fullAmt) : '';
+      targetRowId = newRow.id;
       setRows(prev => [...prev, newRow]);
     }
 
     speakFeedback("Added");
     setVoiceFeedback(`Added ${stripGST(cleanNo)} (${bill.partyName || ''})`);
-  }, [speakFeedback]);
+
+    // Focus LINE CUT input so user can type line cut or press Enter for next bill!
+    setTimeout(() => {
+      const lcEl = lcRefs.current[targetRowId];
+      if (lcEl) {
+        lcEl.focus();
+        lcEl.select();
+      }
+    }, 50);
+  }, [speakFeedback, isBillAllowed]);
 
   // Voice command handler
   const handleVoiceInput = useCallback((rawPhrase: string) => {
@@ -431,27 +480,36 @@ export default function MultiBillEntryModal({ bills, banks, selectedDriver, disp
 
   function selectBillNo(rowId: string, bn: string) {
     const bill = billMap.get(bn);
-    const fullAmt = bill ? bill.billNetAmt : 0;
+    if (!bill) {
+      setErrors(prev => ({ ...prev, [rowId]: 'Bill nahi mila' }));
+      speakFeedback("Not found");
+      return;
+    }
+
+    const check = isBillAllowed(bill);
+    if (!check.allowed) {
+      setErrors(prev => ({ ...prev, [rowId]: check.reason || 'Driver mismatch' }));
+      speakFeedback("Driver mismatch");
+      return;
+    }
+
+    const fullAmt = bill.billNetAmt || 0;
     setRows(prev => prev.map(r => r.id === rowId ? {
-      ...r, billNo: bn,
+      ...r,
+      billNo: bill.billNo,
       lineCutAmt: '',
       recAmt: fullAmt > 0 ? String(fullAmt) : '',
       showDropdown: false,
     } : r));
     setErrors(prev => { const n = { ...prev }; delete n[rowId]; return n; });
-    // After state settles, find next empty row or add a new one and focus its bill input
+
+    // User directive: Bill no add karne par Enter dabane par Line Cut amount add hoga!
+    // Focus Line Cut input for this row immediately:
     setTimeout(() => {
-      const currentRows = rowsRef.current;
-      const currentIdx = currentRows.findIndex(r => r.id === rowId);
-      if (currentIdx === -1) return;
-      
-      const nextEmptyRow = currentRows.slice(currentIdx + 1).find(r => !r.billNo.trim());
-      if (nextEmptyRow) {
-        billInputRefs.current[nextEmptyRow.id]?.focus();
-      } else {
-        const newRow = makeRow();
-        setRows(prev => [...prev, newRow]);
-        setTimeout(() => billInputRefs.current[newRow.id]?.focus(), 40);
+      const lcEl = lcRefs.current[rowId];
+      if (lcEl) {
+        lcEl.focus();
+        lcEl.select();
       }
     }, 40);
   }
@@ -485,15 +543,29 @@ export default function MultiBillEntryModal({ bills, banks, selectedDriver, disp
     }
   }
 
+  // User directive: Line cut amount par fir Enter dabane par next bill no add/focus hoga!
   function handleLcEnter(rowId: string) {
     const currentRows = rowsRef.current;
     const currentIdx = currentRows.findIndex(r => r.id === rowId);
     if (currentIdx === -1) return;
     const nextEmpty = currentRows.slice(currentIdx + 1).find(r => !r.billNo.trim());
     if (nextEmpty) {
-      setTimeout(() => billInputRefs.current[nextEmpty.id]?.focus(), 20);
+      setTimeout(() => {
+        const nextInput = billInputRefs.current[nextEmpty.id];
+        if (nextInput) {
+          nextInput.focus();
+          nextInput.select();
+        }
+      }, 30);
     } else {
-      addRow();
+      const newId = addRow();
+      setTimeout(() => {
+        const nextInput = billInputRefs.current[newId];
+        if (nextInput) {
+          nextInput.focus();
+          nextInput.select();
+        }
+      }, 50);
     }
   }
 
@@ -558,11 +630,16 @@ export default function MultiBillEntryModal({ bills, banks, selectedDriver, disp
       if (!billMap.has(r.billNo)) {
         newErrors[r.id] = 'Bill not found';
       } else {
-        const rec = parseAmountExpression(r.recAmt);
-        const lc  = parseAmountExpression(r.lineCutAmt);
         const bill = billMap.get(r.billNo)!;
-        const isFbr = lc > 0 && rec === 0 && lc >= bill.billNetAmt - 1;
-        if (!isFbr && rec <= 0) { newErrors[r.id] = 'Amount required'; }
+        const check = isBillAllowed(bill);
+        if (!check.allowed) {
+          newErrors[r.id] = check.reason || `Sirf ${selectedDriver} ke bills allowed hain`;
+        } else {
+          const rec = parseAmountExpression(r.recAmt);
+          const lc  = parseAmountExpression(r.lineCutAmt);
+          const isFbr = lc > 0 && rec === 0 && lc >= bill.billNetAmt - 1;
+          if (!isFbr && rec <= 0) { newErrors[r.id] = 'Amount required'; }
+        }
       }
     }
 
@@ -691,8 +768,19 @@ export default function MultiBillEntryModal({ bills, banks, selectedDriver, disp
         <div className="flex items-center justify-between px-4 pt-3 pb-2 border-b border-border shrink-0">
           <div>
             <h2 className="text-[11px] font-black uppercase text-foreground tracking-wider">Multi Bill Entry</h2>
-            {selectedDriver && (
-              <p className="text-[9px] font-bold text-primary uppercase mt-0.5">Driver: {selectedDriver}</p>
+            {selectedDriver ? (
+              <div className="flex items-center gap-1.5 mt-0.5">
+                <span className="text-[10px] font-black text-primary bg-primary/10 border border-primary/20 px-2 py-0.5 rounded-md uppercase">
+                  🚚 {selectedDriver}
+                </span>
+                <span className="text-[8px] font-bold text-muted-foreground uppercase">
+                  (Sirf is driver ke assigned bills)
+                </span>
+              </div>
+            ) : (
+              <p className="text-[9px] font-black text-destructive uppercase mt-0.5">
+                ⚠️ Koi driver select nahi hai — pehle Dashboard par driver chunein!
+              </p>
             )}
           </div>
           <div className="flex items-center gap-2">
@@ -955,9 +1043,20 @@ export default function MultiBillEntryModal({ bills, banks, selectedDriver, disp
                           return;
                         }
 
-                        // 1. Exact match in billMap
-                        if (billMap.has(typed)) {
-                          selectBillNo(row.id, typed);
+                        // If row already has a valid bill assigned to selectedDriver, Enter moves to Line Cut!
+                        const existingBill = billMap.get(typed) || (row.billNo ? billMap.get(row.billNo) : null);
+                        if (existingBill && isBillAllowed(existingBill).allowed) {
+                          selectBillNo(row.id, existingBill.billNo);
+                          return;
+                        }
+
+                        // Check in sortedDriverBills (only assigned to this driver!)
+                        // 1. Exact match in driver's assigned bills
+                        const exactDriverBill = sortedDriverBills.find(b =>
+                          b.billNo === typed || stripGST(b.billNo) === stripGST(typed)
+                        );
+                        if (exactDriverBill) {
+                          selectBillNo(row.id, exactDriverBill.billNo);
                           return;
                         }
 
@@ -973,28 +1072,40 @@ export default function MultiBillEntryModal({ bills, banks, selectedDriver, disp
                           return;
                         }
 
-                        // 4. Case-insensitive / prefix / suffix match
+                        // 4. Case-insensitive / prefix / suffix / digits match within driver bills ONLY!
                         const cleanT = typed.toUpperCase().replace(/[^A-Z0-9]/g, '');
                         const stripT = cleanT.replace(/^GST/i, '').replace(/^MOC/i, '');
-                        const pool = driverBills.length > 0 ? driverBills : bills;
 
-                        const matchedBill = pool.find(b => {
-                          const cb = b.billNo.toUpperCase().replace(/[^A-Z0-9]/g, '');
-                          const sb = cb.replace(/^GST/i, '').replace(/^MOC/i, '');
-                          return cb === cleanT || sb === stripT || sb.endsWith(stripT) || cb.endsWith(cleanT);
-                        }) || bills.find(b => {
+                        const matchedDriverBill = sortedDriverBills.find(b => {
                           const cb = b.billNo.toUpperCase().replace(/[^A-Z0-9]/g, '');
                           const sb = cb.replace(/^GST/i, '').replace(/^MOC/i, '');
                           return cb === cleanT || sb === stripT || sb.endsWith(stripT) || cb.endsWith(cleanT);
                         });
 
-                        if (matchedBill) {
-                          selectBillNo(row.id, matchedBill.billNo);
-                        } else if (billMap.has(row.billNo)) {
-                          selectBillNo(row.id, row.billNo);
-                        } else {
-                          setErrors(p => ({ ...p, [row.id]: 'Bill nahi mila' }));
+                        if (matchedDriverBill) {
+                          selectBillNo(row.id, matchedDriverBill.billNo);
+                          return;
                         }
+
+                        // If found in ALL bills but NOT in driver's bills -> notify user of driver mismatch!
+                        const anyBill = bills.find(b => {
+                          const cb = b.billNo.toUpperCase().replace(/[^A-Z0-9]/g, '');
+                          const sb = cb.replace(/^GST/i, '').replace(/^MOC/i, '');
+                          return cb === cleanT || sb === stripT || sb.endsWith(stripT) || cb.endsWith(cleanT) || b.billNo === typed;
+                        }) || billMap.get(typed);
+
+                        if (anyBill) {
+                          const d = anyBill.driverName || 'dusre driver';
+                          setErrors(p => ({
+                            ...p,
+                            [row.id]: `Bill #${anyBill.billNo} '${d}' ka hai, '${selectedDriver}' ka nahi!`
+                          }));
+                          speakFeedback("Driver mismatch");
+                          return;
+                        }
+
+                        setErrors(p => ({ ...p, [row.id]: `Bill nahi mila (${selectedDriver} assigned me)` }));
+                        speakFeedback("Not found");
                       } else if (e.key === 'Escape') {
                         updateRow(row.id, { showDropdown: false });
                       }
@@ -1054,7 +1165,11 @@ export default function MultiBillEntryModal({ bills, banks, selectedDriver, disp
                   value={row.recAmt}
                   onChange={e => handleRecChange(row.id, e.target.value)}
                   onKeyDown={e => {
-                    if (e.key === 'Enter') { e.preventDefault(); lcRefs.current[row.id]?.focus(); }
+                    if (e.key === 'Enter') {
+                      e.preventDefault();
+                      lcRefs.current[row.id]?.focus();
+                      lcRefs.current[row.id]?.select();
+                    }
                   }}
                   className={cn(
                     "h-8 px-2 rounded-lg text-[10px] font-black outline-none border text-right w-full",
@@ -1068,8 +1183,19 @@ export default function MultiBillEntryModal({ bills, banks, selectedDriver, disp
                   type="text" inputMode="decimal" placeholder="0"
                   value={row.lineCutAmt}
                   onChange={e => handleLcChange(row.id, e.target.value)}
-                  onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); handleLcEnter(row.id); } }}
-                  className="h-8 px-2 bg-amber-50 rounded-lg text-[10px] font-black outline-none border border-amber-200 text-right w-full"
+                  onKeyDown={e => {
+                    if (e.key === 'Enter') {
+                      e.preventDefault();
+                      handleLcEnter(row.id);
+                    }
+                  }}
+                  className={cn(
+                    "h-8 px-2 rounded-lg text-[10px] font-black outline-none border text-right w-full transition-all focus:ring-2 focus:ring-amber-500 focus:bg-amber-100",
+                    lcNum > 0
+                      ? "bg-amber-100 border-amber-400 text-amber-900 ring-1 ring-amber-300"
+                      : "bg-amber-50/70 border-amber-200 text-foreground"
+                  )}
+                  title="Line Cut amount daalein aur Enter dabakar next bill par jayein"
                 />
 
                 {/* Delete */}
