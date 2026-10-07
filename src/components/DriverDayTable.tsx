@@ -185,24 +185,12 @@ export default function DriverDayTable({ bills, selectedDriver, displayDate, onS
         if (!hasMoneyRec && !isFBR && !isCredit && !isPaid) return false;
         // If bill was assigned to a driver on deliveryDate = displayDate, do not show in owner view
         if (!isMoc && b.deliveryDate === displayDate && b.driverName && b.driverName.trim().toUpperCase() !== 'OWNER') return false;
-        // If bill does not have paymentDate, do not show in owner view
-        if (!b.paymentDate && !(isMoc && (b.date === displayDate || b.deliveryDate === displayDate))) return false;
+        // Receipt date is authoritative: old bill/delivery/entry dates cannot widen this view.
+        if (!b.paymentDate || normDateStr(b.paymentDate) !== normDateStr(displayDate)) return false;
 
         const isSavedByOwnerList = Array.isArray(ownerSavedBillNos) && (ownerSavedBillNos.includes(b.billNo) || ownerSavedBillNos.includes(b.id));
         const pTime = (b.paymentTime || '').trim().toUpperCase();
         const dName = (b.driverName || '').trim().toUpperCase();
-
-        // Check if payment/received date matches displayDate
-        let matchesDate = b.paymentDate === displayDate || (isMoc && (b.date === displayDate || b.deliveryDate === displayDate));
-        if (pTime.startsWith('OWNER:') && pTime.includes(':')) {
-          const entryDate = pTime.split(':')[1];
-          if (entryDate === displayDate) matchesDate = true;
-        }
-        if (isSavedByOwnerList && b.paymentDate === displayDate) {
-          matchesDate = true;
-        }
-
-        if (!matchesDate) return false;
 
         // Exclude payments made by other recognized staff users (e.g. Khushi, Tarachand, Pratixa)
         const otherStaffUsers = allDrivers.filter(d => d.role === 'user' && (d.name || '').trim().toUpperCase() !== 'OWNER');
@@ -217,10 +205,7 @@ export default function DriverDayTable({ bills, selectedDriver, displayDate, onS
           pTime.startsWith('OWNER:') ||
           pTime.startsWith('OWNER ') ||
           isSavedByOwnerList ||
-          dName === 'OWNER' ||
-          (isMoc && (!pTime || dName === 'OWNER' || pTime === 'OWNER')) ||
-          !pTime ||
-          /^\d{1,2}:\d{2}/.test(pTime) // regular timestamp e.g. 14:30
+          dName === 'OWNER'
         );
 
         if (isOwnerPayment) {
