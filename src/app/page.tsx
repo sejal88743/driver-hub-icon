@@ -712,8 +712,25 @@ export default function Dashboard() {
 
     let dbills: typeof bills = [];
     const snapshotBillNos = new Set<string>();
-    if (isOwner || isUserStaff) {
-      // OWNER and USER selections show the complete database position (UNCHANGED)
+    if (isOwner) {
+      // OWNER counts follow its receipt table, not the complete ledger.
+      dbills = bills.filter(b => {
+        if (!b.paymentDate || isoToDisplay(b.paymentDate) !== displayDate) return false;
+        const mode = (b.paymentMode || '').trim().toLowerCase();
+        if (mode === 'assigned') return false;
+        const pTime = (b.paymentTime || '').trim().toUpperCase();
+        const dName = (b.driverName || '').trim().toUpperCase();
+        const isMoc = (b.billNo || '').toUpperCase().startsWith('MOC') || b.collectionCode === 'MOC' || b.salespersonName === 'MOC';
+        if (!isMoc && b.deliveryDate === displayDate && dName && dName !== 'OWNER') return false;
+        if (drivers.some(d => d.role === 'user' && d.name?.trim().toUpperCase() !== 'OWNER' && (
+          pTime === d.name?.trim().toUpperCase() || pTime.startsWith(`${d.name?.trim().toUpperCase()}:`) || pTime.startsWith(`${d.name?.trim().toUpperCase()} `)
+        ))) return false;
+        const hasReceipt = (Number(b.collectedAmount) || 0) > 0 || (Number(b.cashAmount) || 0) > 0 || (Number(b.upiAmount) || 0) > 0 || (Number(b.chequeAmount) || 0) > 0;
+        if (!hasReceipt && !['paid', 'cash', 'upi', 'cheque', 'split', 'fbr', 'cancel', 'credit'].includes(mode)) return false;
+        return pTime === 'OWNER' || pTime.startsWith('OWNER:') || pTime.startsWith('OWNER ') || dName === 'OWNER' || ownerSavedBillNos.includes(b.billNo) || ownerSavedBillNos.includes(b.id);
+      });
+    } else if (isUserStaff) {
+      // Keep the existing USER database counts unchanged.
       dbills = bills;
     } else {
       // Regular drivers: bills assigned to driver on selected date OR in delPendingHistory snapshot
@@ -777,7 +794,7 @@ export default function Dashboard() {
 
     const pendingCount = Math.max(0, totalCount - doneCount);
     return { total: totalCount, paid: doneCount, pending: pendingCount, isStaff: isOwner || isUserStaff };
-  }, [selectedDriver, displayDate, bills, drivers]);
+  }, [selectedDriver, displayDate, bills, drivers, ownerSavedBillNos]);
 
   // ── Total Cash Count & Collection for Selected Date (Driver, User, Owner) ──
   // Deduplicates by billNo to ensure duplicate entries don't double count cash.
@@ -969,15 +986,12 @@ export default function Dashboard() {
         const isOtherStaff = drivers.some(d => d.role === 'user' && (d.name || '').trim().toUpperCase() !== 'OWNER' && (pTime === (d.name || '').trim().toUpperCase() || pTime.startsWith((d.name || '').trim().toUpperCase() + ':')));
         if (isOtherStaff) continue;
 
-        const isOwnerPaid = (pDate === displayDate || (isMoc && (b.date === displayDate || dDate === displayDate))) && (
+        const isOwnerPaid = Boolean(pDate) && isoToDisplay(pDate) === displayDate && (
           pTime === 'OWNER' ||
           pTime.startsWith('OWNER:') ||
           pTime.startsWith('OWNER ') ||
           dName === 'OWNER' ||
-          (Array.isArray(ownerSavedBillNos) && ownerSavedBillNos.includes(b.billNo)) ||
-          (isMoc && (!pTime || dName === 'OWNER')) ||
-          (!pTime && getRole() === 'owner') ||
-          /^\d{1,2}:\d{2}/.test(pTime)
+          (Array.isArray(ownerSavedBillNos) && (ownerSavedBillNos.includes(b.billNo) || ownerSavedBillNos.includes(b.id)))
         );
         if (isOwnerPaid) {
           const c = getEffCash(b);

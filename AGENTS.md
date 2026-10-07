@@ -1,5 +1,8 @@
 # Persistent Agent Instructions & Project Rules
 
+## Dashboard receipt filtering
+- Use receipt date plus explicit entry-maker tags or the date-scoped saved-entry list for Owner table/counts; generic timestamps never prove Owner identity, preventing driver receipts from leaking into that view.
+
 ## 1. Locked Supabase Connection (CRITICAL - DO NOT CHANGE WITHOUT ADMIN PERMISSION)
 App me Supabase connection yahi use hoga or jabhi change hoga admin ke permission ke alava change nahi hoga:
 - **SUPABASE_URL**: `https://zybrzzouzleacqjvfiiu.supabase.co`

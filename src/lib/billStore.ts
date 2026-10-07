@@ -1637,7 +1637,7 @@ export function deduplicateBills(): number {
 export async function mergeTwoSalespersons(
   fromName: string,
   toName: string
-): Promise<{ billsUpdated: number; ok: boolean; error?: string }> {
+): Promise<{ billsUpdated: number; ok: boolean; error?: string; targetMobile?: string; newName?: string }> {
   const fromClean = cleanSalespersonName(fromName).trim() || fromName.trim();
   const toClean = cleanSalespersonName(toName).trim() || toName.trim();
   const fromLower = fromClean.toLowerCase();

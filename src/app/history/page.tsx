@@ -17,6 +17,7 @@ import {
   Check,
 } from 'lucide-react';
 import TopNav from '@/components/TopNav';
+import { Button } from '@/components/ui/button';
 import { useBillStore } from '@/hooks/use-bill-store';
 import type { Bill, BillEditEntry } from '@/lib/billStore';
 import { cn } from '@/lib/utils';
@@ -232,7 +233,7 @@ export default function HistoryPage() {
   return (
     <div className="min-h-screen bg-background pb-16">
       <TopNav />
-      <main className="max-w-[1500px] mx-auto px-2 md:px-4 py-3 space-y-3">
+      <main className="max-w-[1500px] mx-auto px-2 md:px-4 pt-[calc(3.25rem+env(safe-area-inset-top))] pb-3 space-y-3">
         {/* ── Page Header & Bank Statement Matching Toolbar ── */}
         <header className="flex flex-wrap items-center justify-between gap-2.5 pb-2 border-b border-border/60">
           <div className="flex items-center gap-2">
@@ -253,7 +254,7 @@ export default function HistoryPage() {
           </div>
 
           {/* Bank Statement Actions */}
-          <div className="flex items-center gap-2 flex-wrap">
+          <div className="flex w-full items-center gap-1 flex-wrap" aria-label="Bank statement actions">
             <input
               type="file"
               ref={fileInputRef}
@@ -262,11 +263,11 @@ export default function HistoryPage() {
               className="hidden"
             />
 
-            <button
+            <Button
               type="button"
               onClick={() => fileInputRef.current?.click()}
               disabled={isProcessingFile}
-              className="h-8 px-3 rounded-lg bg-teal-600 hover:bg-teal-700 text-white font-black text-[11px] uppercase tracking-wider flex items-center gap-1.5 shadow-xs transition-colors"
+              className="h-4 min-h-4 px-1.5 rounded-sm font-black text-[9px] uppercase gap-0.5 [&_svg]:size-2 shadow-xs"
             >
               {isProcessingFile ? (
                 <>
@@ -279,32 +280,34 @@ export default function HistoryPage() {
                   <span>Upload Bank Statement</span>
                 </>
               )}
-            </button>
+            </Button>
 
             {stats && (
               <>
-                <button
+                <Button
                   type="button"
                   onClick={() => setStatementModalOpen(true)}
-                  className="h-8 px-3 rounded-lg bg-yellow-400 hover:bg-yellow-500 text-yellow-950 font-black text-[11px] uppercase tracking-wider flex items-center gap-1.5 shadow-xs transition-colors border border-yellow-500"
+                  variant="secondary"
+                  className="h-4 min-h-4 px-1.5 rounded-sm font-black text-[9px] uppercase gap-0.5 [&_svg]:size-2 shadow-xs"
                 >
                   <FileSpreadsheet className="w-3.5 h-3.5" />
                   <span>
                     Matched ({stats.matchedStatementRows}/{stats.totalStatementRows})
                   </span>
-                </button>
+                </Button>
 
-                <button
+                <Button
                   type="button"
                   onClick={handleReMatch}
                   title="Re-run matching with current bills"
-                  className="h-8 px-2.5 rounded-lg bg-card border border-border hover:bg-muted text-foreground font-black text-[10px] uppercase flex items-center gap-1"
+                  variant="outline"
+                  className="h-4 min-h-4 px-1 rounded-sm font-black text-[9px] uppercase gap-0.5 [&_svg]:size-2"
                 >
                   <RefreshCw className="w-3 h-3" />
                   <span>Re-match</span>
-                </button>
+                </Button>
 
-                <button
+                <Button
                   type="button"
                   onClick={() => {
                     if (confirm('Statement match data clear karein? Sabhi yellow highlights hat jayengi.')) {
@@ -313,24 +316,22 @@ export default function HistoryPage() {
                     }
                   }}
                   title="Clear Statement Data"
-                  className="h-8 px-2.5 rounded-lg bg-card border border-destructive/30 hover:bg-destructive/10 text-destructive font-black text-[10px] uppercase"
+                  variant="outline"
+                  className="h-4 min-h-4 px-1 rounded-sm border-destructive/30 hover:bg-destructive/10 text-destructive font-black text-[9px] uppercase"
                 >
                   Clear
-                </button>
+                </Button>
 
-                <button
+                <Button
                   type="button"
                   onClick={() => setFilterMatchedOnly(p => !p)}
-                  className={cn(
-                    "h-8 px-2.5 rounded-lg font-black text-[10px] uppercase flex items-center gap-1 border transition-colors",
-                    filterMatchedOnly
-                      ? "bg-yellow-300 text-yellow-950 border-yellow-500 shadow-xs"
-                      : "bg-card border-border hover:bg-muted text-muted-foreground"
-                  )}
+                  variant={filterMatchedOnly ? 'secondary' : 'outline'}
+                  aria-pressed={filterMatchedOnly}
+                  className="h-4 min-h-4 px-1 rounded-sm font-black text-[9px] uppercase gap-0.5 [&_svg]:size-2"
                 >
                   <Filter className="w-3 h-3" />
                   <span>{filterMatchedOnly ? "Showing Matched" : "Filter Matched"}</span>
-                </button>
+                </Button>
               </>
             )}
           </div>
