@@ -3,6 +3,7 @@ import { useState } from 'react';
 import { X, RotateCcw, AlertTriangle, Loader2, Lock, Trash2 } from 'lucide-react';
 import { Bill, resetBill, deleteBill, getOwnerPassword } from '@/lib/billStore';
 import { cn } from '@/lib/utils';
+import { isBillStatementMatched, STATEMENT_MATCHED_AMOUNT_CLS } from '@/lib/statementMatch';
 
 type Props = {
   bill: Bill;
@@ -70,12 +71,27 @@ export default function BillDetailModal({ bill, onClose }: Props) {
 
         {/* Fields */}
         <div className="p-4 space-y-0.5">
-          {fields.map(({ label, value }) => (
-            <div key={label} className="flex justify-between items-start py-1.5 border-b border-border/30 last:border-0">
-              <span className="text-[10px] text-muted-foreground font-bold uppercase tracking-tight">{label}</span>
-              <span className="text-xs font-bold text-foreground text-right max-w-[60%] leading-tight">{value}</span>
-            </div>
-          ))}
+          {fields.map(({ label, value }) => {
+            const isCollField = label === 'Collected Amount' && isBillStatementMatched(bill);
+            return (
+              <div key={label} className="flex justify-between items-start py-1.5 border-b border-border/30 last:border-0">
+                <span className="text-[10px] text-muted-foreground font-bold uppercase tracking-tight flex items-center gap-1">
+                  <span>{label}</span>
+                  {isCollField && (
+                    <span className="text-[8px] bg-yellow-400 text-yellow-950 px-1 py-0.2 rounded font-black">
+                      MATCHED
+                    </span>
+                  )}
+                </span>
+                <span className={cn(
+                  "text-xs font-bold text-foreground text-right max-w-[60%] leading-tight",
+                  isCollField && STATEMENT_MATCHED_AMOUNT_CLS
+                )}>
+                  {value}
+                </span>
+              </div>
+            );
+          })}
         </div>
 
         {/* Actions section */}

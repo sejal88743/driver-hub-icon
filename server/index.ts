@@ -1563,7 +1563,10 @@ async function seedMasterSalespersonContacts() {
   if (portArgIdx !== -1 && process.argv[portArgIdx + 1]) {
     const p = Number(process.argv[portArgIdx + 1]);
     if (!isNaN(p) && p > 0) parsedPort = p;
-  } else if (process.env.PORT) {
+  } else if (process.env.APP_PORT) {
+    const p = Number(process.env.APP_PORT);
+    if (!isNaN(p) && p > 0) parsedPort = p;
+  } else if (process.env.PORT && process.env.PORT !== '8080') {
     const p = Number(process.env.PORT);
     if (!isNaN(p) && p > 0) parsedPort = p;
   }

@@ -27,6 +27,7 @@ import LineCutPopup from '@/components/LineCutPopup';
 import OverflowModal from '@/components/OverflowModal';
 import { getTodayISO, getTodayDMY, isoToDisplay, displayToIso, calculateDaysBetween } from '@/lib/dateUtils';
 import { openWhatsApp } from '@/lib/whatsapp';
+import { useStatementMatch, STATEMENT_MATCHED_AMOUNT_CLS } from '@/lib/statementMatch';
 
 // Line-cut amounts are sometimes entered as a quick sum, e.g. "100+128+335".
 // Keep this deliberately limited to numbers and plus signs; never evaluate input
@@ -67,6 +68,7 @@ function parseAmountExpression(value: string | number | undefined | null): numbe
 
 export default function Dashboard() {
   const { bills, drivers, banks, loading, refresh } = useBillStore();
+  const { isMatched } = useStatementMatch();
   
   const [selectedBillNo, setSelectedBillNo] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
@@ -3444,7 +3446,10 @@ export default function Dashboard() {
                           <span className={cn("text-[14px] font-black shrink-0", isHighlighted ? "text-primary-foreground" : "text-primary")}>
                             BILL: ₹{(b?.billNetAmt||0).toLocaleString('en-IN')}
                           </span>
-                          <span className={cn("text-[14px] font-black shrink-0", isHighlighted ? "text-emerald-200" : "text-emerald-700 dark:text-emerald-400")}>
+                          <span className={cn(
+                            "text-[14px] font-black shrink-0",
+                            isHighlighted ? "text-emerald-200" : isMatched(b) ? STATEMENT_MATCHED_AMOUNT_CLS : "text-emerald-700 dark:text-emerald-400"
+                          )}>
                             REC: ₹{_ddColl.toLocaleString('en-IN')}
                           </span>
                           {_ddLineCut > 0 && (

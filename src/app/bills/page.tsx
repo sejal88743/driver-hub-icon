@@ -8,6 +8,7 @@ import { Bill, getWhatsAppTemplates, getPartyContacts, getSalespersonContacts, f
 import SalespersonAutoDispatchModal from '@/components/SalespersonAutoDispatchModal';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { openWhatsApp } from '@/lib/whatsapp';
+import { isBillStatementMatched, STATEMENT_MATCHED_AMOUNT_CLS } from '@/lib/statementMatch';
 
 function stripGST(billNo: string) {
   return billNo ? billNo.replace(/^GST[-_]/i, '') : '';
@@ -497,7 +498,12 @@ export default function BillsPage() {
                         <TableCell className="text-[11px] font-black px-2 py-1.5 text-center whitespace-nowrap text-orange-700">{collected > 0 && bill.paymentDate ? bill.paymentDate : '-'}</TableCell>
                         <TableCell className="text-[11px] font-black px-2 py-1.5 text-right whitespace-nowrap">
                           {collected > 0 ? (
-                            <span className="text-emerald-700 font-black">₹{collected.toLocaleString('en-IN')}</span>
+                            <span className={cn(
+                              "text-emerald-700 font-black",
+                              isBillStatementMatched(bill) && STATEMENT_MATCHED_AMOUNT_CLS
+                            )}>
+                              ₹{collected.toLocaleString('en-IN')}
+                            </span>
                           ) : (
                             <span className="text-muted-foreground font-black">₹0</span>
                           )}

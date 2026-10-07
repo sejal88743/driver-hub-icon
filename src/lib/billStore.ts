@@ -2856,7 +2856,7 @@ export async function savePayment(
     paymentTime: finalPaymentTime,
     chequeNo: chequeNo || '',
     bankName: bankName || '',
-    nextBillNo: nextBillNo || '',
+    nextBillNo: nextBillNo != null ? nextBillNo : (_bills[index].nextBillNo || ''),
     cashAmount:   isZeroCollectionMode ? 0 : (splitDetails?.cash || 0),
     upiAmount:    isZeroCollectionMode ? 0 : (splitDetails?.upi || 0),
     chequeAmount: isZeroCollectionMode ? 0 : (splitDetails?.cheque || 0),

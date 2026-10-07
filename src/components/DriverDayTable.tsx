@@ -8,6 +8,8 @@ import { Button } from "@/components/ui/button";
 import { isGreenParty } from "@/lib/greenParties";
 import { getDisplayBillNo } from "@/lib/commissionMoc";
 import WhatsAppSalesmanModal from "./WhatsAppSalesmanModal";
+import { isBillStatementMatched } from "@/lib/statementMatch";
+import { normDateStr } from "@/lib/dateUtils";
 
 type Props = {
   bills: Bill[];
@@ -1338,9 +1340,9 @@ export default function DriverDayTable({ bills, selectedDriver, displayDate, onS
                   </td>
                   <td className="px-0.5 py-0 text-right font-black">₹{b.billNetAmt.toLocaleString('en-IN')}</td>
                   <td className="px-0.5 py-0 text-center font-black text-muted-foreground">{b.deliveryDate || '—'}</td>
-                  <td className={cn("px-0.5 py-0 text-right font-black text-emerald-600", !isSnapshot && isMatchedRow && eff.cash > 0 && "bg-pink-100 dark:bg-pink-950/80 text-pink-950 dark:text-pink-100 border border-pink-300 dark:border-pink-700 rounded-sm font-extrabold")}>{!isSnapshot && eff.cash > 0 ? `₹${eff.cash.toLocaleString('en-IN')}` : '—'}</td>
-                  <td className={cn("px-0.5 py-0 text-right font-black text-blue-600", !isSnapshot && isMatchedRow && eff.upi > 0 && "bg-pink-100 dark:bg-pink-950/80 text-pink-950 dark:text-pink-100 border border-pink-300 dark:border-pink-700 rounded-sm font-extrabold")}>{!isSnapshot && eff.upi > 0 ? `₹${eff.upi.toLocaleString('en-IN')}` : '—'}</td>
-                  <td className={cn("px-0.5 py-0 text-right font-black text-violet-600", !isSnapshot && isMatchedRow && eff.chq > 0 && "bg-pink-100 dark:bg-pink-950/80 text-pink-950 dark:text-pink-100 border border-pink-300 dark:border-pink-700 rounded-sm font-extrabold")}>{!isSnapshot && eff.chq > 0 ? `₹${eff.chq.toLocaleString('en-IN')}${b.chequeNo ? ` #${b.chequeNo}` : ''}` : '—'}</td>
+                  <td className="px-0.5 py-0 text-right font-black text-emerald-600">{!isSnapshot && eff.cash > 0 ? `₹${eff.cash.toLocaleString('en-IN')}` : '—'}</td>
+                  <td className={cn("px-0.5 py-0 text-right font-black text-blue-600", !isSnapshot && isBillStatementMatched(b) && eff.upi > 0 && "bg-yellow-300 dark:bg-yellow-900 text-yellow-950 dark:text-yellow-100 border border-yellow-500 rounded-sm font-black px-1")}>{!isSnapshot && eff.upi > 0 ? `₹${eff.upi.toLocaleString('en-IN')}` : '—'}</td>
+                  <td className={cn("px-0.5 py-0 text-right font-black text-violet-600", !isSnapshot && isBillStatementMatched(b) && eff.chq > 0 && "bg-yellow-300 dark:bg-yellow-900 text-yellow-950 dark:text-yellow-100 border border-yellow-500 rounded-sm font-black px-1")}>{!isSnapshot && eff.chq > 0 ? `₹${eff.chq.toLocaleString('en-IN')}${b.chequeNo ? ` #${b.chequeNo}` : ''}` : '—'}</td>
                   <td className="px-0.5 py-0 text-right font-black text-destructive">
                     {!isSnapshot && isCredit && (b.lineCutAmt || 0) > 0
                       ? `₹${(b.lineCutAmt!).toLocaleString('en-IN')}`

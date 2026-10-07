@@ -75,6 +75,7 @@ type Props = {
 export default function MultiBillEntryModal({ bills, banks, selectedDriver, displayDate, dashDate, onClose, onSaved }: Props) {
   const [paymentMode, setPaymentMode] = useState<PaymentMode>('Cash');
   const [chequeNo, setChequeNo] = useState('');
+  const [gpayRef, setGpayRef] = useState('');
   const [bankName, setBankName] = useState('');
   const [chequeDate, setChequeDate] = useState(() => {
     // Default to today in DD/MM/YYYY
@@ -577,6 +578,15 @@ export default function MultiBillEntryModal({ bills, banks, selectedDriver, disp
     let count = 0;
     let failed = 0;
 
+    const validBillNos = toSave.map(x => x.billNo.trim());
+    const multiBillGroupKey = toSave.length > 1
+      ? (paymentMode === 'UPI'
+          ? (gpayRef.trim() ? `GPAY:${gpayRef.trim()}` : `GPAY:${validBillNos.join('+')}`)
+          : paymentMode === 'Cheque'
+          ? (chequeNo.trim() ? `CHQ:${chequeNo.trim()}` : `CHQ:${validBillNos.join('+')}`)
+          : null)
+      : (paymentMode === 'UPI' && gpayRef.trim() ? `GPAY:${gpayRef.trim()}` : null);
+
     for (const r of toSave) {
       if (newErrors[r.id]) continue;
       const recAmt = parseAmountExpression(r.recAmt);
@@ -611,7 +621,8 @@ export default function MultiBillEntryModal({ bills, banks, selectedDriver, disp
           selectedDriver, dashDate,
           chequeNo.trim() || null,
           bankName.trim() || null,
-          null, splitDetails,
+          multiBillGroupKey,
+          splitDetails,
           lc > 0 ? lc : null,
           forceRecDate,
           getLoggedInName(),
@@ -823,6 +834,22 @@ export default function MultiBillEntryModal({ bills, banks, selectedDriver, disp
               </div>
             )}
           </div>
+
+          {/* UPI / GPay fields */}
+          {paymentMode === 'UPI' && (
+            <div className="flex gap-1.5 items-center">
+              <div className="relative flex-1">
+                <Hash className="absolute left-2 top-1/2 -translate-y-1/2 w-3 h-3 text-muted-foreground pointer-events-none" />
+                <input
+                  type="text"
+                  placeholder="GPAY / UPI UTR REF NO (OPTIONAL)"
+                  value={gpayRef}
+                  onChange={e => setGpayRef(e.target.value)}
+                  className="w-full h-8 pl-6 pr-2 bg-card rounded-lg text-[10px] font-black uppercase outline-none border border-border/50 text-foreground placeholder:text-muted-foreground/60"
+                />
+              </div>
+            </div>
+          )}
 
           {/* Cheque fields */}
           {paymentMode === 'Cheque' && (

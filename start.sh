@@ -1,2 +1,2 @@
 #!/bin/bash
-exec node_modules/.bin/tsx server/index.ts
+exec node_modules/.bin/tsx server.ts --port 3000

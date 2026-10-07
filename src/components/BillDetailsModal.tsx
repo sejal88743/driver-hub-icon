@@ -4,6 +4,7 @@ import { cn } from '@/lib/utils';
 import type { Bill } from '@/lib/billStore';
 import { patchBillDirect } from '@/lib/billStore';
 import { displayToIso, isoToDisplay } from '@/lib/dateUtils';
+import { isBillStatementMatched, STATEMENT_MATCHED_AMOUNT_CLS } from '@/lib/statementMatch';
 
 type Props = {
   billNo: string | null;
@@ -107,8 +108,20 @@ export default function BillDetailsModal({ billNo, bill, onClose, onOpenEntry }:
           </div>
           {(bill.collectedAmount || 0) > 0 && (
             <div className="flex justify-between items-center border-b border-border/30 pb-2">
-              <span className="text-[9px] font-black text-muted-foreground uppercase">Collected</span>
-              <span className="text-xs font-black text-emerald-600">₹{(bill.collectedAmount || 0).toLocaleString('en-IN')}</span>
+              <span className="text-[9px] font-black text-muted-foreground uppercase flex items-center gap-1">
+                <span>Collected</span>
+                {isBillStatementMatched(bill) && (
+                  <span className="text-[8px] bg-yellow-400 text-yellow-950 px-1 py-0.2 rounded font-black">
+                    MATCHED
+                  </span>
+                )}
+              </span>
+              <span className={cn(
+                "text-xs font-black",
+                isBillStatementMatched(bill) ? STATEMENT_MATCHED_AMOUNT_CLS : "text-emerald-600"
+              )}>
+                ₹{(bill.collectedAmount || 0).toLocaleString('en-IN')}
+              </span>
             </div>
           )}
 
