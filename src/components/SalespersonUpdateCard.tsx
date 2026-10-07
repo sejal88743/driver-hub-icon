@@ -147,7 +147,7 @@ export default function SalespersonUpdateCard() {
       });
 
       // Trigger background sync to refresh bill store
-      void syncFromApi(true);
+      void syncFromApi();
     } catch (err: any) {
       setErrorMessage(err.message || 'Database update karte waqt error aaya.');
     } finally {
