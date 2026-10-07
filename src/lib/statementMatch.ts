@@ -2,6 +2,9 @@ import { useState, useEffect, useCallback } from 'react';
 import type { Bill } from '@/lib/billStore';
 import { getEffAmt } from '@/lib/statementReport';
 import { getDisplayBillNo } from '@/lib/commissionMoc';
+import { idbGet, idbSetMany } from '@/lib/billStore';
+import { apiPushSetting } from '@/lib/apiSync';
+import { supabase } from '@/lib/supabase';
 
 export type StatementEntry = {
   id: string;
@@ -36,12 +39,15 @@ const LS_MATCHED_BILLS_KEY = 'vitratrack_statement_matched_bills';
 const LS_MATCHED_NOS_KEY = 'vitratrack_statement_matched_nos';
 const LS_STATEMENT_ENTRIES_KEY = 'vitratrack_statement_entries';
 const LS_STATEMENT_STATS_KEY = 'vitratrack_statement_stats';
+const IDB_STATEMENT_MATCH_KEY = 'vt_stmt_match_payload';
+const SUPABASE_SETTING_KEY = 'statement_match_state';
 
 // In-memory cache for ultra-fast render lookups
 let _matchedBillIds = new Set<string>();
 let _matchedBillNos = new Set<string>();
 let _cachedStats: StatementMatchStats | null = null;
 let _cachedEntries: StatementEntry[] | null = null;
+let _isHydratingRemote = false;
 
 function stripGST(bn: string) {
   return (bn || '').replace(/^GST[-_]/i, '').trim().toUpperCase();
@@ -86,19 +92,38 @@ export function normDate(v?: string | number): string {
   return raw;
 }
 
-// Hydrate from localStorage on boot
+// Helper to save to localStorage
+function saveToLocalStorage(
+  matchedIds: Set<string>,
+  matchedNos: Set<string>,
+  entries: StatementEntry[],
+  stats: StatementMatchStats | null
+) {
+  try {
+    localStorage.setItem(LS_MATCHED_BILLS_KEY, JSON.stringify(Array.from(matchedIds)));
+    localStorage.setItem(LS_MATCHED_NOS_KEY, JSON.stringify(Array.from(matchedNos)));
+    localStorage.setItem(LS_STATEMENT_ENTRIES_KEY, JSON.stringify(entries));
+    if (stats) {
+      localStorage.setItem(LS_STATEMENT_STATS_KEY, JSON.stringify(stats));
+    } else {
+      localStorage.removeItem(LS_STATEMENT_STATS_KEY);
+    }
+  } catch {}
+}
+
+// Hydrate from localStorage synchronously on boot
 function hydrate() {
   if (typeof window === 'undefined') return;
   try {
     const rawIds = localStorage.getItem(LS_MATCHED_BILLS_KEY);
     if (rawIds) {
       const arr = JSON.parse(rawIds);
-      if (Array.isArray(arr)) _matchedBillIds = new Set(arr);
+      if (Array.isArray(arr) && arr.length > 0) _matchedBillIds = new Set(arr);
     }
     const rawNos = localStorage.getItem(LS_MATCHED_NOS_KEY);
     if (rawNos) {
       const arr = JSON.parse(rawNos);
-      if (Array.isArray(arr)) _matchedBillNos = new Set(arr.map(s => stripGST(s)));
+      if (Array.isArray(arr) && arr.length > 0) _matchedBillNos = new Set(arr.map(s => stripGST(s)));
     }
     const rawStats = localStorage.getItem(LS_STATEMENT_STATS_KEY);
     if (rawStats) {
@@ -112,6 +137,75 @@ function hydrate() {
 }
 
 hydrate();
+
+/**
+ * Permanently loads statement match state from IndexedDB and Supabase settings table.
+ * Ensures that matching is preserved across refreshes, devices, and sessions.
+ */
+export async function hydrateStatementMatchFromRemote(): Promise<boolean> {
+  if (typeof window === 'undefined' || _isHydratingRemote) return false;
+  _isHydratingRemote = true;
+  let updated = false;
+
+  try {
+    // 1. Try IndexedDB if in-memory entries are empty
+    if (!_cachedEntries || _cachedEntries.length === 0) {
+      try {
+        const idbData = await idbGet<any>(IDB_STATEMENT_MATCH_KEY);
+        if (idbData && Array.isArray(idbData.entries) && idbData.entries.length > 0) {
+          _matchedBillIds = new Set(idbData.matchedIds || []);
+          _matchedBillNos = new Set((idbData.matchedNos || []).map((s: string) => stripGST(s)));
+          _cachedEntries = idbData.entries;
+          _cachedStats = idbData.stats || null;
+          saveToLocalStorage(_matchedBillIds, _matchedBillNos, _cachedEntries, _cachedStats);
+          updated = true;
+          window.dispatchEvent(new CustomEvent('vt-statement-match-updated'));
+        }
+      } catch {}
+    }
+
+    // 2. Fetch from Supabase settings table (Permanent Cloud Source of Truth)
+    if (supabase) {
+      try {
+        const { data, error } = await supabase
+          .from('settings')
+          .select('value')
+          .eq('key', SUPABASE_SETTING_KEY)
+          .maybeSingle();
+
+        if (!error && data?.value && data.value.trim().length > 0) {
+          const parsed = JSON.parse(data.value);
+          if (parsed && Array.isArray(parsed.entries) && parsed.entries.length > 0) {
+            _matchedBillIds = new Set(parsed.matchedIds || []);
+            _matchedBillNos = new Set((parsed.matchedNos || []).map((s: string) => stripGST(s)));
+            _cachedEntries = parsed.entries;
+            _cachedStats = parsed.stats || null;
+
+            saveToLocalStorage(_matchedBillIds, _matchedBillNos, _cachedEntries, _cachedStats);
+            idbSetMany({
+              [IDB_STATEMENT_MATCH_KEY]: parsed,
+            }).catch(() => {});
+
+            updated = true;
+            window.dispatchEvent(new CustomEvent('vt-statement-match-updated'));
+          }
+        }
+      } catch (cloudErr) {
+        console.warn('[statementMatch] Supabase settings fetch warning:', cloudErr);
+      }
+    }
+  } catch (err) {
+    console.warn('[statementMatch] hydrateStatementMatchFromRemote error:', err);
+  } finally {
+    _isHydratingRemote = false;
+  }
+
+  return updated;
+}
+
+if (typeof window !== 'undefined') {
+  setTimeout(() => { void hydrateStatementMatchFromRemote(); }, 300);
+}
 
 /**
  * Returns true if the bill was verified and matched against an uploaded bank statement.
@@ -159,6 +253,8 @@ export function useStatementMatch() {
   useEffect(() => {
     const handler = () => setVersion(v => v + 1);
     window.addEventListener('vt-statement-match-updated', handler);
+    // Remote hydration ensures permanent loading across reloads and devices
+    void hydrateStatementMatchFromRemote();
     return () => window.removeEventListener('vt-statement-match-updated', handler);
   }, []);
 
@@ -174,6 +270,7 @@ export function useStatementMatch() {
     stats: getStatementMatchStats(),
     entries: getStatementEntries(),
     clear: clearStatementMatchState,
+    reload: hydrateStatementMatchFromRemote,
   };
 }
 
@@ -182,13 +279,23 @@ export function clearStatementMatchState() {
   _matchedBillNos = new Set();
   _cachedStats = null;
   _cachedEntries = null;
+
   try {
     localStorage.removeItem(LS_MATCHED_BILLS_KEY);
     localStorage.removeItem(LS_MATCHED_NOS_KEY);
     localStorage.removeItem(LS_STATEMENT_STATS_KEY);
     localStorage.removeItem(LS_STATEMENT_ENTRIES_KEY);
-    window.dispatchEvent(new CustomEvent('vt-statement-match-updated'));
   } catch {}
+
+  // Clear from IndexedDB
+  idbSetMany({
+    [IDB_STATEMENT_MATCH_KEY]: null,
+  }).catch(() => {});
+
+  // Clear from Supabase settings
+  apiPushSetting(SUPABASE_SETTING_KEY, '').catch(() => {});
+
+  window.dispatchEvent(new CustomEvent('vt-statement-match-updated'));
 }
 
 export function saveStatementMatchState(
@@ -201,13 +308,145 @@ export function saveStatementMatchState(
   _matchedBillNos = matchedNos;
   _cachedEntries = entries;
   _cachedStats = stats;
-  try {
-    localStorage.setItem(LS_MATCHED_BILLS_KEY, JSON.stringify(Array.from(matchedIds)));
-    localStorage.setItem(LS_MATCHED_NOS_KEY, JSON.stringify(Array.from(matchedNos)));
-    localStorage.setItem(LS_STATEMENT_ENTRIES_KEY, JSON.stringify(entries));
-    localStorage.setItem(LS_STATEMENT_STATS_KEY, JSON.stringify(stats));
-    window.dispatchEvent(new CustomEvent('vt-statement-match-updated'));
-  } catch {}
+
+  // 1. LocalStorage
+  saveToLocalStorage(matchedIds, matchedNos, entries, stats);
+
+  const payload = {
+    matchedIds: Array.from(matchedIds),
+    matchedNos: Array.from(matchedNos),
+    entries,
+    stats,
+    updatedAt: new Date().toISOString(),
+  };
+
+  // 2. IndexedDB (Persistent browser storage)
+  idbSetMany({
+    [IDB_STATEMENT_MATCH_KEY]: payload,
+  }).catch(() => {});
+
+  // 3. Supabase settings table (Permanent Cloud Storage across all devices & sessions)
+  apiPushSetting(SUPABASE_SETTING_KEY, JSON.stringify(payload)).catch((err) => {
+    console.warn('[statementMatch] Failed to push statement match to Supabase settings:', err);
+  });
+
+  window.dispatchEvent(new CustomEvent('vt-statement-match-updated'));
+}
+
+/**
+ * Generates and downloads an Excel file (.xlsx) containing all unmatched entries
+ * from the bank statement, and optionally the list of unmatched bank bills.
+ */
+export async function downloadUnmatchedStatementEntries(
+  entries: StatementEntry[],
+  bills?: Bill[]
+) {
+  const XLSX = await import('xlsx');
+  const wb = XLSX.utils.book_new();
+
+  // 1. Sheet 1: Unmatched Statement Rows
+  const unmatchedStmt = (entries || []).filter(e => !e.matched);
+  const stmtData: any[][] = [
+    [
+      'Sr No',
+      'Transaction Date',
+      'Description / Narration',
+      'Credit Deposit (₹)',
+      'Match Status',
+      'Reconciliation Remarks'
+    ]
+  ];
+
+  unmatchedStmt.forEach((e, idx) => {
+    stmtData.push([
+      idx + 1,
+      e.date,
+      e.description || '—',
+      e.creditAmount,
+      'UNMATCHED',
+      'No matching GPay (UPI) or Cheque bill found for this date & amount'
+    ]);
+  });
+
+  const wsStmt = XLSX.utils.aoa_to_sheet(stmtData);
+  wsStmt['!cols'] = [
+    { wch: 8 },  // Sr No
+    { wch: 16 }, // Date
+    { wch: 45 }, // Description
+    { wch: 18 }, // Amount
+    { wch: 14 }, // Status
+    { wch: 55 }, // Remarks
+  ];
+  XLSX.utils.book_append_sheet(wb, wsStmt, 'Unmatched Statement');
+
+  // 2. Sheet 2: Unmatched Bank Bills (eligible bills with UPI or Cheque on statement dates that were not matched)
+  if (Array.isArray(bills) && bills.length > 0) {
+    const isMatched = (b: Bill) => isBillStatementMatched(b);
+
+    const unmatchedBankBills = bills.filter(b => {
+      const mode = (b.paymentMode || '').toLowerCase();
+      const hasBankPay = mode === 'upi' ||
+                         mode === 'cheque' ||
+                         (Number(b.upiAmount) || 0) > 0 ||
+                         (Number(b.chequeAmount) || 0) > 0 ||
+                         Boolean(b.chequeNo && b.chequeNo.trim().length > 0);
+      return hasBankPay && !isMatched(b);
+    });
+
+    const billsData: any[][] = [
+      [
+        'Sr No',
+        'Bill No',
+        'Party Name',
+        'Bill Date',
+        'Rec Date',
+        'Payment Mode',
+        'Cheque No',
+        'Received Amount (₹)',
+        'Net Bill Amount (₹)',
+        'Status'
+      ]
+    ];
+
+    unmatchedBankBills.forEach((b, idx) => {
+      const eff = getEffAmt(b);
+      const recAmt = (eff.upi > 0 ? eff.upi : 0) + (eff.chq > 0 ? eff.chq : 0) || (b.collectedAmount || 0);
+      billsData.push([
+        idx + 1,
+        getDisplayBillNo(b),
+        b.partyName || '—',
+        b.date || '—',
+        b.paymentDate || b.deliveryDate || '—',
+        b.paymentMode || '—',
+        b.chequeNo || '—',
+        recAmt,
+        b.billNetAmt || 0,
+        'NOT FOUND IN STATEMENT'
+      ]);
+    });
+
+    const wsBills = XLSX.utils.aoa_to_sheet(billsData);
+    wsBills['!cols'] = [
+      { wch: 8 },
+      { wch: 14 },
+      { wch: 32 },
+      { wch: 14 },
+      { wch: 14 },
+      { wch: 14 },
+      { wch: 16 },
+      { wch: 18 },
+      { wch: 18 },
+      { wch: 25 },
+    ];
+    XLSX.utils.book_append_sheet(wb, wsBills, 'Unmatched Bank Bills');
+  }
+
+  // 3. Trigger Excel File Download
+  const now = new Date();
+  const dateStr = `${String(now.getDate()).padStart(2, '0')}-${String(now.getMonth() + 1).padStart(2, '0')}-${now.getFullYear()}`;
+  const fileName = `Unmatched_Statement_Entries_${dateStr}.xlsx`;
+
+  XLSX.writeFile(wb, fileName);
 }
 
 /**

@@ -15,6 +15,7 @@ import {
   FileSpreadsheet,
   Filter,
   Check,
+  Download,
 } from 'lucide-react';
 import TopNav from '@/components/TopNav';
 import { Button } from '@/components/ui/button';
@@ -25,6 +26,7 @@ import {
   useStatementMatch,
   parseStatementFile,
   matchStatementWithBills,
+  downloadUnmatchedStatementEntries,
   STATEMENT_MATCHED_AMOUNT_CLS,
 } from '@/lib/statementMatch';
 
@@ -88,6 +90,7 @@ export default function HistoryPage() {
   // Statement matching UI state
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [isProcessingFile, setIsProcessingFile] = useState(false);
+  const [isDownloading, setIsDownloading] = useState(false);
   const [statementModalOpen, setStatementModalOpen] = useState(false);
   const [modalTab, setModalTab] = useState<'all' | 'matched' | 'unmatched'>('all');
   const [filterMatchedOnly, setFilterMatchedOnly] = useState(false);
@@ -105,8 +108,9 @@ export default function HistoryPage() {
         return;
       }
       const result = matchStatementWithBills(parsedEntries, bills);
+      const unCount = result.stats.unmatchedStatementRows;
       setUploadFeedback(
-        `✅ Matched ${result.stats.matchedStatementRows} statement entries (${result.stats.matchedBillsCount} bills, ₹${result.stats.matchedBillsTotalAmount.toLocaleString('en-IN')})`
+        `✅ Matched ${result.stats.matchedStatementRows} statement entries (${result.stats.matchedBillsCount} bills, ₹${result.stats.matchedBillsTotalAmount.toLocaleString('en-IN')}). ${unCount > 0 ? `⚠️ ${unCount} unmatched entries available to download.` : '🎉 Sabhi entries match ho gayi!'}`
       );
       setStatementModalOpen(true);
     } catch (err: any) {
@@ -121,9 +125,31 @@ export default function HistoryPage() {
   const handleReMatch = () => {
     if (entries.length === 0) return;
     const result = matchStatementWithBills(entries, bills);
+    const unCount = result.stats.unmatchedStatementRows;
     setUploadFeedback(
-      `✅ Re-match complete: ${result.stats.matchedStatementRows} statement entries matched (${result.stats.matchedBillsCount} bills, ₹${result.stats.matchedBillsTotalAmount.toLocaleString('en-IN')})`
+      `✅ Re-match complete: ${result.stats.matchedStatementRows} matched (${result.stats.matchedBillsCount} bills, ₹${result.stats.matchedBillsTotalAmount.toLocaleString('en-IN')}). ${unCount > 0 ? `⚠️ ${unCount} unmatched entries available.` : '🎉 All matched!'}`
     );
+  };
+
+  const handleDownloadUnmatched = async () => {
+    if (!entries || entries.length === 0) {
+      alert('Koi statement data uplabdh nahi hai.');
+      return;
+    }
+    const unmatched = entries.filter(e => !e.matched);
+    if (unmatched.length === 0) {
+      alert('Sabhi statement entries match ho chuki hain! Koi unmatched entry nahi hai.');
+      return;
+    }
+    try {
+      setIsDownloading(true);
+      await downloadUnmatchedStatementEntries(entries, bills);
+    } catch (err: any) {
+      console.error('Download error:', err);
+      alert('Unmatched entries download karne me error aaya: ' + (err?.message || err));
+    } finally {
+      setIsDownloading(false);
+    }
   };
 
   const rows = useMemo(() => {
@@ -298,6 +324,18 @@ export default function HistoryPage() {
 
                 <Button
                   type="button"
+                  onClick={handleDownloadUnmatched}
+                  disabled={isDownloading || stats.unmatchedStatementRows === 0}
+                  variant="outline"
+                  className="h-4 min-h-4 px-1.5 rounded-sm font-black text-[9px] uppercase gap-0.5 [&_svg]:size-2 border-rose-400/70 text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/40 shadow-xs"
+                  title="Download Unmatched Statement Entries (Excel)"
+                >
+                  <Download className="w-2.5 h-2.5" />
+                  <span>Unmatched ({stats.unmatchedStatementRows})</span>
+                </Button>
+
+                <Button
+                  type="button"
                   onClick={handleReMatch}
                   title="Re-run matching with current bills"
                   variant="outline"
@@ -353,11 +391,24 @@ export default function HistoryPage() {
                 </span>
               </div>
             </div>
-            {uploadFeedback && (
-              <span className="text-[10px] font-black text-emerald-700 dark:text-emerald-300 bg-emerald-100 dark:bg-emerald-950/60 px-2 py-0.5 rounded border border-emerald-300">
-                {uploadFeedback}
-              </span>
-            )}
+            <div className="flex items-center gap-2">
+              {uploadFeedback && (
+                <span className="text-[10px] font-black text-emerald-700 dark:text-emerald-300 bg-emerald-100 dark:bg-emerald-950/60 px-2 py-0.5 rounded border border-emerald-300">
+                  {uploadFeedback}
+                </span>
+              )}
+              {stats.unmatchedStatementRows > 0 && (
+                <button
+                  type="button"
+                  onClick={handleDownloadUnmatched}
+                  disabled={isDownloading}
+                  className="h-6 px-2.5 rounded-md text-[10px] font-black uppercase text-rose-700 dark:text-rose-300 bg-white dark:bg-card border border-rose-300 dark:border-rose-800 hover:bg-rose-50 dark:hover:bg-rose-950/50 shadow-xs flex items-center gap-1 cursor-pointer transition-colors"
+                >
+                  <Download className="w-3 h-3" />
+                  <span>Download Unmatched ({stats.unmatchedStatementRows})</span>
+                </button>
+              )}
+            </div>
           </div>
         )}
 
@@ -548,7 +599,21 @@ export default function HistoryPage() {
                   </p>
                 </div>
                 <div className="bg-card p-2.5 rounded-xl border border-border">
-                  <p className="text-[9px] font-black text-muted-foreground uppercase">Unmatched in App</p>
+                  <div className="flex items-center justify-between">
+                    <p className="text-[9px] font-black text-muted-foreground uppercase">Unmatched in App</p>
+                    {stats.unmatchedStatementRows > 0 && (
+                      <button
+                        type="button"
+                        onClick={handleDownloadUnmatched}
+                        disabled={isDownloading}
+                        className="text-[9px] font-black uppercase text-rose-600 dark:text-rose-400 hover:underline flex items-center gap-0.5 cursor-pointer"
+                        title="Download Excel List"
+                      >
+                        <Download className="w-2.5 h-2.5" />
+                        <span>Excel</span>
+                      </button>
+                    )}
+                  </div>
                   <p className="text-base font-black text-rose-600">₹{stats.unmatchedStatementAmount.toLocaleString('en-IN')}</p>
                   <p className="text-[9px] font-bold text-muted-foreground">{stats.unmatchedStatementRows} Transactions</p>
                 </div>
@@ -583,6 +648,19 @@ export default function HistoryPage() {
                 >
                   Unmatched ({stats.unmatchedStatementRows})
                 </button>
+
+                {stats.unmatchedStatementRows > 0 && (
+                  <button
+                    type="button"
+                    onClick={handleDownloadUnmatched}
+                    disabled={isDownloading}
+                    className="ml-auto h-7 px-3 rounded-lg bg-rose-600 hover:bg-rose-700 text-white font-black text-[10px] uppercase flex items-center gap-1.5 shadow-xs cursor-pointer transition-colors"
+                    title="Download Excel list of all unmatched statement entries"
+                  >
+                    <Download className="w-3 h-3" />
+                    <span>Download Unmatched ({stats.unmatchedStatementRows})</span>
+                  </button>
+                )}
               </div>
 
               {/* Entries Table */}
@@ -659,22 +737,33 @@ export default function HistoryPage() {
                 <div className="flex items-center gap-2">
                   <button
                     onClick={() => fileInputRef.current?.click()}
-                    className="h-8 px-3 rounded-lg bg-teal-600 hover:bg-teal-700 text-white font-black text-[10px] uppercase flex items-center gap-1"
+                    className="h-8 px-3 rounded-lg bg-teal-600 hover:bg-teal-700 text-white font-black text-[10px] uppercase flex items-center gap-1 cursor-pointer"
                   >
                     <Upload className="w-3 h-3" />
                     <span>Upload Another Statement</span>
                   </button>
                   <button
                     onClick={handleReMatch}
-                    className="h-8 px-3 rounded-lg bg-card border border-border hover:bg-muted text-foreground font-black text-[10px] uppercase flex items-center gap-1"
+                    className="h-8 px-3 rounded-lg bg-card border border-border hover:bg-muted text-foreground font-black text-[10px] uppercase flex items-center gap-1 cursor-pointer"
                   >
                     <RefreshCw className="w-3 h-3" />
                     <span>Re-Run Match</span>
                   </button>
+                  {stats.unmatchedStatementRows > 0 && (
+                    <button
+                      type="button"
+                      onClick={handleDownloadUnmatched}
+                      disabled={isDownloading}
+                      className="h-8 px-3 rounded-lg bg-rose-600 hover:bg-rose-700 text-white font-black text-[10px] uppercase flex items-center gap-1.5 cursor-pointer shadow-xs transition-colors"
+                    >
+                      <Download className="w-3.5 h-3.5" />
+                      <span>Download Unmatched Sheet</span>
+                    </button>
+                  )}
                 </div>
                 <button
                   onClick={() => setStatementModalOpen(false)}
-                  className="h-8 px-4 rounded-lg bg-primary text-primary-foreground font-black text-[10px] uppercase"
+                  className="h-8 px-4 rounded-lg bg-primary text-primary-foreground font-black text-[10px] uppercase cursor-pointer"
                 >
                   Done
                 </button>
