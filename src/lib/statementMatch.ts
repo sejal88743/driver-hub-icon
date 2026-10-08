@@ -854,6 +854,11 @@ export function matchStatementWithBills(
       updatedEntries.push(entry);
       continue;
     }
+    // Cheque-no wali entries GPay singles se match nahi hongi
+    if (entry.chequeNo) {
+      updatedEntries.push(entry);
+      continue;
+    }
 
     for (const grp of singleGroups) {
       if (grp.matched) continue;
