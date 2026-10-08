@@ -387,18 +387,21 @@ if (typeof window !== 'undefined') {
 }
 
 // ── Fetch all bills from Supabase ──────────────────────────────────────────
-// Downloads all bills using explicit BILL_SELECT_COLUMNS and parallel chunking.
-// Loads complete database position so all bills can be searched and dashboard count is accurate.
+// Downloads all bills using explicit BILL_SELECT_COLUMNS and fast chunking.
+// Loads newest/today's bills in Page 0 (updated_at desc) so data is instantly accessible.
 export async function fetchAllBills(options?: { fullHistory?: boolean }): Promise<Bill[]> {
   if (!supabase) return [];
   const CHUNK_SIZE = 1000;
 
   try {
-    const { data: firstPage, count, error: countErr } = await supabase
+    // Order by updated_at descending so today's and recent bills come first
+    let query = supabase
       .from('bills')
       .select(BILL_SELECT_COLUMNS, { count: 'exact' })
-      .order('id')
+      .order('updated_at', { ascending: false, nullsFirst: false })
       .range(0, CHUNK_SIZE - 1);
+
+    const { data: firstPage, count, error: countErr } = await query;
 
     if (countErr) throw countErr;
     if (!firstPage || firstPage.length === 0) return [];
@@ -411,23 +414,27 @@ export async function fetchAllBills(options?: { fullHistory?: boolean }): Promis
       return dedupeBillsByBillNo(allRows.map(mapBillFromSupabase));
     }
 
-    // Fetch remaining pages in parallel
+    // Fetch remaining pages in controlled concurrent batches of 8 to avoid socket starvation
     const totalPages = Math.ceil(totalCount / CHUNK_SIZE);
-    const promises = [];
-    for (let p = 1; p < totalPages; p++) {
-      const start = p * CHUNK_SIZE;
-      promises.push(
-        supabase
-          .from('bills')
-          .select(BILL_SELECT_COLUMNS)
-          .order('id')
-          .range(start, start + CHUNK_SIZE - 1)
-      );
-    }
-    const resList = await Promise.all(promises);
-    for (const res of resList) {
-      if (res.data && res.data.length > 0) {
-        allRows.push(...(res.data as Record<string, unknown>[]));
+    const BATCH_CONCURRENCY = 8;
+    for (let batchStart = 1; batchStart < totalPages; batchStart += BATCH_CONCURRENCY) {
+      const batchPromises = [];
+      const batchEnd = Math.min(batchStart + BATCH_CONCURRENCY, totalPages);
+      for (let p = batchStart; p < batchEnd; p++) {
+        const start = p * CHUNK_SIZE;
+        batchPromises.push(
+          supabase
+            .from('bills')
+            .select(BILL_SELECT_COLUMNS)
+            .order('updated_at', { ascending: false, nullsFirst: false })
+            .range(start, start + CHUNK_SIZE - 1)
+        );
+      }
+      const resList = await Promise.all(batchPromises);
+      for (const res of resList) {
+        if (res.data && res.data.length > 0) {
+          allRows.push(...(res.data as Record<string, unknown>[]));
+        }
       }
     }
     return dedupeBillsByBillNo(allRows.map(mapBillFromSupabase));
