@@ -157,7 +157,7 @@ export async function hydrateStatementMatchFromRemote(): Promise<boolean> {
           _matchedBillNos = new Set((idbData.matchedNos || []).map((s: string) => stripGST(s)));
           _cachedEntries = idbData.entries;
           _cachedStats = idbData.stats || null;
-          saveToLocalStorage(_matchedBillIds, _matchedBillNos, _cachedEntries, _cachedStats);
+          saveToLocalStorage(_matchedBillIds, _matchedBillNos, _cachedEntries || [], _cachedStats);
           updated = true;
           window.dispatchEvent(new CustomEvent('vt-statement-match-updated'));
         }
@@ -181,7 +181,7 @@ export async function hydrateStatementMatchFromRemote(): Promise<boolean> {
             _cachedEntries = parsed.entries;
             _cachedStats = parsed.stats || null;
 
-            saveToLocalStorage(_matchedBillIds, _matchedBillNos, _cachedEntries, _cachedStats);
+            saveToLocalStorage(_matchedBillIds, _matchedBillNos, _cachedEntries || [], _cachedStats);
             idbSetMany({
               [IDB_STATEMENT_MATCH_KEY]: parsed,
             }).catch(() => {});
