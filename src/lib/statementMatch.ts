@@ -526,6 +526,7 @@ export async function parseStatementFile(file: File): Promise<StatementEntry[]> 
     const rawDateStr = String(row[dateCol] || '').trim();
     const rawDesc = String(row[descCol] || '').trim();
     const rawCredit = String(row[creditCol] || '').trim();
+    const rawChqNo = chqCol !== -1 ? String(row[chqCol] || '').trim() : '';
 
     if (!rawDateStr || !rawCredit) continue;
 
@@ -538,12 +539,16 @@ export async function parseStatementFile(file: File): Promise<StatementEntry[]> 
     const dmy = normDate(rawDateStr);
     if (!dmy || !dmy.includes('/')) continue;
 
+    // Cheque no: sirf digits rakho (blank ho to GPay/UPI entry maano)
+    const chqDigits = rawChqNo.replace(/\D/g, '');
+
     entries.push({
       id: `stmt_${seq++}_${dmy.replace(/\//g, '')}_${Math.round(numAmt)}`,
       date: dmy,
       rawDate: rawDateStr,
       description: rawDesc,
       creditAmount: Math.round(numAmt * 100) / 100,
+      chequeNo: chqDigits || undefined,
       matched: false,
       matchedBillNos: [],
       matchedBillIds: [],
