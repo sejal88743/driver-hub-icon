@@ -12,6 +12,7 @@ export type StatementEntry = {
   rawDate: string;
   description: string;
   creditAmount: number;
+  chequeNo?: string; // statement ka "cheq no" column (blank ho to GPay/UPI treat hoga)
   matched: boolean;
   matchedBillNos: string[];
   matchedBillIds: string[];
