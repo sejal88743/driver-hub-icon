@@ -12,6 +12,7 @@ if (typeof window !== 'undefined') {
   window.addEventListener('error', (event) => {
     const filename = String(event?.filename || '');
     const message = String(event?.message || '');
+    const errorMsg = String(event?.error?.message || event?.error || '');
     if (
       filename.includes('chrome-extension://') ||
       filename.includes('moz-extension://') ||
@@ -19,6 +20,10 @@ if (typeof window !== 'undefined') {
       filename.includes('share-modal.js') ||
       message.includes('reading \'sentence\'') ||
       message.includes('Cannot read properties of undefined') ||
+      message.includes('Connection Closed') ||
+      message.includes('connection closed') ||
+      errorMsg.includes('Connection Closed') ||
+      errorMsg.includes('connection closed') ||
       (message.includes("Cannot read properties of null (reading 'addEventListener')") && (filename.includes('extension') || !filename || filename.includes('modal')))
     ) {
       event.preventDefault();
@@ -35,6 +40,8 @@ if (typeof window !== 'undefined') {
       reasonStr.includes('sentence') ||
       reasonStr.includes('WebSocket closed without opened') ||
       reasonStr.includes('failed to connect to websocket') ||
+      reasonStr.includes('Connection Closed') ||
+      reasonStr.includes('connection closed') ||
       reasonStr.includes('heartbeat timeout') ||
       stackStr.includes('contentScript') ||
       stackStr.includes('chrome-extension://') ||

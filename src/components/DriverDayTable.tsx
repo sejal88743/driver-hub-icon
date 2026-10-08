@@ -8,6 +8,8 @@ import { Button } from "@/components/ui/button";
 import { isGreenParty } from "@/lib/greenParties";
 import { getDisplayBillNo } from "@/lib/commissionMoc";
 import WhatsAppSalesmanModal from "./WhatsAppSalesmanModal";
+import { isBillStatementMatched } from "@/lib/statementMatch";
+import { normDateStr } from "@/lib/dateUtils";
 
 type Props = {
   bills: Bill[];
@@ -183,24 +185,12 @@ export default function DriverDayTable({ bills, selectedDriver, displayDate, onS
         if (!hasMoneyRec && !isFBR && !isCredit && !isPaid) return false;
         // If bill was assigned to a driver on deliveryDate = displayDate, do not show in owner view
         if (!isMoc && b.deliveryDate === displayDate && b.driverName && b.driverName.trim().toUpperCase() !== 'OWNER') return false;
-        // If bill does not have paymentDate, do not show in owner view
-        if (!b.paymentDate && !(isMoc && (b.date === displayDate || b.deliveryDate === displayDate))) return false;
+        // Receipt date is authoritative: old bill/delivery/entry dates cannot widen this view.
+        if (!b.paymentDate || normDateStr(b.paymentDate) !== normDateStr(displayDate)) return false;
 
         const isSavedByOwnerList = Array.isArray(ownerSavedBillNos) && (ownerSavedBillNos.includes(b.billNo) || ownerSavedBillNos.includes(b.id));
         const pTime = (b.paymentTime || '').trim().toUpperCase();
         const dName = (b.driverName || '').trim().toUpperCase();
-
-        // Check if payment/received date matches displayDate
-        let matchesDate = b.paymentDate === displayDate || (isMoc && (b.date === displayDate || b.deliveryDate === displayDate));
-        if (pTime.startsWith('OWNER:') && pTime.includes(':')) {
-          const entryDate = pTime.split(':')[1];
-          if (entryDate === displayDate) matchesDate = true;
-        }
-        if (isSavedByOwnerList && b.paymentDate === displayDate) {
-          matchesDate = true;
-        }
-
-        if (!matchesDate) return false;
 
         // Exclude payments made by other recognized staff users (e.g. Khushi, Tarachand, Pratixa)
         const otherStaffUsers = allDrivers.filter(d => d.role === 'user' && (d.name || '').trim().toUpperCase() !== 'OWNER');
@@ -215,10 +205,7 @@ export default function DriverDayTable({ bills, selectedDriver, displayDate, onS
           pTime.startsWith('OWNER:') ||
           pTime.startsWith('OWNER ') ||
           isSavedByOwnerList ||
-          dName === 'OWNER' ||
-          (isMoc && (!pTime || dName === 'OWNER' || pTime === 'OWNER')) ||
-          !pTime ||
-          /^\d{1,2}:\d{2}/.test(pTime) // regular timestamp e.g. 14:30
+          dName === 'OWNER'
         );
 
         if (isOwnerPayment) {
@@ -1330,12 +1317,17 @@ export default function DriverDayTable({ bills, selectedDriver, displayDate, onS
                     )}>
                       {(b.partyName || '—').slice(0, 14)}
                     </span>
+                    {b.discrepancyReason && (
+                      <div className="text-[7.5px] font-bold text-amber-700 dark:text-amber-400 truncate max-w-[110px] leading-tight" title={`Note: ${b.discrepancyReason}`}>
+                        📝 {b.discrepancyReason}
+                      </div>
+                    )}
                   </td>
                   <td className="px-0.5 py-0 text-right font-black">₹{b.billNetAmt.toLocaleString('en-IN')}</td>
                   <td className="px-0.5 py-0 text-center font-black text-muted-foreground">{b.deliveryDate || '—'}</td>
-                  <td className={cn("px-0.5 py-0 text-right font-black text-emerald-600", !isSnapshot && isMatchedRow && eff.cash > 0 && "bg-pink-100 dark:bg-pink-950/80 text-pink-950 dark:text-pink-100 border border-pink-300 dark:border-pink-700 rounded-sm font-extrabold")}>{!isSnapshot && eff.cash > 0 ? `₹${eff.cash.toLocaleString('en-IN')}` : '—'}</td>
-                  <td className={cn("px-0.5 py-0 text-right font-black text-blue-600", !isSnapshot && isMatchedRow && eff.upi > 0 && "bg-pink-100 dark:bg-pink-950/80 text-pink-950 dark:text-pink-100 border border-pink-300 dark:border-pink-700 rounded-sm font-extrabold")}>{!isSnapshot && eff.upi > 0 ? `₹${eff.upi.toLocaleString('en-IN')}` : '—'}</td>
-                  <td className={cn("px-0.5 py-0 text-right font-black text-violet-600", !isSnapshot && isMatchedRow && eff.chq > 0 && "bg-pink-100 dark:bg-pink-950/80 text-pink-950 dark:text-pink-100 border border-pink-300 dark:border-pink-700 rounded-sm font-extrabold")}>{!isSnapshot && eff.chq > 0 ? `₹${eff.chq.toLocaleString('en-IN')}${b.chequeNo ? ` #${b.chequeNo}` : ''}` : '—'}</td>
+                  <td className="px-0.5 py-0 text-right font-black text-emerald-600">{!isSnapshot && eff.cash > 0 ? `₹${eff.cash.toLocaleString('en-IN')}` : '—'}</td>
+                  <td className={cn("px-0.5 py-0 text-right font-black text-blue-600", !isSnapshot && isBillStatementMatched(b) && eff.upi > 0 && "bg-yellow-300 dark:bg-yellow-900 text-yellow-950 dark:text-yellow-100 border border-yellow-500 rounded-sm font-black px-1")}>{!isSnapshot && eff.upi > 0 ? `₹${eff.upi.toLocaleString('en-IN')}` : '—'}</td>
+                  <td className={cn("px-0.5 py-0 text-right font-black text-violet-600", !isSnapshot && isBillStatementMatched(b) && eff.chq > 0 && "bg-yellow-300 dark:bg-yellow-900 text-yellow-950 dark:text-yellow-100 border border-yellow-500 rounded-sm font-black px-1")}>{!isSnapshot && eff.chq > 0 ? `₹${eff.chq.toLocaleString('en-IN')}${b.chequeNo ? ` #${b.chequeNo}` : ''}` : '—'}</td>
                   <td className="px-0.5 py-0 text-right font-black text-destructive">
                     {!isSnapshot && isCredit && (b.lineCutAmt || 0) > 0
                       ? `₹${(b.lineCutAmt!).toLocaleString('en-IN')}`

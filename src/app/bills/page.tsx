@@ -1,5 +1,5 @@
 import { useState, useMemo, useEffect, useCallback, useDeferredValue } from 'react';
-import { Search, Filter, Loader2, X, ChevronUp, ChevronDown, MessageCircle, Clock, XCircle, RotateCcw, RefreshCw } from 'lucide-react';
+import { Search, Filter, Loader2, X, ChevronUp, ChevronDown, MessageCircle, Clock, XCircle, RotateCcw, RefreshCw, Users } from 'lucide-react';
 import { useBillStore } from '@/hooks/use-bill-store';
 import BillDetailModal from '@/components/BillDetailModal';
 import TopNav from '@/components/TopNav';
@@ -8,6 +8,7 @@ import { Bill, getWhatsAppTemplates, getPartyContacts, getSalespersonContacts, f
 import SalespersonAutoDispatchModal from '@/components/SalespersonAutoDispatchModal';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { openWhatsApp } from '@/lib/whatsapp';
+import { isBillStatementMatched, STATEMENT_MATCHED_AMOUNT_CLS } from '@/lib/statementMatch';
 
 function stripGST(billNo: string) {
   return billNo ? billNo.replace(/^GST[-_]/i, '') : '';
@@ -331,6 +332,14 @@ export default function BillsPage() {
           >
             <RefreshCw className={cn("w-3.5 h-3.5", syncing && "animate-spin")} />
           </button>
+          <a
+            href="/settings#salesperson-sync-card"
+            className="px-2.5 py-1.5 bg-blue-600 hover:bg-blue-700 active:scale-95 text-white font-black rounded-lg text-[10px] uppercase tracking-tight flex items-center gap-1 shadow"
+            title="Update salesperson names from Sales Register XLS/CSV"
+          >
+            <Users className="w-3.5 h-3.5" />
+            Salesman Sync
+          </a>
           <button
             onClick={() => setShowAutoDispatch(true)}
             className="px-3 py-1.5 bg-emerald-500 hover:bg-emerald-600 active:scale-95 text-slate-950 font-black rounded-lg text-[10px] uppercase tracking-tight flex items-center gap-1.5 shadow"
@@ -489,7 +498,12 @@ export default function BillsPage() {
                         <TableCell className="text-[11px] font-black px-2 py-1.5 text-center whitespace-nowrap text-orange-700">{collected > 0 && bill.paymentDate ? bill.paymentDate : '-'}</TableCell>
                         <TableCell className="text-[11px] font-black px-2 py-1.5 text-right whitespace-nowrap">
                           {collected > 0 ? (
-                            <span className="text-emerald-700 font-black">₹{collected.toLocaleString('en-IN')}</span>
+                            <span className={cn(
+                              "text-emerald-700 font-black",
+                              isBillStatementMatched(bill) && STATEMENT_MATCHED_AMOUNT_CLS
+                            )}>
+                              ₹{collected.toLocaleString('en-IN')}
+                            </span>
                           ) : (
                             <span className="text-muted-foreground font-black">₹0</span>
                           )}

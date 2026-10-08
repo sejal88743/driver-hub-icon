@@ -6,9 +6,48 @@ import fs from 'fs';
 import { GoogleGenAI, Type } from '@google/genai';
 import { pool } from './db.js';
 import { extractPaymentEntries } from './whatsappExtract.js';
-import { startBot, stopBot, resetBotSession, getBotStatus, setPaymentEventHandler, selectBotGroup } from './whatsappBot.js';
+import {
+  startBot, stopBot, resetBotSession, getBotStatus, setPaymentEventHandler,
+  setStatusChangeHandler,
+  selectBotGroup, initBotOnBoot, startWatchdog, isSessionSaved, WaPaymentEvent,
+  forceRefreshGroups
+} from './whatsappBot.js';
+import { setGeminiApiKey, setWaBotEnabled } from './waBotConfig.js';
+import { isEventDismissed, markEventDismissed } from './waDedupe.js';
+import { MASTER_SALESPERSON_DIRECTORY, findServerMasterSalesperson } from './salespersonDirectory.js';
 
 const __dirname = process.cwd();
+
+// Process-level suppression of benign connection drops and socket resets (e.g. Baileys / DB / SSE disconnects)
+process.on('unhandledRejection', (reason: any, promise) => {
+  const msg = String(reason?.message || reason || '');
+  if (
+    msg.includes('Connection Closed') ||
+    msg.includes('connection closed') ||
+    msg.includes('ECONNRESET') ||
+    msg.includes('EPIPE') ||
+    msg.includes('ETIMEDOUT')
+  ) {
+    console.warn('[Server] Handled unhandled rejection (benign transport close):', msg);
+    return;
+  }
+  console.error('[Server] Unhandled Rejection at:', promise, 'reason:', reason);
+});
+
+process.on('uncaughtException', (err: any) => {
+  const msg = String(err?.message || err || '');
+  if (
+    msg.includes('Connection Closed') ||
+    msg.includes('connection closed') ||
+    msg.includes('ECONNRESET') ||
+    msg.includes('EPIPE') ||
+    msg.includes('ETIMEDOUT')
+  ) {
+    console.warn('[Server] Handled uncaught exception (benign transport close):', msg);
+    return;
+  }
+  console.error('[Server] Uncaught Exception:', err);
+});
 
 const app = express();
 const allowedOrigins = (process.env.ALLOWED_ORIGIN ?? '')
@@ -180,9 +219,26 @@ app.get('/api/all', async (_req, res) => {
     const partyContacts = contactsRes.rows
       .filter((r: Record<string, unknown>) => r.type === 'party')
       .map((r: Record<string, unknown>) => ({ name: String(r.name), mobile: String(r.mobile) }));
-    const salespersonContacts = contactsRes.rows
-      .filter((r: Record<string, unknown>) => r.type === 'salesperson')
-      .map((r: Record<string, unknown>) => ({ name: String(r.name), mobile: String(r.mobile) }));
+
+    const spMap = new Map<string, { name: string; mobile: string }>();
+    for (const r of contactsRes.rows as Record<string, unknown>[]) {
+      if (r.type === 'salesperson') {
+        const name = String(r.name || '').trim();
+        if (!name) continue;
+        const master = findServerMasterSalesperson(name);
+        spMap.set(name.toLowerCase(), { name, mobile: master?.mobile || String(r.mobile || '') });
+      }
+    }
+    // Guarantee all 31 master salesmen are permanently included
+    for (const m of MASTER_SALESPERSON_DIRECTORY) {
+      const k = m.name.toLowerCase();
+      if (!spMap.has(k)) {
+        spMap.set(k, { name: m.name, mobile: m.mobile });
+      } else if (spMap.get(k)!.mobile !== m.mobile) {
+        spMap.get(k)!.mobile = m.mobile;
+      }
+    }
+    const salespersonContacts = Array.from(spMap.values());
     const settings: Record<string, string> = {};
     for (const r of settingsRes.rows as { key: string; value: string }[]) settings[r.key] = r.value;
     // Never expose the admin-saved Gemini API key to clients
@@ -419,19 +475,41 @@ app.post('/api/contacts/party', async (req, res) => {
 // ─── Push salesperson contacts ────────────────────────────────────────────────
 app.post('/api/contacts/salesperson', async (req, res) => {
   const contacts: { name: string; mobile: string }[] = req.body.contacts ?? [];
-  const CHUNK = 500;
   const client = await pool.connect();
   try {
+    const spMap = new Map<string, { name: string; mobile: string }>();
+    for (const c of contacts) {
+      const name = String(c.name || '').trim();
+      if (!name) continue;
+      const master = findServerMasterSalesperson(name);
+      spMap.set(name.toLowerCase(), { name, mobile: master?.mobile || c.mobile || '' });
+    }
+    for (const m of MASTER_SALESPERSON_DIRECTORY) {
+      const k = m.name.toLowerCase();
+      if (!spMap.has(k)) {
+        spMap.set(k, { name: m.name, mobile: m.mobile });
+      } else if (spMap.get(k)!.mobile !== m.mobile) {
+        spMap.get(k)!.mobile = m.mobile;
+      }
+    }
+
+    const mergedList = Array.from(spMap.values());
     await client.query('BEGIN');
     await client.query("DELETE FROM contacts WHERE type = 'salesperson'");
-    for (let i = 0; i < contacts.length; i += CHUNK) {
-      const slice = contacts.slice(i, i + CHUNK);
+    const CHUNK = 500;
+    for (let i = 0; i < mergedList.length; i += CHUNK) {
+      const slice = mergedList.slice(i, i + CHUNK);
       if (slice.length === 0) continue;
-      const rows = slice.map((c, ri) => ({ id: `salesperson_${i + ri}`, type: 'salesperson', name: c.name, mobile: c.mobile }));
+      const rows = slice.map((c, ri) => ({
+        id: `sp_${c.name.toLowerCase().replace(/[^a-z0-9]/g, '_').substring(0, 44)}_${i + ri}`,
+        type: 'salesperson',
+        name: c.name,
+        mobile: c.mobile,
+      }));
       await pgUpsert('contacts', rows, 'id', false, client);
     }
     await client.query('COMMIT');
-    res.json({ count: contacts.length });
+    res.json({ count: mergedList.length });
   } catch (err) {
     await client.query('ROLLBACK');
     console.error('[POST /api/contacts/salesperson]', err);
@@ -445,6 +523,11 @@ app.post('/api/contacts/salesperson', async (req, res) => {
 app.post('/api/settings', async (req, res) => {
   const { key, value } = req.body as { key: string; value: string };
   try {
+    if (key === 'gemini_api_key') {
+      await setGeminiApiKey(value);
+    } else if (key === 'wa_bot_enabled') {
+      await setWaBotEnabled(value === 'true');
+    }
     await pool.query(
       'INSERT INTO settings (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value',
       [key, value]
@@ -1217,6 +1300,9 @@ app.post('/api/admin/whatsapp-ai', async (req, res) => {
 
 // ─── WhatsApp Live Bot control + SSE event stream (linked-device bot) ────────
 const waSseClients = new Set<any>();
+const recentPaymentEvents: WaPaymentEvent[] = [];
+const dismissedEventIds = new Set<string>();
+
 setInterval(() => {
   for (const c of waSseClients) {
     try { c.write(': ping\n\n'); } catch {}
@@ -1225,7 +1311,35 @@ setInterval(() => {
 
 // Live bot payment extraction → broadcast to all connected app clients (popup)
 setPaymentEventHandler((event) => {
+  // If this event replaces an older pending event (e.g. unlinked receipt combined with bill numbers)
+  if (event.replacesEventId) {
+    const idx = recentPaymentEvents.findIndex((e) => e.id === event.replacesEventId);
+    if (idx !== -1) {
+      recentPaymentEvents.splice(idx, 1);
+    }
+    dismissedEventIds.add(event.replacesEventId);
+    markEventDismissed(event.replacesEventId);
+  }
+
+  // Deduplicate in recentPaymentEvents
+  const existingIdx = recentPaymentEvents.findIndex((e) => e.id === event.id);
+  if (existingIdx !== -1) {
+    recentPaymentEvents[existingIdx] = event;
+  } else {
+    recentPaymentEvents.push(event);
+    if (recentPaymentEvents.length > 50) recentPaymentEvents.shift();
+  }
+
   const payload = `data: ${JSON.stringify(event)}\n\n`;
+  console.log(`[SSE] Broadcasting WhatsApp payment event (${event.id}) to ${waSseClients.size} client(s)...`);
+  for (const c of waSseClients) {
+    try { c.write(payload); } catch {}
+  }
+});
+
+// Live bot status change (QR code generated, connected, disconnected) → broadcast to all SSE clients in real-time
+setStatusChangeHandler((newStatus) => {
+  const payload = `data: ${JSON.stringify({ type: 'status', status: newStatus })}\n\n`;
   for (const c of waSseClients) {
     try { c.write(payload); } catch {}
   }
@@ -1241,8 +1355,58 @@ app.get('/api/admin/whatsapp-bot/events', (req, res) => {
   });
   res.flushHeaders?.();
   res.write(`data: ${JSON.stringify({ type: 'status', status: getBotStatus() })}\n\n`);
+
+  // Replay recent un-dismissed payment events (e.g. from last 2 hours)
+  for (const ev of recentPaymentEvents) {
+    if (!dismissedEventIds.has(ev.id) && !isEventDismissed(ev.id)) {
+      res.write(`data: ${JSON.stringify(ev)}\n\n`);
+    }
+  }
+
   waSseClients.add(res);
   req.on('close', () => waSseClients.delete(res));
+});
+
+app.post('/api/admin/whatsapp-bot/dismiss', (req, res) => {
+  const { eventId, paymentDetails } = req.body || {};
+  if (eventId) {
+    dismissedEventIds.add(String(eventId));
+    markEventDismissed(String(eventId), paymentDetails);
+  }
+  res.json({ ok: true });
+});
+
+// Test trigger for admin to verify popup in 1 click
+app.post('/api/admin/whatsapp-bot/test-event', async (req, res) => {
+  const billNo = String(req.body?.billNo || '42911');
+  const amount = Number(req.body?.amount) || 5000;
+  const method = String(req.body?.method || 'GPay');
+  const accountName = String(req.body?.accountName || 'LAXMI TRADERS');
+
+  const testEvent: WaPaymentEvent = {
+    type: 'wa-payment',
+    id: `test-${Date.now()}`,
+    fromJid: 'test-group@g.us',
+    senderName: 'Test Driver / Salesman',
+    text: `Payment receipt ₹${amount} [Paid to: ${accountName}] via ${method}`,
+    summary: `Test payment popup: ₹${amount} [A/C: ${accountName}] (${method})`,
+    entries: [{
+      billNo,
+      amount,
+      paymentMethod: method,
+      date: new Date().toLocaleDateString('en-GB'),
+      accountName,
+      remarks: `Test screenshot scan [A/C: ${accountName}]`,
+    }],
+  };
+
+  recentPaymentEvents.push(testEvent);
+  const payload = `data: ${JSON.stringify(testEvent)}\n\n`;
+  for (const c of waSseClients) {
+    try { c.write(payload); } catch {}
+  }
+
+  res.json({ ok: true, event: testEvent, clientCount: waSseClients.size });
 });
 
 app.post('/api/admin/whatsapp-bot/start', (_req, res) => {
@@ -1250,8 +1414,10 @@ app.post('/api/admin/whatsapp-bot/start', (_req, res) => {
   res.json({ ok: true, status: getBotStatus() });
 });
 
-app.post('/api/admin/whatsapp-bot/stop', (_req, res) => {
-  stopBot();
+app.post('/api/admin/whatsapp-bot/stop', (req, res) => {
+  const shutdown = (req.query as any)?.shutdown === 'true' || (req.body as any)?.shutdown === true;
+  // Default: Wipes old session credentials and generates fresh NEW QR code for new connection
+  stopBot(!shutdown);
   res.json({ ok: true, status: getBotStatus() });
 });
 
@@ -1261,6 +1427,10 @@ app.post('/api/admin/whatsapp-bot/reset', (_req, res) => {
 });
 
 app.get('/api/admin/whatsapp-bot/status', (_req, res) => {
+  const current = getBotStatus();
+  if (!current.running && isSessionSaved()) {
+    startBot();
+  }
   res.json({ ok: true, status: getBotStatus() });
 });
 
@@ -1269,6 +1439,38 @@ app.post('/api/admin/whatsapp-bot/select-group', async (req, res) => {
   const name = String((req.body as any)?.name || '');
   await selectBotGroup(jid, name);
   res.json({ ok: true, status: getBotStatus() });
+});
+
+app.post('/api/admin/whatsapp-bot/refresh-groups', async (_req, res) => {
+  try {
+    await forceRefreshGroups();
+    res.json({ ok: true, status: getBotStatus() });
+  } catch (err: any) {
+    res.status(500).json({ ok: false, error: err?.message || err, status: getBotStatus() });
+  }
+});
+
+app.post('/api/admin/update-salespersons', async (req, res) => {
+  const updates = (req.body as any)?.updates;
+  if (!Array.isArray(updates) || updates.length === 0) {
+    return res.status(400).json({ ok: false, error: 'No updates provided' });
+  }
+  let localUpdated = 0;
+  if (pool) {
+    try {
+      for (const item of updates) {
+        if (!item.billNo || !item.salespersonName) continue;
+        const result = await pool.query(
+          `UPDATE bills SET salesperson_name = $1, updated_at = NOW() WHERE bill_no = $2 OR bill_no = $3`,
+          [item.salespersonName, item.billNo, item.billNo.replace(/^GST[-_]?/i, '')]
+        );
+        if (result.rowCount) localUpdated += result.rowCount;
+      }
+    } catch (e: any) {
+      console.warn('[Server] local db update-salespersons error:', e);
+    }
+  }
+  res.json({ ok: true, localUpdated, total: updates.length });
 });
 
 // ─── Bulk update bill dates (ported from Supabase Edge Function) ──────────────
@@ -1309,7 +1511,7 @@ async function setupViteOrStatic() {
     const vite = await createViteServer({
       server: {
         middlewareMode: true,
-        hmr: process.env.DISABLE_HMR === 'true' ? false : undefined,
+        hmr: false,
       },
       appType: 'spa',
     });
@@ -1324,9 +1526,56 @@ async function setupViteOrStatic() {
     }
   }
 
-  const PORT = 3000;
+async function seedMasterSalespersonContacts() {
+  try {
+    const { rows: existing } = await pool.query("SELECT id, name, mobile FROM contacts WHERE type = 'salesperson'");
+    const existingMap = new Map<string, { id: string; mobile: string }>();
+    for (const r of (existing as any[])) {
+      existingMap.set(String(r.name || '').trim().toLowerCase(), { id: String(r.id), mobile: String(r.mobile || '') });
+    }
+
+    const toUpsert: Array<{ id: string; type: string; name: string; mobile: string }> = [];
+    for (const m of MASTER_SALESPERSON_DIRECTORY) {
+      const k = m.name.trim().toLowerCase();
+      const ex = existingMap.get(k);
+      const stableId = `sp_${k.replace(/[^a-z0-9]/g, '_').substring(0, 44)}`;
+      if (!ex || ex.mobile !== m.mobile) {
+        toUpsert.push({
+          id: ex?.id || stableId,
+          type: 'salesperson',
+          name: m.name.trim(),
+          mobile: m.mobile,
+        });
+      }
+    }
+
+    if (toUpsert.length > 0) {
+      await pgUpsert('contacts', toUpsert, 'id', true);
+      console.log(`[seedMasterSalespersonContacts] Upserted ${toUpsert.length} master salesperson contacts into PostgreSQL.`);
+    }
+  } catch (err) {
+    console.warn('[seedMasterSalespersonContacts] Note:', err);
+  }
+}
+
+  let parsedPort = 3000;
+  const portArgIdx = process.argv.indexOf('--port');
+  if (portArgIdx !== -1 && process.argv[portArgIdx + 1]) {
+    const p = Number(process.argv[portArgIdx + 1]);
+    if (!isNaN(p) && p > 0) parsedPort = p;
+  } else if (process.env.APP_PORT) {
+    const p = Number(process.env.APP_PORT);
+    if (!isNaN(p) && p > 0) parsedPort = p;
+  } else if (process.env.PORT && process.env.PORT !== '8080') {
+    const p = Number(process.env.PORT);
+    if (!isNaN(p) && p > 0) parsedPort = p;
+  }
+  const PORT = parsedPort;
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`[API] Server running on http://0.0.0.0:${PORT}`);
+    seedMasterSalespersonContacts();
+    initBotOnBoot();
+    startWatchdog();
   });
 }
 

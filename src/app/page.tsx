@@ -27,6 +27,7 @@ import LineCutPopup from '@/components/LineCutPopup';
 import OverflowModal from '@/components/OverflowModal';
 import { getTodayISO, getTodayDMY, isoToDisplay, displayToIso, calculateDaysBetween } from '@/lib/dateUtils';
 import { openWhatsApp } from '@/lib/whatsapp';
+import { useStatementMatch, STATEMENT_MATCHED_AMOUNT_CLS } from '@/lib/statementMatch';
 
 // Line-cut amounts are sometimes entered as a quick sum, e.g. "100+128+335".
 // Keep this deliberately limited to numbers and plus signs; never evaluate input
@@ -67,6 +68,7 @@ function parseAmountExpression(value: string | number | undefined | null): numbe
 
 export default function Dashboard() {
   const { bills, drivers, banks, loading, refresh } = useBillStore();
+  const { isMatched } = useStatementMatch();
   
   const [selectedBillNo, setSelectedBillNo] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
@@ -87,6 +89,8 @@ export default function Dashboard() {
   const [paymentMode, setPaymentMode] = useState('');
   const [confirmInput, setConfirmInput] = useState('');
   const [delPendingDriver, setDelPendingDriver] = useState('');
+  const [billNote, setBillNote] = useState('');
+  const [noteSaving, setNoteSaving] = useState(false);
   
   const billInputRef = useRef<HTMLInputElement>(null);
   const cashInputRef = useRef<HTMLInputElement>(null);
@@ -708,8 +712,25 @@ export default function Dashboard() {
 
     let dbills: typeof bills = [];
     const snapshotBillNos = new Set<string>();
-    if (isOwner || isUserStaff) {
-      // OWNER and USER selections show the complete database position (UNCHANGED)
+    if (isOwner) {
+      // OWNER counts follow its receipt table, not the complete ledger.
+      dbills = bills.filter(b => {
+        if (!b.paymentDate || isoToDisplay(b.paymentDate) !== displayDate) return false;
+        const mode = (b.paymentMode || '').trim().toLowerCase();
+        if (mode === 'assigned') return false;
+        const pTime = (b.paymentTime || '').trim().toUpperCase();
+        const dName = (b.driverName || '').trim().toUpperCase();
+        const isMoc = (b.billNo || '').toUpperCase().startsWith('MOC') || b.collectionCode === 'MOC' || b.salespersonName === 'MOC';
+        if (!isMoc && b.deliveryDate === displayDate && dName && dName !== 'OWNER') return false;
+        if (drivers.some(d => d.role === 'user' && d.name?.trim().toUpperCase() !== 'OWNER' && (
+          pTime === d.name?.trim().toUpperCase() || pTime.startsWith(`${d.name?.trim().toUpperCase()}:`) || pTime.startsWith(`${d.name?.trim().toUpperCase()} `)
+        ))) return false;
+        const hasReceipt = (Number(b.collectedAmount) || 0) > 0 || (Number(b.cashAmount) || 0) > 0 || (Number(b.upiAmount) || 0) > 0 || (Number(b.chequeAmount) || 0) > 0;
+        if (!hasReceipt && !['paid', 'cash', 'upi', 'cheque', 'split', 'fbr', 'cancel', 'credit'].includes(mode)) return false;
+        return pTime === 'OWNER' || pTime.startsWith('OWNER:') || pTime.startsWith('OWNER ') || dName === 'OWNER' || ownerSavedBillNos.includes(b.billNo) || ownerSavedBillNos.includes(b.id);
+      });
+    } else if (isUserStaff) {
+      // Keep the existing USER database counts unchanged.
       dbills = bills;
     } else {
       // Regular drivers: bills assigned to driver on selected date OR in delPendingHistory snapshot
@@ -773,7 +794,7 @@ export default function Dashboard() {
 
     const pendingCount = Math.max(0, totalCount - doneCount);
     return { total: totalCount, paid: doneCount, pending: pendingCount, isStaff: isOwner || isUserStaff };
-  }, [selectedDriver, displayDate, bills, drivers]);
+  }, [selectedDriver, displayDate, bills, drivers, ownerSavedBillNos]);
 
   // ── Total Cash Count & Collection for Selected Date (Driver, User, Owner) ──
   // Deduplicates by billNo to ensure duplicate entries don't double count cash.
@@ -965,15 +986,12 @@ export default function Dashboard() {
         const isOtherStaff = drivers.some(d => d.role === 'user' && (d.name || '').trim().toUpperCase() !== 'OWNER' && (pTime === (d.name || '').trim().toUpperCase() || pTime.startsWith((d.name || '').trim().toUpperCase() + ':')));
         if (isOtherStaff) continue;
 
-        const isOwnerPaid = (pDate === displayDate || (isMoc && (b.date === displayDate || dDate === displayDate))) && (
+        const isOwnerPaid = Boolean(pDate) && isoToDisplay(pDate) === displayDate && (
           pTime === 'OWNER' ||
           pTime.startsWith('OWNER:') ||
           pTime.startsWith('OWNER ') ||
           dName === 'OWNER' ||
-          (Array.isArray(ownerSavedBillNos) && ownerSavedBillNos.includes(b.billNo)) ||
-          (isMoc && (!pTime || dName === 'OWNER')) ||
-          (!pTime && getRole() === 'owner') ||
-          /^\d{1,2}:\d{2}/.test(pTime)
+          (Array.isArray(ownerSavedBillNos) && (ownerSavedBillNos.includes(b.billNo) || ownerSavedBillNos.includes(b.id)))
         );
         if (isOwnerPaid) {
           const c = getEffCash(b);
@@ -1106,6 +1124,7 @@ export default function Dashboard() {
       setChqDateDD('');
       setConfirmInput('');
       setLcInputVal('');
+      setBillNote('');
       setTimeout(() => cashInputRef.current?.focus(), 120);
       window.scrollTo({ top: 0, behavior: 'smooth' });
       return;
@@ -1169,6 +1188,7 @@ export default function Dashboard() {
 
     setConfirmInput('');
     setLcInputVal(bill.lineCutAmt != null && bill.lineCutAmt > 0 ? String(bill.lineCutAmt) : '');
+    setBillNote(bill.discrepancyReason || '');
     if (bill.paymentDate && bill.paymentDate.trim() !== '' && bill.paymentDate !== '—') {
       const savedIso = displayToIso(bill.paymentDate);
       const savedDisp = isoToDisplay(savedIso) || bill.paymentDate;
@@ -1844,6 +1864,7 @@ export default function Dashboard() {
       0,
       (Number(selectedBill.billNetAmt) || 0) - effectiveLineCut - totalCollected,
     );
+    const effectiveNote = (discrepancyReason !== undefined && discrepancyReason !== null) ? discrepancyReason : (billNote.trim() || null);
 
     const ok = await savePayment(
       selectedBillNo, 'Credit', null, totalCollected,
@@ -1854,7 +1875,7 @@ export default function Dashboard() {
       recDateOverride || null,
       selectedDriver,
       chequeDate || null,
-      discrepancyReason || null
+      effectiveNote || null
     );
     if (!ok) {
       setSaving(false);
@@ -1880,7 +1901,7 @@ export default function Dashboard() {
         chequeDate:        chequeDate || '',
         paymentDate:       finalPayDate,
         paymentTime:       finalPayTime,
-        discrepancyReason: discrepancyReason || undefined,
+        discrepancyReason: effectiveNote || undefined,
       }, selectedBillNo);
       patchBillInMemory(selectedBillNo, {
         outstandingAmount: outstandingAmt,
@@ -2047,6 +2068,8 @@ export default function Dashboard() {
       ? 'OWNER'
       : (selectedDriver || getLoggedInName() || (getRole() === 'owner' ? 'OWNER' : (isDiffRecDate ? 'PRATIXA' : 'OWNER')));
 
+    const effectiveNote = (discrepancyReason !== undefined && discrepancyReason !== null) ? discrepancyReason : (billNote.trim() || null);
+
     const ok = await savePayment(
       selectedBill?.billNo || selectedBillNo, finalMode, null, totalCollected,
       confirmInput || null, effectiveDriver, dashDate,
@@ -2056,7 +2079,7 @@ export default function Dashboard() {
       effectiveRecDate,
       effectivePaymentTime,   // enteredBy: who made this entry
       effectiveChequeDate || null,  // chequeDate — saved immediately
-      discrepancyReason || null,
+      effectiveNote || null,
       selectedBill?.id || null,     // exact billId
     );
     if (!ok) {
@@ -2129,6 +2152,29 @@ export default function Dashboard() {
     setTimeout(() => { setShowPaidPopup(false); billInputRef.current?.focus(); }, 2000);
     handleReset();
     refresh();
+  }
+
+  // ── Save Note Only: update note (discrepancyReason) directly in Supabase ─────
+  async function handleSaveNoteOnly() {
+    if (!selectedBillNo) return;
+    setNoteSaving(true);
+    const noteVal = billNote.trim();
+    patchBillInMemory(selectedBillNo, { discrepancyReason: noteVal || undefined });
+    const ok = await patchBillDirect(selectedBillNo, { discrepancyReason: noteVal || null } as any);
+    setNoteSaving(false);
+    if (ok) {
+      toast({
+        title: 'Note Saved',
+        description: noteVal ? `Note: "${noteVal}" Supabase me save ho gaya.` : 'Note clear kar diya gaya.',
+      });
+      refresh();
+    } else {
+      toast({
+        title: 'Save Failed',
+        description: 'Note save nahi ho paya, dobara try karein.',
+        variant: 'destructive',
+      });
+    }
   }
 
   // ── Overflow: open modal with first bill pending (nothing saved yet) ──────────
@@ -2523,6 +2569,7 @@ export default function Dashboard() {
     setPaymentMode('');
     setConfirmInput('');
     setDelPendingDriver('');
+    setBillNote('');
     setEditLocked(true);
     setRecDateInput(dashDate);
     setRecDateOverride(isoToDisplay(dashDate));
@@ -3413,7 +3460,10 @@ export default function Dashboard() {
                           <span className={cn("text-[14px] font-black shrink-0", isHighlighted ? "text-primary-foreground" : "text-primary")}>
                             BILL: ₹{(b?.billNetAmt||0).toLocaleString('en-IN')}
                           </span>
-                          <span className={cn("text-[14px] font-black shrink-0", isHighlighted ? "text-emerald-200" : "text-emerald-700 dark:text-emerald-400")}>
+                          <span className={cn(
+                            "text-[14px] font-black shrink-0",
+                            isHighlighted ? "text-emerald-200" : isMatched(b) ? STATEMENT_MATCHED_AMOUNT_CLS : "text-emerald-700 dark:text-emerald-400"
+                          )}>
                             REC: ₹{_ddColl.toLocaleString('en-IN')}
                           </span>
                           {_ddLineCut > 0 && (
@@ -3432,6 +3482,16 @@ export default function Dashboard() {
                                 : "bg-muted text-muted-foreground border-border"
                             )}>
                               💳 {modeDisplay}
+                            </span>
+                          )}
+                          {b?.discrepancyReason && (
+                            <span className={cn(
+                              "text-[12px] font-bold px-1.5 py-0.5 rounded-md border shrink-0 truncate max-w-[180px] sm:max-w-[260px]",
+                              isHighlighted
+                                ? "bg-white/20 text-white border-white/30"
+                                : "bg-amber-100 text-amber-950 border-amber-300 dark:bg-amber-950/70 dark:text-amber-200"
+                            )} title={b.discrepancyReason}>
+                              📝 {b.discrepancyReason}
                             </span>
                           )}
                         </div>
@@ -3469,7 +3529,17 @@ export default function Dashboard() {
             </div>
             {/* Multi Bill Entry Button */}
             <button
-              onClick={() => setShowMultiBillModal(true)}
+              onClick={() => {
+                if (!selectedDriver) {
+                  toast({
+                    title: 'Driver Select Karein',
+                    description: 'Multi bill entry ke liye pehle driver select karein.',
+                    variant: 'destructive',
+                  });
+                  return;
+                }
+                setShowMultiBillModal(true);
+              }}
               title="Multi Bill Entry"
               className="shrink-0 h-9 px-2.5 flex items-center gap-1 bg-primary/10 hover:bg-primary/20 text-primary rounded-xl border border-primary/20 transition-colors shadow-sm"
             >
@@ -3654,6 +3724,16 @@ export default function Dashboard() {
                     <span className={cn("text-[16px] sm:text-[17px] font-black text-emerald-700 leading-none", isDriverMode && "text-[13px] sm:text-[14px]")}>₹{collected2.toLocaleString('en-IN')}</span>
                   </div>
                 </div>
+
+                {/* ── Bill Note Banner (if present) ── */}
+                {(selectedBill.discrepancyReason || billNote) && (
+                  <div className="flex items-center gap-2 bg-amber-50 dark:bg-amber-950/40 border border-amber-300/80 dark:border-amber-700/60 text-amber-900 dark:text-amber-200 px-3 py-1.5 rounded-xl shadow-xs text-xs font-bold mt-1.5">
+                    <span className="text-[10px] font-black uppercase text-amber-800 dark:text-amber-400 flex items-center gap-1 shrink-0">
+                      📝 NOTE:
+                    </span>
+                    <span className="truncate flex-1 font-semibold">{billNote || selectedBill.discrepancyReason}</span>
+                  </div>
+                )}
               </div>
 
               {/* ── Entry Form ── */}
@@ -3966,6 +4046,43 @@ export default function Dashboard() {
                   ))}
                 </div>
                 )}
+
+                {/* ── Bill Note Input (Optional Text) ── */}
+                <div className="flex items-center gap-1.5 w-full">
+                  <div className="relative flex-1">
+                    <div className="absolute inset-y-0 left-0 pl-2.5 flex items-center pointer-events-none text-amber-600 dark:text-amber-400">
+                      <span className="text-xs">📝</span>
+                    </div>
+                    <input
+                      type="text"
+                      placeholder="NOTE (OPTIONAL) - e.g. Dukan band thi, kal aana, balance baad me..."
+                      value={billNote}
+                      onChange={e => setBillNote(e.target.value)}
+                      onKeyDown={e => {
+                        if (e.key === 'Enter') {
+                          e.preventDefault();
+                          saveBtnRef.current?.focus();
+                        }
+                      }}
+                      className={cn(
+                        "w-full pl-8 pr-2 bg-amber-50/40 dark:bg-amber-950/20 border border-amber-300/70 dark:border-amber-700/60 rounded-xl font-bold text-foreground placeholder:text-muted-foreground/60 outline-none focus:ring-2 focus:ring-amber-500/30",
+                        isDriverMode ? "h-8.5 text-[11px]" : "h-10 text-[12px]"
+                      )}
+                    />
+                  </div>
+                  {billNote.trim() !== (selectedBill?.discrepancyReason || '').trim() && (
+                    <button
+                      type="button"
+                      disabled={noteSaving}
+                      onClick={handleSaveNoteOnly}
+                      title="Save Note directly to Supabase"
+                      className="shrink-0 h-10 px-3 bg-amber-600 hover:bg-amber-700 active:scale-95 text-white rounded-xl text-[10px] font-black uppercase flex items-center gap-1 shadow-sm transition-all cursor-pointer"
+                    >
+                      {noteSaving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Check className="w-3.5 h-3.5 stroke-[3]" />}
+                      <span>Save Note</span>
+                    </button>
+                  )}
+                </div>
 
                 <div className="flex gap-2">
                   {!isDriverMode && (

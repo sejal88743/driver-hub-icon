@@ -2,6 +2,7 @@
 import { useState, useRef, useEffect, useMemo } from 'react';
 import { AdminAiAgent } from '@/components/AdminAiAgent';
 import { WhatsAppLiveBot } from '@/components/WhatsAppLiveBot';
+import SalespersonUpdateCard from '@/components/SalespersonUpdateCard';
 import GreenPartyManagerModal from '@/components/GreenPartyManagerModal';
 import { getGreenParties } from '@/lib/greenParties';
 import { FileSpreadsheet, Loader2, Trash2, Plus, Lock, MessageSquare, ShieldCheck, Download, AlertCircle, CheckCircle2, X, Archive, UploadCloud, Type, Smartphone, Phone, Pencil, RotateCcw } from 'lucide-react';
@@ -2613,6 +2614,9 @@ export default function SettingsPage() {
         {/* WhatsApp AI Payment Bot (Live Linked Device) */}
         <WhatsAppLiveBot />
 
+        {/* Salesperson Name Update (Bill No Wise via Sales Register) */}
+        <SalespersonUpdateCard />
+
         {/* Bills Report Update */}
         <div id="bills-report-update" className="bg-card rounded-xl p-3 border border-amber-200 shadow-sm">
           <div className="flex items-center justify-between mb-1">
@@ -2620,17 +2624,17 @@ export default function SettingsPage() {
             <span className="text-[8px] font-black bg-amber-100 text-amber-700 px-2 py-0.5 rounded-full uppercase tracking-wider">Bill Wise Sync</span>
           </div>
           <p className="text-[8px] font-bold text-muted-foreground uppercase mb-1 leading-tight">
-            Sales Register file (Excel/XLS). Columns: <span className="text-amber-700">BillRefNo · BillDate · Party Name · Party Code · Beat Name · BillValue · CashDisc · Adjustments</span>
+            Sales Register file (Excel/XLS/CSV). Columns: <span className="text-amber-700">BillRefNo · BillDate · Party Name · Party Code · Beat Name · BillValue · CashDisc · Adjustments</span>
           </p>
           <p className="text-[8px] font-bold text-muted-foreground uppercase mb-2 leading-tight">
             Bill No wise Bill Date, Party Name, Party Code, Beat Name, Bill Value, CashDisc (sr_no) aur Adjustments (collection_code) Supabase me Add/Update hoga. Duplicate Bill No me (-) negative value <span className="text-red-600 font-black">Line Cut Amt</span> me aur (+) positive value <span className="text-emerald-600 font-black">Bill Net Amt</span> me update hogi.
           </p>
           <div onClick={() => billsReportFileRef.current?.click()} className="border-2 border-dashed rounded-xl p-3 flex items-center gap-3 cursor-pointer hover:bg-amber-50 transition-all border-amber-300">
             {billsReportResult?.status === 'loading' ? <Loader2 className="w-5 h-5 animate-spin text-amber-600 shrink-0" /> : <FileSpreadsheet className="w-5 h-5 text-amber-600 shrink-0" />}
-            <p className="text-[10px] font-black uppercase tracking-widest text-amber-700">{billsReportResult?.status === 'loading' ? 'Processing...' : 'Upload Bills Report XLS'}</p>
+            <p className="text-[10px] font-black uppercase tracking-widest text-amber-700">{billsReportResult?.status === 'loading' ? 'Processing...' : 'Upload Bills Report XLS / CSV'}</p>
           </div>
           {billsReportResult && billsReportResult.status !== 'loading' && <ResultBox result={billsReportResult} onClear={() => setBillsReportResult(null)} />}
-          <input ref={billsReportFileRef} type="file" accept=".xlsx,.xls" onChange={handleBillsReportFile} className="hidden" />
+          <input ref={billsReportFileRef} type="file" accept=".xlsx,.xls,.csv,text/csv" onChange={handleBillsReportFile} className="hidden" />
         </div>
 
         {/* LEVEREDGE COLLECTION */}
@@ -2897,7 +2901,8 @@ export default function SettingsPage() {
                               const res = await mergeTwoSalespersons(spMergeFrom, spMergeTo);
                               if (res.ok) {
                                 setSpMergeStatus('done');
-                                setSpMergeMsg(`✓ ${res.billsUpdated} bills "${spMergeFrom}" → "${spMergeTo}" merge ho gaye.`);
+                                const mobInfo = res.targetMobile ? ` (Mobile: ${res.targetMobile})` : '';
+                                setSpMergeMsg(`✓ ${res.billsUpdated} bills merge ho gaye aur number${mobInfo} new name "${spMergeTo}" me update ho gaya.`);
                                 setSpMergeFrom('');
                                 setSpMergeTo('');
                               } else {
@@ -3375,7 +3380,8 @@ export default function SettingsPage() {
                               const res = await mergeTwoSalespersons(spMergeFrom, spMergeTo);
                               if (res.ok) {
                                 setSpMergeStatus('done');
-                                setPurgeMsg(`✓ ${res.billsUpdated} bills "${spMergeFrom}" → "${spMergeTo}" me merge ho gaye.`);
+                                const mobInfo = res.targetMobile ? ` (Mobile: ${res.targetMobile})` : '';
+                                setPurgeMsg(`✓ ${res.billsUpdated} bills merge ho gaye aur number${mobInfo} new name "${spMergeTo}" me update ho gaya.`);
                                 setSpMergeFrom('');
                                 setSpMergeTo('');
                                 setTimeout(() => setPurgeMsg(''), 8000);

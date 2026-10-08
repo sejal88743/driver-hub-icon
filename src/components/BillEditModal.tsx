@@ -33,6 +33,7 @@ export default function BillEditModal({ bill, banks, onClose, onSaved }: Props) 
   const [payMode,   setPayMode]   = useState(''); // FBR | Credit | Del Pending | Unpaid | ''
   const [lcInput,   setLcInput]   = useState(lc0 > 0 ? String(lc0) : '');
   const [recDateInput, setRecDateInput] = useState(() => bill.paymentDate ? displayToIso(bill.paymentDate) : getTodayISO());
+  const [noteText,  setNoteText]  = useState(bill.discrepancyReason || '');
   const [saving,    setSaving]    = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [done,      setDone]      = useState(false);
@@ -107,7 +108,7 @@ export default function BillEditModal({ bill, banks, onClose, onSaved }: Props) 
       chosenRecDate || null,
       getLoggedInName(),
       chq > 0 ? (bill.chequeDate || null) : null,
-      null,
+      noteText.trim() || null,
       bill.id || null,
     );
 
@@ -299,6 +300,18 @@ export default function BillEditModal({ bill, banks, onClose, onSaved }: Props) 
                 DIFF: ₹{diff.toLocaleString('en-IN')}
               </span>
             )}
+          </div>
+
+          {/* Note / Remark (Optional) */}
+          <div className="flex items-center gap-2 bg-amber-50/50 dark:bg-amber-950/20 p-2 rounded-xl border border-amber-200/60 dark:border-amber-800/40">
+            <label className="text-[9px] font-black text-amber-800 dark:text-amber-300 uppercase shrink-0">📝 Note</label>
+            <input
+              type="text"
+              placeholder="Add note / remark (optional)..."
+              value={noteText}
+              onChange={e => setNoteText(e.target.value)}
+              className="flex-1 h-8 px-2 bg-white dark:bg-card rounded-lg text-[11px] font-medium outline-none border border-amber-300/60 text-foreground placeholder:text-muted-foreground/60"
+            />
           </div>
 
           {/* Mode buttons */}

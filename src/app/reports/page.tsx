@@ -14,6 +14,8 @@ import { cleanPartyName, cleanSalespersonName, buildCanonicalMap } from '@/lib/n
 import { isGreenParty } from '@/lib/greenParties';
 import { getCommissionMocs, CommissionMoc, isMocBill as checkIsMocBill, extractMocNumber, getDisplayBillNo, isBillMatchingMocCode } from '@/lib/commissionMoc';
 import { safeReadWorkbook } from '@/lib/xlsxHelper';
+import { buildStatementWorksheet } from '@/lib/statementReport';
+import { isBillStatementMatched, STATEMENT_MATCHED_AMOUNT_CLS } from '@/lib/statementMatch';
 
 type SortConfig = {
   key: keyof Bill | 'diff';
@@ -684,6 +686,8 @@ export default function ReportsPage() {
         ]);
         wsBeat['!cols'] = [6, 26, 20, 14, 16, 30, 16, 16].map(w => ({ wch: w }));
         XLSX.utils.book_append_sheet(wb, wsBeat, 'Beat Report');
+        const wsStatement = buildStatementWorksheet(XLSX, expandedBills);
+        XLSX.utils.book_append_sheet(wb, wsStatement, 'Statement');
         const _now = new Date();
         const _dd = String(_now.getDate()).padStart(2, '0');
         const _mm = String(_now.getMonth() + 1).padStart(2, '0');
@@ -731,12 +735,40 @@ export default function ReportsPage() {
 
       XLSX.utils.book_append_sheet(wb, ws2, 'Report');
 
+      // Sheet 3: Dedicated Bank Statement Sheet with merged cells for multi-bill transactions and single individual amounts
+      const wsStatement = buildStatementWorksheet(XLSX, expandedBills);
+      XLSX.utils.book_append_sheet(wb, wsStatement, 'Statement');
+
       const _now = new Date();
       const _dd = String(_now.getDate()).padStart(2, '0');
       const _mm = String(_now.getMonth() + 1).padStart(2, '0');
       const _yyyy = _now.getFullYear();
       XLSX.writeFile(wb, `VitraTrack_${_dd}-${_mm}-${_yyyy}.xlsx`);
     } catch (err) { console.error(err); alert('XLS Download Failed.'); }
+  }
+
+  async function exportStatementXLS() {
+    if (!expandedBills || expandedBills.length === 0) {
+      alert('Pehle koi filter ya date chunein jiska Bank Statement download karna hai.');
+      return;
+    }
+    try {
+      const XLSX = await import('xlsx');
+      const wb = XLSX.utils.book_new();
+
+      // Primary Sheet: Statement with merged cells and individual single amounts
+      const wsStatement = buildStatementWorksheet(XLSX, expandedBills);
+      XLSX.utils.book_append_sheet(wb, wsStatement, 'Statement');
+
+      const _now = new Date();
+      const _dd = String(_now.getDate()).padStart(2, '0');
+      const _mm = String(_now.getMonth() + 1).padStart(2, '0');
+      const _yyyy = _now.getFullYear();
+      XLSX.writeFile(wb, `VitraTrack_Statement_${_dd}-${_mm}-${_yyyy}.xlsx`);
+    } catch (err) {
+      console.error(err);
+      alert('Statement XLS Download Failed.');
+    }
   }
 
   function exportToHUL() {
@@ -1790,6 +1822,7 @@ export default function ReportsPage() {
           <div className="flex gap-1 flex-wrap justify-end">
             <Button size="sm" onClick={exportToHUL} className="h-8 px-3 bg-blue-700 text-white font-black text-[10px] rounded-lg border-0 shadow-sm"><SheetIcon className="w-3.5 h-3.5 mr-1" /> HUL XLS</Button>
             <Button size="sm" onClick={exportToXLS} className="h-8 px-3 bg-emerald-600 text-white font-black text-[10px] rounded-lg border-0 shadow-sm"><SheetIcon className="w-3.5 h-3.5 mr-1" /> XLS</Button>
+            <Button size="sm" onClick={exportStatementXLS} className="h-8 px-3 bg-teal-600 hover:bg-teal-700 text-white font-black text-[10px] rounded-lg border-0 shadow-sm"><SheetIcon className="w-3.5 h-3.5 mr-1" /> Statement XLS</Button>
             <Button size="sm" onClick={exportToPDF} className="h-8 px-3 bg-rose-500 text-white font-black text-[10px] rounded-lg border-0 shadow-sm"><FileText className="w-3.5 h-3.5 mr-1" /> PDF</Button>
           </div>
         </div>
@@ -2329,9 +2362,21 @@ export default function ReportsPage() {
                         <TableCell className="text-[12px] px-1 py-0.5 h-auto text-right truncate">₹{b.billNetAmt.toLocaleString('en-IN')}</TableCell>
                         <TableCell className={cn("text-[12px] px-1 py-0.5 h-auto truncate font-black", isAsgnd ? "text-red-600" : "text-orange-600")}>{collected > 0 && b.paymentDate ? b.paymentDate : '-'}</TableCell>
                         <TableCell className="text-[12px] px-1 py-0.5 h-auto truncate text-center text-indigo-600 font-black">{b.deliveryDate || '-'}</TableCell>
-                        <TableCell className={cn("text-[12px] px-1 py-0.5 h-auto text-right", isAsgnd ? "text-red-600" : "text-emerald-600", isMatchedRow && cash > 0 && "bg-pink-100 dark:bg-pink-950/80 text-pink-950 dark:text-pink-100 border border-pink-300 dark:border-pink-700 rounded-sm font-extrabold")}>{isCredit ? '—' : `₹${cash.toLocaleString('en-IN')}`}</TableCell>
-                        <TableCell className={cn("text-[12px] px-1 py-0.5 h-auto text-right", isAsgnd ? "text-red-600" : "text-blue-600", isMatchedRow && gpay > 0 && "bg-pink-100 dark:bg-pink-950/80 text-pink-950 dark:text-pink-100 border border-pink-300 dark:border-pink-700 rounded-sm font-extrabold")}>{isCredit ? '—' : `₹${gpay.toLocaleString('en-IN')}`}</TableCell>
-                        <TableCell className={cn("text-[12px] px-1 py-0.5 h-auto text-right", isAsgnd ? "text-red-600" : "text-violet-600", isMatchedRow && chq > 0 && "bg-pink-100 dark:bg-pink-950/80 text-pink-950 dark:text-pink-100 border border-pink-300 dark:border-pink-700 rounded-sm font-extrabold")}>{isCredit ? '—' : `₹${chq.toLocaleString('en-IN')}`}</TableCell>
+                        <TableCell className={cn("text-[12px] px-1 py-0.5 h-auto text-right", isAsgnd ? "text-red-600" : "text-emerald-600")}>{isCredit ? '—' : `₹${cash.toLocaleString('en-IN')}`}</TableCell>
+                        <TableCell className={cn("text-[12px] px-1 py-0.5 h-auto text-right", isAsgnd ? "text-red-600" : "text-blue-600")}>
+                          {isCredit ? '—' : (
+                            <span className={cn(isBillStatementMatched(b) && gpay > 0 && STATEMENT_MATCHED_AMOUNT_CLS)}>
+                              ₹{gpay.toLocaleString('en-IN')}
+                            </span>
+                          )}
+                        </TableCell>
+                        <TableCell className={cn("text-[12px] px-1 py-0.5 h-auto text-right", isAsgnd ? "text-red-600" : "text-violet-600")}>
+                          {isCredit ? '—' : (
+                            <span className={cn(isBillStatementMatched(b) && chq > 0 && STATEMENT_MATCHED_AMOUNT_CLS)}>
+                              ₹{chq.toLocaleString('en-IN')}
+                            </span>
+                          )}
+                        </TableCell>
                         <TableCell className={cn("text-[12px] px-1 py-0.5 h-auto text-right", isAsgnd ? "text-red-600" : "text-amber-600")}>₹{lineCutAmt.toLocaleString('en-IN')}</TableCell>
                         <TableCell className={cn("text-[12px] px-1 py-0.5 h-auto text-right truncate font-black",
                           isCredit ? "text-green-700" :
