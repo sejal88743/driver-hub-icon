@@ -780,10 +780,12 @@ export function matchStatementWithBills(
 
   // PASS 1.5: Same party + same rec date ke multiple bills ka TOTAL se match
   // Ex: SURAT WHOL ke GST45384 + GST45385 ka rec total = statement entry 194707
+  // Party name normalize: space/punctuation/case difference ignore hoga
+  const normParty = (s: string) => (s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
   const singleGroupsAll = allGroups.filter(g => g.items.length === 1 && !g.matched);
   const partyDateMap = new Map<string, BankGroup[]>();
   for (const g of singleGroupsAll) {
-    const pKey = `${(g.partyName || '').trim().toLowerCase()}|${g.recDate}`;
+    const pKey = `${normParty(g.partyName || '')}|${g.recDate}`;
     const arr = partyDateMap.get(pKey);
     if (arr) arr.push(g); else partyDateMap.set(pKey, [g]);
   }
