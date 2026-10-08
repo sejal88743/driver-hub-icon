@@ -12,7 +12,6 @@ export type StatementEntry = {
   rawDate: string;
   description: string;
   creditAmount: number;
-  chequeNo?: string; // statement ka "cheq no" column (blank ho to GPay/UPI treat hoga)
   matched: boolean;
   matchedBillNos: string[];
   matchedBillIds: string[];
@@ -158,7 +157,7 @@ export async function hydrateStatementMatchFromRemote(): Promise<boolean> {
           _matchedBillNos = new Set((idbData.matchedNos || []).map((s: string) => stripGST(s)));
           _cachedEntries = idbData.entries;
           _cachedStats = idbData.stats || null;
-          saveToLocalStorage(_matchedBillIds, _matchedBillNos, _cachedEntries!, _cachedStats);
+          saveToLocalStorage(_matchedBillIds, _matchedBillNos, _cachedEntries, _cachedStats);
           updated = true;
           window.dispatchEvent(new CustomEvent('vt-statement-match-updated'));
         }
@@ -182,7 +181,7 @@ export async function hydrateStatementMatchFromRemote(): Promise<boolean> {
             _cachedEntries = parsed.entries;
             _cachedStats = parsed.stats || null;
 
-            saveToLocalStorage(_matchedBillIds, _matchedBillNos, _cachedEntries!, _cachedStats);
+            saveToLocalStorage(_matchedBillIds, _matchedBillNos, _cachedEntries, _cachedStats);
             idbSetMany({
               [IDB_STATEMENT_MATCH_KEY]: parsed,
             }).catch(() => {});
@@ -469,7 +468,6 @@ export async function parseStatementFile(file: File): Promise<StatementEntry[]> 
   let dateCol = -1;
   let descCol = -1;
   let creditCol = -1;
-  let chqCol = -1;
 
   for (let r = 0; r < Math.min(25, rawRows.length); r++) {
     const row = rawRows[r].map(c => String(c || '').trim().toLowerCase());
@@ -488,9 +486,6 @@ export async function parseStatementFile(file: File): Promise<StatementEntry[]> 
         c.includes('description') || c.includes('narration') || c.includes('particular') || c.includes('remarks')
       );
       if (descCol === -1) descCol = 1;
-      chqCol = row.findIndex(c =>
-        c.includes('cheq') || c.includes('chq') || c.includes('cheque') || c.includes('instrument')
-      );
       break;
     }
   }
@@ -526,7 +521,6 @@ export async function parseStatementFile(file: File): Promise<StatementEntry[]> 
     const rawDateStr = String(row[dateCol] || '').trim();
     const rawDesc = String(row[descCol] || '').trim();
     const rawCredit = String(row[creditCol] || '').trim();
-    const rawChqNo = chqCol !== -1 ? String(row[chqCol] || '').trim() : '';
 
     if (!rawDateStr || !rawCredit) continue;
 
@@ -539,16 +533,12 @@ export async function parseStatementFile(file: File): Promise<StatementEntry[]> 
     const dmy = normDate(rawDateStr);
     if (!dmy || !dmy.includes('/')) continue;
 
-    // Cheque no: sirf digits rakho (blank ho to GPay/UPI entry maano)
-    const chqDigits = rawChqNo.replace(/\D/g, '');
-
     entries.push({
       id: `stmt_${seq++}_${dmy.replace(/\//g, '')}_${Math.round(numAmt)}`,
       date: dmy,
       rawDate: rawDateStr,
       description: rawDesc,
       creditAmount: Math.round(numAmt * 100) / 100,
-      chequeNo: chqDigits || undefined,
       matched: false,
       matchedBillNos: [],
       matchedBillIds: [],
@@ -718,41 +708,12 @@ export function matchStatementWithBills(
     matchedBillIds: [] as string[],
   }));
 
-  // PASS 0: Cheque-No matching — statement me "cheq no" ho to pehle CHEQUE bills se match karo
-  // (cheque deposit date rec date se alag ho sakti hai, isliye cheque no + amount se match)
-  const chequeGroups = allGroups.filter(g => g.mode === 'CHEQUE' && g.chequeNo);
-
-  for (const entry of entriesCopy) {
-    totalStmtAmt += entry.creditAmount;
-    if (!entry.chequeNo) continue;
-
-    for (const grp of chequeGroups) {
-      if (grp.matched) continue;
-      if (grp.chequeNo.replace(/\D/g, '') !== entry.chequeNo) continue;
-      if (Math.abs(grp.totalAmount - entry.creditAmount) >= 0.05) continue;
-
-      grp.matched = true;
-      entry.matched = true;
-      entry.matchType = grp.items.length > 1 ? 'multi' : 'single';
-      entry.matchGroupKey = grp.groupKey;
-      for (const item of grp.items) {
-        if (item.bill.id) matchedBillIds.add(item.bill.id);
-        matchedBillNos.add(stripGST(item.billNo));
-        entry.matchedBillNos.push(item.billNo);
-        if (item.bill.id) entry.matchedBillIds.push(item.bill.id);
-      }
-      matchedStmtCount++;
-      matchedStmtAmt += entry.creditAmount;
-      break;
-    }
-  }
-
   // PASS 1: Multi-bill groups matching (by exact amount + date)
   // Multi-bill groups take precedence so combined sums match their statement deposit!
   const multiGroups = allGroups.filter(g => g.items.length > 1);
 
   for (const entry of entriesCopy) {
-    if (entry.matched) continue;
+    totalStmtAmt += entry.creditAmount;
 
     // Try matching multi-bill group
     for (const grp of multiGroups) {
@@ -778,86 +739,11 @@ export function matchStatementWithBills(
     }
   }
 
-  // PASS 1.5: Same party + same rec date ke multiple bills ka TOTAL se match
-  // Ex: SURAT WHOL ke GST45384 + GST45385 ka rec total = statement entry 194707
-  // Party name normalize: space/punctuation/case difference ignore hoga
-  const normParty = (s: string) => (s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
-  const singleGroupsAll = allGroups.filter(g => g.items.length === 1 && !g.matched);
-  const partyDateMap = new Map<string, BankGroup[]>();
-  for (const g of singleGroupsAll) {
-    const pKey = `${normParty(g.partyName || '')}|${g.recDate}`;
-    const arr = partyDateMap.get(pKey);
-    if (arr) arr.push(g); else partyDateMap.set(pKey, [g]);
-  }
-
-  // Subset-sum: chhote groups (2..12 bills) me exact total dhundo (paise me integer math)
-  function findSubset(grps: BankGroup[], targetPaise: number): BankGroup[] | null {
-    const cands = grps
-      .map(g => ({ g, p: Math.round(g.totalAmount * 100) }))
-      .filter(c => c.p > 0 && c.p <= targetPaise)
-      .sort((a, b) => b.p - a.p)
-      .slice(0, 12);
-    if (cands.length < 2) return null;
-
-    const suffix = new Array<number>(cands.length + 1).fill(0);
-    for (let i = cands.length - 1; i >= 0; i--) suffix[i] = suffix[i + 1] + cands[i].p;
-
-    const picked: BankGroup[] = [];
-    function dfs(i: number, remaining: number): boolean {
-      if (remaining === 0) return picked.length >= 2;
-      if (i >= cands.length || remaining < 0) return false;
-      if (suffix[i] < remaining) return false;
-      // include
-      picked.push(cands[i].g);
-      if (dfs(i + 1, remaining - cands[i].p)) return true;
-      picked.pop();
-      // exclude
-      return dfs(i + 1, remaining);
-    }
-    return dfs(0, targetPaise) ? [...picked] : null;
-  }
-
-  for (const entry of entriesCopy) {
-    if (entry.matched) continue;
-    if (entry.chequeNo) continue; // cheque entries sirf cheque-no pass me
-
-    const targetPaise = Math.round(entry.creditAmount * 100);
-
-    for (const [pKey, grps] of partyDateMap) {
-      if (!pKey.endsWith(`|${entry.date}`)) continue;
-      const avail = grps.filter(g => !g.matched);
-      if (avail.length < 2) continue;
-
-      const subset = findSubset(avail, targetPaise);
-      if (!subset) continue;
-
-      entry.matched = true;
-      entry.matchType = 'multi';
-      entry.matchGroupKey = `PARTY_SUM_${pKey}`;
-      for (const g of subset) {
-        g.matched = true;
-        const item = g.items[0];
-        if (item.bill.id) matchedBillIds.add(item.bill.id);
-        matchedBillNos.add(stripGST(item.billNo));
-        entry.matchedBillNos.push(item.billNo);
-        if (item.bill.id) entry.matchedBillIds.push(item.bill.id);
-      }
-      matchedStmtCount++;
-      matchedStmtAmt += entry.creditAmount;
-      break;
-    }
-  }
-
   // PASS 2: Single-bill groups matching (by exact amount + date)
   const singleGroups = allGroups.filter(g => g.items.length === 1);
 
   for (const entry of entriesCopy) {
     if (entry.matched) {
-      updatedEntries.push(entry);
-      continue;
-    }
-    // Cheque-no wali entries GPay singles se match nahi hongi
-    if (entry.chequeNo) {
       updatedEntries.push(entry);
       continue;
     }
