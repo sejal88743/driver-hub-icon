@@ -12,6 +12,7 @@ export type StatementEntry = {
   rawDate: string;
   description: string;
   creditAmount: number;
+  chequeNo?: string;
   matched: boolean;
   matchedBillNos: string[];
   matchedBillIds: string[];
@@ -468,6 +469,7 @@ export async function parseStatementFile(file: File): Promise<StatementEntry[]> 
   let dateCol = -1;
   let descCol = -1;
   let creditCol = -1;
+  let chqCol = -1;
 
   for (let r = 0; r < Math.min(25, rawRows.length); r++) {
     const row = rawRows[r].map(c => String(c || '').trim().toLowerCase());
@@ -486,6 +488,9 @@ export async function parseStatementFile(file: File): Promise<StatementEntry[]> 
         c.includes('description') || c.includes('narration') || c.includes('particular') || c.includes('remarks')
       );
       if (descCol === -1) descCol = 1;
+      chqCol = row.findIndex(c =>
+        c.includes('cheq') || c.includes('chq') || c.includes('cheque') || c.includes('inst no') || c.includes('instrument')
+      );
       break;
     }
   }
