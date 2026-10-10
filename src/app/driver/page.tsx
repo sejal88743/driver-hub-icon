@@ -313,12 +313,17 @@ export default function DriverPage() {
               const parsedAmt = parseFloat(String(amtCell.v).replace(/,/g, ''));
               if (!isNaN(parsedAmt)) netAmtVal = parsedAmt;
             }
+            let lineCutVal = 0;
+            if (lcCell?.v != null) {
+              const parsedLc = parseFloat(String(lcCell.v).replace(/,/g, ''));
+              if (!isNaN(parsedLc)) lineCutVal = Math.abs(parsedLc);
+            }
 
             const parsedRawDate = dtCell?.v != null ? excelSerialToDate(dtCell.v) : '';
             const tripDate = parsedRawDate ? toDDMMYYYY(parsedRawDate) : todayFmt;
             if (parsedRawDate) dateCounts.set(tripDate, (dateCounts.get(tripDate) || 0) + 1);
 
-            const patch: { deliveryDate?: string; driverName?: string; paymentMode?: string; partyName?: string; billNetAmt?: number } = {};
+            const patch: { deliveryDate?: string; driverName?: string; paymentMode?: string; partyName?: string; billNetAmt?: number; lineCutAmt?: number } = {};
 
             // Multi-tiered bill matching
             const bnLower = rawBn.toLowerCase().trim();
