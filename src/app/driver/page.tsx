@@ -250,6 +250,9 @@ export default function DriverPage() {
           let COL_TRIP_DATE = findCol(DATE_KEYWORDS);
           let COL_PARTY = findCol(PARTY_KEYWORDS);
           let COL_AMT = findCol(AMT_KEYWORDS);
+          let COL_LINECUT = findCol(LINECUT_KEYWORDS);
+          // Line cut column must not be the same as the amount column
+          if (COL_LINECUT !== -1 && COL_LINECUT === COL_AMT) COL_LINECUT = -1;
 
           // If bill column not found by header, inspect contents of first data row
           if (COL_BILL_NO === -1) {
@@ -287,6 +290,7 @@ export default function DriverPage() {
             const dtCell = colDate !== -1 ? (ws[XLSX.utils.encode_cell({ r, c: colDate })] as { v?: unknown } | undefined) : undefined;
             const partyCell = COL_PARTY !== -1 ? ws[XLSX.utils.encode_cell({ r, c: COL_PARTY })] as { v?: unknown } | undefined : undefined;
             const amtCell = COL_AMT !== -1 ? ws[XLSX.utils.encode_cell({ r, c: COL_AMT })] as { v?: unknown } | undefined : undefined;
+            const lcCell = COL_LINECUT !== -1 ? ws[XLSX.utils.encode_cell({ r, c: COL_LINECUT })] as { v?: unknown } | undefined : undefined;
 
             let rawBn = String(bnCell?.v || '').trim();
             if (typeof bnCell?.v === 'number') rawBn = String(bnCell.v).replace(/\.0+$/, '');
