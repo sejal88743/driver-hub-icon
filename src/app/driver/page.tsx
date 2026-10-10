@@ -370,6 +370,17 @@ export default function DriverPage() {
               if (netAmtVal > 0 && !curBill.billNetAmt) {
                 patch.billNetAmt = netAmtVal;
               }
+
+              // Line Cut from XLS: if line cut covers the full bill amount → bill becomes FBR
+              // (Del Pending / Assigned status is removed). Paid/Credit bills are never touched.
+              if (lineCutVal > 0) {
+                patch.lineCutAmt = lineCutVal;
+                const effBillAmt = netAmtVal > 0 ? netAmtVal : (curBill.billNetAmt || 0);
+                const isFullCut = effBillAmt > 0 && (effBillAmt - lineCutVal) <= 1;
+                if (isFullCut && !hasPaymentRec && !isCredit) {
+                  patch.paymentMode = 'FBR';
+                }
+              }
               if (Object.keys(patch).length > 0) {
                 currentBills[idx] = { ...currentBills[idx], ...patch };
                 xlsPatches.push({ billNo: currentBills[idx].billNo, patch });
@@ -381,6 +392,7 @@ export default function DriverPage() {
               if (canonicalDr) allDriverNames.add(canonicalDr);
 
               // Create NEW bill so driver cards display ALL bills in uploaded XLS
+              const newIsFullCut = lineCutVal > 0 && netAmtVal > 0 && (netAmtVal - lineCutVal) <= 1;
               const newBill: Bill = {
                 id: 'xls_' + Date.now() + '_' + Math.random().toString(36).substr(2, 6),
                 billNo: rawBn,
@@ -392,7 +404,8 @@ export default function DriverPage() {
                 cashAmount: 0,
                 upiAmount: 0,
                 chequeAmount: 0,
-                paymentMode: canonicalDr ? 'Assigned' : 'Unpaid',
+                lineCutAmt: lineCutVal || 0,
+                paymentMode: newIsFullCut ? 'FBR' : (canonicalDr ? 'Assigned' : 'Unpaid'),
                 driverName: canonicalDr,
                 delPendingHistory: [],
                 srNo: '',
