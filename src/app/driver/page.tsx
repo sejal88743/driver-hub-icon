@@ -189,7 +189,7 @@ export default function DriverPage() {
 
       // Work on a single mutable copy of bills across all files
       const currentBills = [...getBills()];
-      const xlsPatches: Array<{ billNo: string; patch: { driverName?: string; deliveryDate: string; paymentMode?: string; partyName?: string; billNetAmt?: number } }> = [];
+      const xlsPatches: Array<{ billNo: string; patch: { driverName?: string; deliveryDate?: string; paymentMode?: string; partyName?: string; billNetAmt?: number } }> = [];
       const newBillsCreated: Bill[] = [];
       const existingDrivers = getDrivers();
 

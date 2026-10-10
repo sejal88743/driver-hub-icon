@@ -254,7 +254,7 @@ export default function ReportsPage() {
         const isPaid = col > 0;
         const lc = (b.lineCutAmt || 0) || Number(b.cancelLine) || 0;
         const netAfterLC = b.billNetAmt - lc;
-        const isAutoFbr = !b.paymentDate && Math.abs(netAfterLC) <= 1 && col === 0 && b.paymentMode !== 'Credit';
+        const isAutoFbr = !b.paymentDate && Math.abs(netAfterLC) <= 1 && col === 0 && b.paymentMode !== 'Credit' && b.paymentMode !== 'Del Pending' && b.paymentMode !== 'Pending';
         const isFBR = col === 0 && (b.paymentMode === 'Cancel' || b.paymentMode === 'FBR' || isAutoFbr);
         const isCredit = col === 0 && b.paymentMode === 'Credit' && !!b.driverName;
         const isDelPending = col === 0 && b.paymentMode === 'Del Pending';
@@ -451,7 +451,7 @@ export default function ReportsPage() {
       if (pm === 'del pending' || pm === 'pending') return 5; // Del Pending
       const lc = (x.lineCutAmt || 0) || Number(x.cancelLine) || 0;
       const netAfterLC = x.billNetAmt - lc;
-      const isAutoFbr = !x.paymentDate && Math.abs(netAfterLC) <= 1 && pm !== 'credit';
+      const isAutoFbr = !x.paymentDate && Math.abs(netAfterLC) <= 1 && pm !== 'credit' && pm !== 'del pending' && pm !== 'pending';
       if (pm === 'fbr' || pm === 'cancel' || isAutoFbr) return 6; // FBR
       return 7; // Unpaid / Assigned / Other
     }
@@ -1209,7 +1209,7 @@ export default function ReportsPage() {
         if (pm === 'del pending' || pm === 'pending') return 5; // Del Pending
         const lc = (b.lineCutAmt || 0) || Number(b.cancelLine) || 0;
         const netAfterLC = b.billNetAmt - lc;
-        const isAutoFbr = !b.paymentDate && Math.abs(netAfterLC) <= 1 && pm !== 'credit';
+        const isAutoFbr = !b.paymentDate && Math.abs(netAfterLC) <= 1 && pm !== 'credit' && pm !== 'del pending' && pm !== 'pending';
         if (pm === 'fbr' || pm === 'cancel' || isAutoFbr) return 6; // FBR
         return 7; // Unpaid / Assigned / Other
       }
@@ -1233,7 +1233,7 @@ export default function ReportsPage() {
         const isPaid = collected > 0;
         const lc = (b.lineCutAmt || 0) || Number(b.cancelLine) || 0;
         const netAfterLC = b.billNetAmt - lc;
-        const isAutoFbr = !b.paymentDate && Math.abs(netAfterLC) <= 1 && collected === 0 && b.paymentMode !== 'Credit';
+        const isAutoFbr = !b.paymentDate && Math.abs(netAfterLC) <= 1 && collected === 0 && b.paymentMode !== 'Credit' && b.paymentMode !== 'Del Pending' && b.paymentMode !== 'Pending';
         const isFBR = collected === 0 && (b.paymentMode === 'Cancel' || b.paymentMode === 'FBR' || isAutoFbr);
         const isCredit = collected === 0 && b.paymentMode === 'Credit' && !!b.driverName;
         const isDelPending = collected === 0 && b.paymentMode === 'Del Pending';
