@@ -291,6 +291,16 @@ export default function DriverPage() {
             if (typeof bnCell?.v === 'number') rawBn = String(bnCell.v).replace(/\.0+$/, '');
             if (!rawBn || rawBn.toLowerCase() === 'bill no' || rawBn.toLowerCase() === 'bill number') continue; // skip empty or header rows
 
+            const rawBnUpper = rawBn.toUpperCase().replace(/\s+/g, ' ').trim();
+            if (
+              rawBnUpper === 'BILL NO' || rawBnUpper === 'BILL NUMBER' || rawBnUpper === 'INVOICE NO' || rawBnUpper === 'DOC NO' || rawBnUpper === 'BILLNO' || rawBnUpper === 'REF NO' ||
+              rawBnUpper.includes('GRAND TOTAL') || rawBnUpper.includes('SUB TOTAL') || rawBnUpper.includes('NET TOTAL') || rawBnUpper === 'TOTAL' ||
+              rawBnUpper.includes('LIST OF') || rawBnUpper.includes('CONFIANCE') || rawBnUpper.includes('TAXABLE AMOUNT') || rawBnUpper.includes('SALES RETURN') || rawBnUpper.includes('BILLDATE') ||
+              /^\d+\.\d+$/.test(rawBn.trim())
+            ) {
+              continue; // Skip header/metadata and summary rows
+            }
+
             const dr = String(drCell?.v || '').trim();
             const partyVal = String(partyCell?.v || '').trim();
             let netAmtVal = 0;
@@ -303,12 +313,7 @@ export default function DriverPage() {
             const tripDate = parsedRawDate ? toDDMMYYYY(parsedRawDate) : todayFmt;
             if (parsedRawDate) dateCounts.set(tripDate, (dateCounts.get(tripDate) || 0) + 1);
 
-            const patch: { deliveryDate: string; driverName?: string; paymentMode?: string; partyName?: string; billNetAmt?: number } = { deliveryDate: tripDate };
-            if (dr) {
-              const canonicalDr = canonicalDriverMap.get(dr.toLowerCase().trim()) ?? dr;
-              patch.driverName = canonicalDr;
-              allDriverNames.add(canonicalDr);
-            }
+            const patch: { deliveryDate?: string; driverName?: string; paymentMode?: string; partyName?: string; billNetAmt?: number } = {};
 
             // Multi-tiered bill matching
             const bnLower = rawBn.toLowerCase().trim();
@@ -326,39 +331,59 @@ export default function DriverPage() {
             }
 
             if (idx !== -1) {
-              const curMode = (currentBills[idx].paymentMode || '').trim().toLowerCase();
-              const hasPaymentRec = (Number(currentBills[idx].collectedAmount) || 0) > 0 || (Number(currentBills[idx].cashAmount) || 0) > 0 || (Number(currentBills[idx].upiAmount) || 0) > 0 || (Number(currentBills[idx].chequeAmount) || 0) > 0 || !!currentBills[idx].paymentDate;
+              const curBill = currentBills[idx];
+              const curMode = (curBill.paymentMode || '').trim().toLowerCase();
+              const hasPaymentRec = (Number(curBill.collectedAmount) || 0) > 0 || (Number(curBill.cashAmount) || 0) > 0 || (Number(curBill.upiAmount) || 0) > 0 || (Number(curBill.chequeAmount) || 0) > 0 || !!curBill.paymentDate;
               const isCredit = curMode === 'credit';
               const isFBR = curMode === 'fbr' || curMode === 'cancel';
 
-              // If bill has payment received or is in Credit/FBR, preserve status & do not overwrite with 'Assigned'
-              if (dr && !hasPaymentRec && !isCredit && !isFBR && (curMode === '' || curMode === 'pending' || curMode === 'assigned' || curMode === 'del pending' || curMode === 'unpaid')) {
-                patch.paymentMode = 'Assigned';
+              // NEVER overwrite deliveryDate or driverName on bills that are already paid or settled
+              if (!hasPaymentRec && !isCredit && !isFBR) {
+                if (parsedRawDate) {
+                  patch.deliveryDate = tripDate;
+                } else if (!curBill.deliveryDate) {
+                  patch.deliveryDate = todayFmt;
+                }
+                if (dr) {
+                  const canonicalDr = canonicalDriverMap.get(dr.toLowerCase().trim()) ?? dr;
+                  patch.driverName = canonicalDr;
+                  allDriverNames.add(canonicalDr);
+                  if (curMode === '' || curMode === 'pending' || curMode === 'assigned' || curMode === 'del pending' || curMode === 'unpaid') {
+                    patch.paymentMode = 'Assigned';
+                  }
+                }
               }
-              if (partyVal && (!currentBills[idx].partyName || currentBills[idx].partyName.startsWith('Party '))) {
+
+              if (partyVal && (!curBill.partyName || curBill.partyName.startsWith('Party '))) {
                 patch.partyName = partyVal;
               }
-              if (netAmtVal > 0 && !currentBills[idx].billNetAmt) {
+              if (netAmtVal > 0 && !curBill.billNetAmt) {
                 patch.billNetAmt = netAmtVal;
               }
-              currentBills[idx] = { ...currentBills[idx], ...patch };
-              xlsPatches.push({ billNo: currentBills[idx].billNo, patch });
-              totalUpdated++;
+              if (Object.keys(patch).length > 0) {
+                currentBills[idx] = { ...currentBills[idx], ...patch };
+                xlsPatches.push({ billNo: currentBills[idx].billNo, patch });
+                totalUpdated++;
+              }
             } else {
+              const effectiveTripDate = parsedRawDate ? tripDate : todayFmt;
+              const canonicalDr = dr ? (canonicalDriverMap.get(dr.toLowerCase().trim()) ?? dr) : '';
+              if (canonicalDr) allDriverNames.add(canonicalDr);
+
               // Create NEW bill so driver cards display ALL bills in uploaded XLS
               const newBill: Bill = {
                 id: 'xls_' + Date.now() + '_' + Math.random().toString(36).substr(2, 6),
                 billNo: rawBn,
                 partyName: partyVal || `Party ${rawBn}`,
-                date: tripDate,
-                deliveryDate: tripDate,
+                date: effectiveTripDate,
+                deliveryDate: effectiveTripDate,
                 billNetAmt: netAmtVal || 0,
                 collectedAmount: 0,
                 cashAmount: 0,
                 upiAmount: 0,
                 chequeAmount: 0,
-                paymentMode: dr ? 'Assigned' : 'Unpaid',
-                driverName: patch.driverName || '',
+                paymentMode: canonicalDr ? 'Assigned' : 'Unpaid',
+                driverName: canonicalDr,
                 delPendingHistory: [],
                 srNo: '',
                 salespersonName: '',
