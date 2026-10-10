@@ -189,7 +189,7 @@ export default function DriverPage() {
 
       // Work on a single mutable copy of bills across all files
       const currentBills = [...getBills()];
-      const xlsPatches: Array<{ billNo: string; patch: { driverName?: string; deliveryDate?: string; paymentMode?: string; partyName?: string; billNetAmt?: number } }> = [];
+      const xlsPatches: Array<{ billNo: string; patch: { driverName?: string; deliveryDate?: string; paymentMode?: string; partyName?: string; billNetAmt?: number; lineCutAmt?: number } }> = [];
       const newBillsCreated: Bill[] = [];
       const existingDrivers = getDrivers();
 
@@ -219,6 +219,7 @@ export default function DriverPage() {
           const DATE_KEYWORDS = ['trip date', 'tripdate', 'trip_date', 'del date', 'delivery date', 'delivery_date', 'dispatch date', 'date', 'bill date', 'invoice date'];
           const PARTY_KEYWORDS = ['party name', 'party_name', 'customer name', 'customer_name', 'retailer name', 'party', 'customer', 'account name', 'outlet', 'party/customer', 'client', 'firm', 'firm name'];
           const AMT_KEYWORDS = ['net amt', 'net amount', 'bill amt', 'bill amount', 'total amt', 'amount', 'grand total', 'val', 'value', 'net_amt', 'bill_amt', 'invoice amt', 'invoice amount'];
+          const LINECUT_KEYWORDS = ['line cut', 'linecut', 'line_cut', 'lc amt', 'lc amount', 'cut amt', 'cut amount', 'deduction', 'less amt', 'less amount', 'short amt', 'diff amt', 'diff amount'];
 
           // Auto-detect header row — scan first 25 rows
           let headerRow = range.s.r;
@@ -249,6 +250,9 @@ export default function DriverPage() {
           let COL_TRIP_DATE = findCol(DATE_KEYWORDS);
           let COL_PARTY = findCol(PARTY_KEYWORDS);
           let COL_AMT = findCol(AMT_KEYWORDS);
+          let COL_LINECUT = findCol(LINECUT_KEYWORDS);
+          // Line cut column must not be the same as the amount column
+          if (COL_LINECUT !== -1 && COL_LINECUT === COL_AMT) COL_LINECUT = -1;
 
           // If bill column not found by header, inspect contents of first data row
           if (COL_BILL_NO === -1) {
@@ -286,6 +290,7 @@ export default function DriverPage() {
             const dtCell = colDate !== -1 ? (ws[XLSX.utils.encode_cell({ r, c: colDate })] as { v?: unknown } | undefined) : undefined;
             const partyCell = COL_PARTY !== -1 ? ws[XLSX.utils.encode_cell({ r, c: COL_PARTY })] as { v?: unknown } | undefined : undefined;
             const amtCell = COL_AMT !== -1 ? ws[XLSX.utils.encode_cell({ r, c: COL_AMT })] as { v?: unknown } | undefined : undefined;
+            const lcCell = COL_LINECUT !== -1 ? ws[XLSX.utils.encode_cell({ r, c: COL_LINECUT })] as { v?: unknown } | undefined : undefined;
 
             let rawBn = String(bnCell?.v || '').trim();
             if (typeof bnCell?.v === 'number') rawBn = String(bnCell.v).replace(/\.0+$/, '');
@@ -308,12 +313,17 @@ export default function DriverPage() {
               const parsedAmt = parseFloat(String(amtCell.v).replace(/,/g, ''));
               if (!isNaN(parsedAmt)) netAmtVal = parsedAmt;
             }
+            let lineCutVal = 0;
+            if (lcCell?.v != null) {
+              const parsedLc = parseFloat(String(lcCell.v).replace(/,/g, ''));
+              if (!isNaN(parsedLc)) lineCutVal = Math.abs(parsedLc);
+            }
 
             const parsedRawDate = dtCell?.v != null ? excelSerialToDate(dtCell.v) : '';
             const tripDate = parsedRawDate ? toDDMMYYYY(parsedRawDate) : todayFmt;
             if (parsedRawDate) dateCounts.set(tripDate, (dateCounts.get(tripDate) || 0) + 1);
 
-            const patch: { deliveryDate?: string; driverName?: string; paymentMode?: string; partyName?: string; billNetAmt?: number } = {};
+            const patch: { deliveryDate?: string; driverName?: string; paymentMode?: string; partyName?: string; billNetAmt?: number; lineCutAmt?: number } = {};
 
             // Multi-tiered bill matching
             const bnLower = rawBn.toLowerCase().trim();
@@ -360,6 +370,17 @@ export default function DriverPage() {
               if (netAmtVal > 0 && !curBill.billNetAmt) {
                 patch.billNetAmt = netAmtVal;
               }
+
+              // Line Cut from XLS: if line cut covers the full bill amount → bill becomes FBR
+              // (Del Pending / Assigned status is removed). Paid/Credit bills are never touched.
+              if (lineCutVal > 0) {
+                patch.lineCutAmt = lineCutVal;
+                const effBillAmt = netAmtVal > 0 ? netAmtVal : (curBill.billNetAmt || 0);
+                const isFullCut = effBillAmt > 0 && (effBillAmt - lineCutVal) <= 1;
+                if (isFullCut && !hasPaymentRec && !isCredit) {
+                  patch.paymentMode = 'FBR';
+                }
+              }
               if (Object.keys(patch).length > 0) {
                 currentBills[idx] = { ...currentBills[idx], ...patch };
                 xlsPatches.push({ billNo: currentBills[idx].billNo, patch });
@@ -371,6 +392,7 @@ export default function DriverPage() {
               if (canonicalDr) allDriverNames.add(canonicalDr);
 
               // Create NEW bill so driver cards display ALL bills in uploaded XLS
+              const newIsFullCut = lineCutVal > 0 && netAmtVal > 0 && (netAmtVal - lineCutVal) <= 1;
               const newBill: Bill = {
                 id: 'xls_' + Date.now() + '_' + Math.random().toString(36).substr(2, 6),
                 billNo: rawBn,
@@ -382,7 +404,8 @@ export default function DriverPage() {
                 cashAmount: 0,
                 upiAmount: 0,
                 chequeAmount: 0,
-                paymentMode: canonicalDr ? 'Assigned' : 'Unpaid',
+                lineCutAmt: lineCutVal || 0,
+                paymentMode: newIsFullCut ? 'FBR' : (canonicalDr ? 'Assigned' : 'Unpaid'),
                 driverName: canonicalDr,
                 delPendingHistory: [],
                 srNo: '',
