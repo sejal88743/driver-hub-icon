@@ -189,7 +189,7 @@ export default function DriverPage() {
 
       // Work on a single mutable copy of bills across all files
       const currentBills = [...getBills()];
-      const xlsPatches: Array<{ billNo: string; patch: { driverName?: string; deliveryDate?: string; paymentMode?: string; partyName?: string; billNetAmt?: number } }> = [];
+      const xlsPatches: Array<{ billNo: string; patch: { driverName?: string; deliveryDate?: string; paymentMode?: string; partyName?: string; billNetAmt?: number; lineCutAmt?: number } }> = [];
       const newBillsCreated: Bill[] = [];
       const existingDrivers = getDrivers();
 
@@ -219,6 +219,7 @@ export default function DriverPage() {
           const DATE_KEYWORDS = ['trip date', 'tripdate', 'trip_date', 'del date', 'delivery date', 'delivery_date', 'dispatch date', 'date', 'bill date', 'invoice date'];
           const PARTY_KEYWORDS = ['party name', 'party_name', 'customer name', 'customer_name', 'retailer name', 'party', 'customer', 'account name', 'outlet', 'party/customer', 'client', 'firm', 'firm name'];
           const AMT_KEYWORDS = ['net amt', 'net amount', 'bill amt', 'bill amount', 'total amt', 'amount', 'grand total', 'val', 'value', 'net_amt', 'bill_amt', 'invoice amt', 'invoice amount'];
+          const LINECUT_KEYWORDS = ['line cut', 'linecut', 'line_cut', 'lc amt', 'lc amount', 'cut amt', 'cut amount', 'deduction', 'less amt', 'less amount', 'short amt', 'diff amt', 'diff amount'];
 
           // Auto-detect header row — scan first 25 rows
           let headerRow = range.s.r;
