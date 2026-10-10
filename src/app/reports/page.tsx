@@ -451,7 +451,7 @@ export default function ReportsPage() {
       if (pm === 'del pending' || pm === 'pending') return 5; // Del Pending
       const lc = (x.lineCutAmt || 0) || Number(x.cancelLine) || 0;
       const netAfterLC = x.billNetAmt - lc;
-      const isAutoFbr = !x.paymentDate && Math.abs(netAfterLC) <= 1 && pm !== 'credit';
+      const isAutoFbr = !x.paymentDate && Math.abs(netAfterLC) <= 1 && pm !== 'credit' && pm !== 'del pending' && pm !== 'pending';
       if (pm === 'fbr' || pm === 'cancel' || isAutoFbr) return 6; // FBR
       return 7; // Unpaid / Assigned / Other
     }
