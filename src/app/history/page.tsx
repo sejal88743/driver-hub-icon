@@ -1,4 +1,4 @@
-import { Fragment, useMemo, useState, useRef } from 'react';
+import { Fragment, useMemo, useState, useRef, useEffect, memo } from 'react';
 import {
   History,
   Search,
@@ -28,6 +28,8 @@ import {
   matchStatementWithBills,
   downloadUnmatchedStatementEntries,
   STATEMENT_MATCHED_AMOUNT_CLS,
+  type StatementEntry,
+  type BillMatchLookupResult,
 } from '@/lib/statementMatch';
 
 type SortKey =
@@ -79,9 +81,231 @@ function compareString(a: string, b: string): number {
   return a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' });
 }
 
+const StatementEntryRow = memo(function StatementEntryRow({
+  entry,
+  idx,
+  bills,
+  findBills,
+  onMatchSubmit,
+  onUnmatch,
+  feedback,
+  isEditing,
+  onStartEdit,
+  onCancelEdit,
+}: {
+  entry: StatementEntry;
+  idx: number;
+  bills: Bill[];
+  findBills: (q: string, bills: Bill[], targetAmt?: number) => BillMatchLookupResult[];
+  onMatchSubmit: (entryId: string, query: string, entryAmt: number) => void;
+  onUnmatch: (entryId: string) => void;
+  feedback?: { type: 'ok' | 'err'; text: string };
+  isEditing: boolean;
+  onStartEdit: (entryId: string) => void;
+  onCancelEdit: () => void;
+}) {
+  const [localQuery, setLocalQuery] = useState(isEditing ? entry.matchedBillNos.join('+') : '');
+
+  useEffect(() => {
+    if (isEditing) {
+      setLocalQuery(entry.matchedBillNos.join('+'));
+    } else if (entry.matched) {
+      setLocalQuery('');
+    }
+  }, [isEditing, entry.matched, entry.matchedBillNos]);
+
+  const trimmed = localQuery.trim();
+  const lookup = trimmed ? findBills(trimmed, bills, entry.creditAmount) : [];
+  const totalBillsAmt = lookup.length > 0 ? Math.round(lookup.reduce((s, x) => s + x.amount, 0) * 100) / 100 : 0;
+  const diff = lookup.length > 0 ? Math.round((totalBillsAmt - entry.creditAmount) * 100) / 100 : 0;
+  const hasLookup = lookup.length > 0;
+  const allFound = hasLookup && lookup.every(x => x.found);
+  const isExact = allFound && Math.abs(diff) < 0.05;
+
+  return (
+    <tr
+      key={entry.id}
+      className={cn(
+        "border-b border-border/50 hover:bg-muted/30 transition-colors",
+        entry.matched ? "bg-yellow-50/50 dark:bg-yellow-950/20" : "bg-card"
+      )}
+    >
+      <td className="py-2 px-1 font-bold text-muted-foreground align-top text-[10px]">{idx + 1}</td>
+      <td className="py-2 px-1.5 font-black whitespace-nowrap align-top">{entry.date}</td>
+      <td className="py-2 px-2 font-bold uppercase truncate max-w-[200px] text-muted-foreground align-top" title={entry.description}>
+        {entry.description || '—'}
+      </td>
+      <td className="py-2 px-2 text-right font-black tabular-nums whitespace-nowrap align-top">
+        <span className={cn(entry.matched && STATEMENT_MATCHED_AMOUNT_CLS)}>
+          ₹{entry.creditAmount.toLocaleString('en-IN')}
+        </span>
+      </td>
+      <td className="py-2 px-2 text-center whitespace-nowrap align-top">
+        {entry.matched ? (
+          <span className="text-[9px] font-black uppercase bg-yellow-400 text-yellow-950 px-1.5 py-0.5 rounded shadow-xs border border-yellow-500">
+            MATCHED {entry.isManual ? '(MANUAL)' : entry.matchType === 'multi' ? '(MULTI)' : '(SINGLE)'}
+          </span>
+        ) : (
+          <span className="text-[9px] font-black uppercase bg-rose-100 text-rose-800 dark:bg-rose-950 dark:text-rose-300 px-1.5 py-0.5 rounded border border-rose-300 dark:border-rose-800">
+            UNMATCHED
+          </span>
+        )}
+      </td>
+      <td className="py-2 px-2 align-top">
+        {entry.matched && !isEditing ? (
+          <div className="space-y-0.5">
+            <div className="flex flex-wrap items-center gap-1">
+              <span className="font-black text-primary text-xs">
+                {entry.matchedBillNos.join(' + ')}
+              </span>
+              {entry.matchedBillNos.length > 1 && (
+                <span className="text-[9px] text-emerald-800 bg-emerald-100 dark:bg-emerald-950 dark:text-emerald-200 px-1.5 py-0.5 rounded font-black border border-emerald-300 dark:border-emerald-800">
+                  Merged ({entry.matchedBillNos.length} bills)
+                </span>
+              )}
+            </div>
+          </div>
+        ) : (
+          <div className="flex flex-col gap-1.5 min-w-[280px] max-w-[420px]">
+            <div className="flex items-center gap-1">
+              <input
+                type="text"
+                placeholder="Bill no(s) e.g. 42155+44855"
+                value={localQuery}
+                onChange={evt => setLocalQuery(evt.target.value)}
+                onKeyDown={evt => {
+                  if (evt.key === 'Enter') {
+                    onMatchSubmit(entry.id, localQuery, entry.creditAmount);
+                  }
+                }}
+                className="h-7 flex-1 px-2 text-xs font-bold rounded-md border border-input bg-background shadow-xs focus:outline-none focus:ring-1 focus:ring-primary uppercase placeholder:normal-case placeholder:text-muted-foreground/60"
+                autoFocus={isEditing}
+              />
+              <Button
+                type="button"
+                size="sm"
+                onClick={() => onMatchSubmit(entry.id, localQuery, entry.creditAmount)}
+                disabled={!trimmed}
+                className={cn(
+                  "h-7 px-2.5 text-[10px] font-black uppercase tracking-wider rounded-md shadow-xs transition-colors cursor-pointer",
+                  isExact
+                    ? "bg-emerald-600 hover:bg-emerald-700 text-white"
+                    : "bg-primary hover:bg-primary/90 text-primary-foreground"
+                )}
+                title="Match this statement entry with entered bill(s)"
+              >
+                <Check className="w-3 h-3 mr-0.5" />
+                <span>Match</span>
+              </Button>
+              {isEditing && (
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="ghost"
+                  onClick={onCancelEdit}
+                  className="h-7 px-1.5 text-xs text-muted-foreground hover:bg-muted cursor-pointer"
+                  title="Cancel editing"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </Button>
+              )}
+            </div>
+
+            {hasLookup && (
+              <div className="p-1.5 rounded-md bg-muted/70 border border-border/70 text-[10px] space-y-1">
+                <div className="flex flex-wrap gap-1">
+                  {lookup.map((lk, lIdx) => (
+                    <span
+                      key={lIdx}
+                      className={cn(
+                        "px-1.5 py-0.5 rounded text-[10px] font-black border",
+                        lk.found
+                          ? "bg-emerald-50 dark:bg-emerald-950/40 text-emerald-800 dark:text-emerald-200 border-emerald-300 dark:border-emerald-700"
+                          : "bg-rose-50 dark:bg-rose-950/40 text-rose-700 dark:text-rose-300 border-rose-300 dark:border-rose-700"
+                      )}
+                      title={lk.found ? `${lk.partyName} (Date: ${lk.date || '—'})` : 'Not found'}
+                    >
+                      {lk.found ? (
+                        <>
+                          {lk.billNo}: ₹{lk.amount.toLocaleString('en-IN')}
+                          {lk.partyName && <span className="opacity-75 font-normal ml-0.5">({lk.partyName.slice(0, 14)})</span>}
+                        </>
+                      ) : (
+                        <>❌ {lk.queryNo} nahi mila</>
+                      )}
+                    </span>
+                  ))}
+                </div>
+
+                <div className="flex items-center justify-between font-bold pt-0.5 border-t border-border/40">
+                  <span>
+                    Bills Total: <span className="font-black text-foreground">₹{totalBillsAmt.toLocaleString('en-IN')}</span>
+                    {' '}/ Deposit: <span className="font-black text-foreground">₹{entry.creditAmount.toLocaleString('en-IN')}</span>
+                  </span>
+                  {isExact ? (
+                    <span className="text-emerald-600 dark:text-emerald-400 font-black flex items-center gap-0.5">
+                      <CheckCircle2 className="w-3 h-3" /> Exact Match!
+                    </span>
+                  ) : (
+                    <span className={cn("font-black", diff > 0 ? "text-amber-600" : "text-rose-600")}>
+                      Diff: {diff > 0 ? `+₹${diff.toLocaleString('en-IN')}` : `-₹${Math.abs(diff).toLocaleString('en-IN')}`}
+                    </span>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {feedback && (
+              <div
+                className={cn(
+                  "text-[10px] font-bold px-2 py-0.5 rounded flex items-center gap-1",
+                  feedback.type === 'ok'
+                    ? "bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-200"
+                    : "bg-rose-100 text-rose-800 dark:bg-rose-950 dark:text-rose-200"
+                )}
+              >
+                {feedback.type === 'ok' ? <CheckCircle2 className="w-3 h-3 shrink-0" /> : <AlertCircle className="w-3 h-3 shrink-0" />}
+                <span>{feedback.text}</span>
+              </div>
+            )}
+          </div>
+        )}
+      </td>
+      <td className="py-2 px-2 text-right whitespace-nowrap align-top">
+        {entry.matched && !isEditing ? (
+          <div className="flex items-center justify-end gap-1">
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              onClick={() => onStartEdit(entry.id)}
+              className="h-6 px-1.5 text-[9px] font-bold text-muted-foreground hover:text-foreground cursor-pointer"
+              title="Edit matched bill numbers"
+            >
+              Edit
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => onUnmatch(entry.id)}
+              className="h-6 px-1.5 text-[9px] font-black uppercase border-rose-300 dark:border-rose-800 text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/40 cursor-pointer"
+              title="Unmatch this statement entry and free bills"
+            >
+              Unmatch
+            </Button>
+          </div>
+        ) : (
+          <span className="text-[10px] font-bold text-muted-foreground">—</span>
+        )}
+      </td>
+    </tr>
+  );
+});
+
 export default function HistoryPage() {
   const { bills } = useBillStore();
-  const { isMatched, stats, entries, clear: clearStatementMatch } = useStatementMatch();
+  const { isMatched, stats, entries, clear: clearStatementMatch, manualMatch, unmatch, findBills } = useStatementMatch();
 
   const [q, setQ] = useState('');
   const [open, setOpen] = useState<Record<string, boolean>>({});
@@ -93,8 +317,88 @@ export default function HistoryPage() {
   const [isDownloading, setIsDownloading] = useState(false);
   const [statementModalOpen, setStatementModalOpen] = useState(false);
   const [modalTab, setModalTab] = useState<'all' | 'matched' | 'unmatched'>('all');
+  const [modalSearch, setModalSearch] = useState('');
+  const [editingEntryId, setEditingEntryId] = useState<string | null>(null);
+  const [manualFeedback, setManualFeedback] = useState<Record<string, { type: 'ok' | 'err'; text: string }>>({});
+  const [confirmDiffDialog, setConfirmDiffDialog] = useState<{
+    entryId: string;
+    diff: number;
+    totalBillsAmt: number;
+    entryAmt: number;
+    query: string;
+  } | null>(null);
   const [filterMatchedOnly, setFilterMatchedOnly] = useState(false);
   const [uploadFeedback, setUploadFeedback] = useState<string | null>(null);
+
+  const handleManualMatchSubmit = (
+    entryId: string,
+    queryOrAmt: string | number,
+    amtOrAllowTol?: number | boolean,
+    allowTolOrQuery?: boolean | string
+  ) => {
+    let queryStr = '';
+    let targetAmt = 0;
+    let allowTolerance = false;
+
+    if (typeof queryOrAmt === 'string') {
+      queryStr = queryOrAmt;
+      targetAmt = typeof amtOrAllowTol === 'number' ? amtOrAllowTol : 0;
+      allowTolerance = typeof allowTolOrQuery === 'boolean' ? allowTolOrQuery : (typeof amtOrAllowTol === 'boolean' ? amtOrAllowTol : false);
+    } else {
+      // Called as (entryId, entryAmt, allowTolerance, query)
+      targetAmt = Number(queryOrAmt) || 0;
+      allowTolerance = typeof amtOrAllowTol === 'boolean' ? amtOrAllowTol : false;
+      queryStr = typeof allowTolOrQuery === 'string' ? allowTolOrQuery : (allowTolOrQuery != null ? String(allowTolOrQuery) : '');
+    }
+
+    const qTrim = (queryStr || '').trim();
+    if (!qTrim) {
+      setManualFeedback(prev => ({ ...prev, [entryId]: { type: 'err', text: 'Bill no(s) likhein (e.g. 42155+44855)' } }));
+      return;
+    }
+
+    const res = manualMatch(entryId, qTrim, bills, allowTolerance);
+    if (!res.ok) {
+      if (res.diff !== undefined && Math.abs(res.diff) > 1 && !allowTolerance) {
+        setConfirmDiffDialog({
+          entryId,
+          diff: res.diff,
+          totalBillsAmt: res.totalBillsAmt || 0,
+          entryAmt: targetAmt || res.entryAmt || 0,
+          query: qTrim,
+        });
+        return;
+      }
+      setManualFeedback(prev => ({ ...prev, [entryId]: { type: 'err', text: res.message } }));
+      return;
+    }
+
+    setManualFeedback(prev => ({ ...prev, [entryId]: { type: 'ok', text: res.message } }));
+    setEditingEntryId(null);
+    setConfirmDiffDialog(null);
+
+    setTimeout(() => {
+      setManualFeedback(prev => {
+        const copy = { ...prev };
+        delete copy[entryId];
+        return copy;
+      });
+    }, 3500);
+  };
+
+  const handleUnmatch = (entryId: string) => {
+    const res = unmatch(entryId);
+    if (res.ok) {
+      setManualFeedback(prev => ({ ...prev, [entryId]: { type: 'ok', text: 'Unmatched successfully' } }));
+      setTimeout(() => {
+        setManualFeedback(prev => {
+          const copy = { ...prev };
+          delete copy[entryId];
+          return copy;
+        });
+      }, 2500);
+    }
+  };
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -151,6 +455,23 @@ export default function HistoryPage() {
       setIsDownloading(false);
     }
   };
+
+  const filteredModalEntries = useMemo(() => {
+    let list = entries;
+    if (modalTab === 'matched') list = list.filter(e => e.matched);
+    if (modalTab === 'unmatched') list = list.filter(e => !e.matched);
+    if (!modalSearch.trim()) return list;
+
+    const qLower = modalSearch.toLowerCase().trim();
+    return list.filter(e => {
+      return (
+        String(e.creditAmount).includes(qLower) ||
+        (e.date || '').toLowerCase().includes(qLower) ||
+        (e.description || '').toLowerCase().includes(qLower) ||
+        e.matchedBillNos.some(bn => bn.toLowerCase().includes(qLower))
+      );
+    });
+  }, [entries, modalTab, modalSearch]);
 
   const rows = useMemo(() => {
     const term = q.trim().toLowerCase();
@@ -312,9 +633,12 @@ export default function HistoryPage() {
               <>
                 <Button
                   type="button"
-                  onClick={() => setStatementModalOpen(true)}
+                  onClick={() => {
+                    setModalTab('matched');
+                    setStatementModalOpen(true);
+                  }}
                   variant="secondary"
-                  className="h-4 min-h-4 px-1.5 rounded-sm font-black text-[9px] uppercase gap-0.5 [&_svg]:size-2 shadow-xs"
+                  className="h-4 min-h-4 px-1.5 rounded-sm font-black text-[9px] uppercase gap-0.5 [&_svg]:size-2 shadow-xs cursor-pointer"
                 >
                   <FileSpreadsheet className="w-3.5 h-3.5" />
                   <span>
@@ -324,13 +648,15 @@ export default function HistoryPage() {
 
                 <Button
                   type="button"
-                  onClick={handleDownloadUnmatched}
-                  disabled={isDownloading || stats.unmatchedStatementRows === 0}
+                  onClick={() => {
+                    setModalTab('unmatched');
+                    setStatementModalOpen(true);
+                  }}
                   variant="outline"
-                  className="h-4 min-h-4 px-1.5 rounded-sm font-black text-[9px] uppercase gap-0.5 [&_svg]:size-2 border-rose-400/70 text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/40 shadow-xs"
-                  title="Download Unmatched Statement Entries (Excel)"
+                  className="h-4 min-h-4 px-1.5 rounded-sm font-black text-[9px] uppercase gap-0.5 [&_svg]:size-2 border-rose-400/70 text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/40 shadow-xs cursor-pointer"
+                  title="View Unmatched Entries and Match Manually"
                 >
-                  <Download className="w-2.5 h-2.5" />
+                  <AlertCircle className="w-2.5 h-2.5" />
                   <span>Unmatched ({stats.unmatchedStatementRows})</span>
                 </Button>
 
@@ -619,115 +945,110 @@ export default function HistoryPage() {
                 </div>
               </div>
 
-              {/* Tabs */}
-              <div className="px-3 pt-2 pb-1 flex items-center gap-1.5 border-b border-border bg-card">
-                <button
-                  onClick={() => setModalTab('all')}
-                  className={cn(
-                    "h-7 px-3 rounded-lg text-[10px] font-black uppercase transition-colors",
-                    modalTab === 'all' ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground hover:bg-muted/80"
+              {/* Tabs & Search */}
+              <div className="px-3 py-2 flex flex-wrap items-center gap-2 border-b border-border bg-card">
+                <div className="flex items-center gap-1">
+                  <button
+                    onClick={() => setModalTab('all')}
+                    className={cn(
+                      "h-7 px-2.5 rounded-lg text-[10px] font-black uppercase transition-colors cursor-pointer",
+                      modalTab === 'all' ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground hover:bg-muted/80"
+                    )}
+                  >
+                    All Rows ({entries.length})
+                  </button>
+                  <button
+                    onClick={() => setModalTab('matched')}
+                    className={cn(
+                      "h-7 px-2.5 rounded-lg text-[10px] font-black uppercase transition-colors cursor-pointer",
+                      modalTab === 'matched' ? "bg-yellow-400 text-yellow-950 border border-yellow-500" : "bg-muted text-muted-foreground hover:bg-muted/80"
+                    )}
+                  >
+                    Matched ({stats.matchedStatementRows})
+                  </button>
+                  <button
+                    onClick={() => setModalTab('unmatched')}
+                    className={cn(
+                      "h-7 px-2.5 rounded-lg text-[10px] font-black uppercase transition-colors cursor-pointer",
+                      modalTab === 'unmatched' ? "bg-rose-600 text-white" : "bg-muted text-muted-foreground hover:bg-muted/80"
+                    )}
+                  >
+                    Unmatched ({stats.unmatchedStatementRows})
+                  </button>
+                </div>
+
+                {/* Modal Search Bar */}
+                <div className="relative flex-1 min-w-[180px] max-w-xs">
+                  <Search className="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-foreground" />
+                  <input
+                    type="text"
+                    placeholder="Search narration, amt, bill..."
+                    value={modalSearch}
+                    onChange={e => setModalSearch(e.target.value)}
+                    className="h-7 w-full pl-8 pr-6 text-xs rounded-lg border border-input bg-background placeholder:text-muted-foreground/60 focus:outline-none focus:ring-1 focus:ring-primary"
+                  />
+                  {modalSearch && (
+                    <button
+                      onClick={() => setModalSearch('')}
+                      className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground cursor-pointer"
+                    >
+                      <X className="w-3 h-3" />
+                    </button>
                   )}
-                >
-                  All Rows ({entries.length})
-                </button>
-                <button
-                  onClick={() => setModalTab('matched')}
-                  className={cn(
-                    "h-7 px-3 rounded-lg text-[10px] font-black uppercase transition-colors",
-                    modalTab === 'matched' ? "bg-yellow-400 text-yellow-950 border border-yellow-500" : "bg-muted text-muted-foreground hover:bg-muted/80"
-                  )}
-                >
-                  Matched ({stats.matchedStatementRows})
-                </button>
-                <button
-                  onClick={() => setModalTab('unmatched')}
-                  className={cn(
-                    "h-7 px-3 rounded-lg text-[10px] font-black uppercase transition-colors",
-                    modalTab === 'unmatched' ? "bg-rose-600 text-white" : "bg-muted text-muted-foreground hover:bg-muted/80"
-                  )}
-                >
-                  Unmatched ({stats.unmatchedStatementRows})
-                </button>
+                </div>
 
                 {stats.unmatchedStatementRows > 0 && (
                   <button
                     type="button"
                     onClick={handleDownloadUnmatched}
                     disabled={isDownloading}
-                    className="ml-auto h-7 px-3 rounded-lg bg-rose-600 hover:bg-rose-700 text-white font-black text-[10px] uppercase flex items-center gap-1.5 shadow-xs cursor-pointer transition-colors"
+                    className="ml-auto h-7 px-2.5 rounded-lg bg-rose-600 hover:bg-rose-700 text-white font-black text-[10px] uppercase flex items-center gap-1 shadow-xs cursor-pointer transition-colors"
                     title="Download Excel list of all unmatched statement entries"
                   >
                     <Download className="w-3 h-3" />
-                    <span>Download Unmatched ({stats.unmatchedStatementRows})</span>
+                    <span>Download Excel ({stats.unmatchedStatementRows})</span>
                   </button>
                 )}
               </div>
 
               {/* Entries Table */}
-              <div className="overflow-y-auto flex-1 p-3">
+              <div className="overflow-y-auto flex-1 p-2 md:p-3">
                 <table className="w-full text-[11px]">
                   <thead>
                     <tr className="text-[9px] font-black uppercase text-muted-foreground border-b border-border pb-1 text-left">
                       <th className="py-1 px-1">#</th>
-                      <th className="py-1 px-1">Date</th>
-                      <th className="py-1 px-2">Description / Narration</th>
-                      <th className="py-1 px-2 text-right">Deposit Amt (₹)</th>
-                      <th className="py-1 px-2 text-center">Status</th>
-                      <th className="py-1 px-2">Matched Bill(s)</th>
+                      <th className="py-1 px-1.5 whitespace-nowrap">Date</th>
+                      <th className="py-1 px-2">Narration</th>
+                      <th className="py-1 px-2 text-right whitespace-nowrap">Deposit (₹)</th>
+                      <th className="py-1 px-2 text-center whitespace-nowrap">Status</th>
+                      <th className="py-1 px-2">Matched Bill(s) / Manual Entry</th>
+                      <th className="py-1 px-2 text-right">Action</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {entries
-                      .filter(e => {
-                        if (modalTab === 'matched') return e.matched;
-                        if (modalTab === 'unmatched') return !e.matched;
-                        return true;
-                      })
-                      .map((e, idx) => (
-                        <tr
+                    {filteredModalEntries.length === 0 ? (
+                      <tr>
+                        <td colSpan={7} className="text-center py-8 text-muted-foreground font-bold">
+                          Koi statement entries nahi mili.
+                        </td>
+                      </tr>
+                    ) : (
+                      filteredModalEntries.map((e, idx) => (
+                        <StatementEntryRow
                           key={e.id}
-                          className={cn(
-                            "border-b border-border/50 hover:bg-muted/30 transition-colors",
-                            e.matched && "bg-yellow-50/60 dark:bg-yellow-950/20"
-                          )}
-                        >
-                          <td className="py-1.5 px-1 font-bold text-muted-foreground">{idx + 1}</td>
-                          <td className="py-1.5 px-1 font-black whitespace-nowrap">{e.date}</td>
-                          <td className="py-1.5 px-2 font-bold uppercase truncate max-w-[260px] text-muted-foreground" title={e.description}>
-                            {e.description || '—'}
-                          </td>
-                          <td className="py-1.5 px-2 text-right font-black tabular-nums whitespace-nowrap">
-                            <span className={cn(e.matched && STATEMENT_MATCHED_AMOUNT_CLS)}>
-                              ₹{e.creditAmount.toLocaleString('en-IN')}
-                            </span>
-                          </td>
-                          <td className="py-1.5 px-2 text-center whitespace-nowrap">
-                            {e.matched ? (
-                              <span className="text-[9px] font-black uppercase bg-yellow-400 text-yellow-950 px-1.5 py-0.5 rounded shadow-xs border border-yellow-500">
-                                MATCHED ({e.matchType === 'multi' ? 'MULTI' : 'SINGLE'})
-                              </span>
-                            ) : (
-                              <span className="text-[9px] font-black uppercase bg-muted text-muted-foreground px-1.5 py-0.5 rounded">
-                                UNMATCHED
-                              </span>
-                            )}
-                          </td>
-                          <td className="py-1.5 px-2 font-black text-primary truncate max-w-[220px]">
-                            {e.matchedBillNos.length > 0 ? (
-                              <span>
-                                {e.matchedBillNos.join(', ')}
-                                {e.matchedBillNos.length > 1 && (
-                                  <span className="ml-1 text-[9px] text-emerald-700 bg-emerald-100 px-1 py-0.2 rounded font-black">
-                                    Merged ({e.matchedBillNos.length})
-                                  </span>
-                                )}
-                              </span>
-                            ) : (
-                              <span className="text-muted-foreground/40 font-normal">—</span>
-                            )}
-                          </td>
-                        </tr>
-                      ))}
+                          entry={e}
+                          idx={idx}
+                          bills={bills}
+                          findBills={findBills}
+                          onMatchSubmit={handleManualMatchSubmit}
+                          onUnmatch={handleUnmatch}
+                          feedback={manualFeedback[e.id]}
+                          isEditing={editingEntryId === e.id}
+                          onStartEdit={id => setEditingEntryId(id)}
+                          onCancelEdit={() => setEditingEntryId(null)}
+                        />
+                      ))
+                    )}
                   </tbody>
                 </table>
               </div>
@@ -767,6 +1088,61 @@ export default function HistoryPage() {
                 >
                   Done
                 </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Amount Difference Confirmation Dialog */}
+        {confirmDiffDialog && (
+          <div className="fixed inset-0 z-[600] bg-black/60 flex items-center justify-center p-4 backdrop-blur-xs">
+            <div className="bg-card w-full max-w-md p-4 rounded-xl shadow-2xl border border-border space-y-3 animate-in zoom-in-95">
+              <div className="flex items-center gap-2 text-amber-600 dark:text-amber-400">
+                <AlertCircle className="w-5 h-5 shrink-0" />
+                <h3 className="text-sm font-black uppercase">Amount Difference Confirmation</h3>
+              </div>
+              <p className="text-xs text-muted-foreground">
+                Entered bills ka total aur statement deposit amount me farq hai:
+              </p>
+              <div className="bg-muted/40 p-2.5 rounded-lg text-xs space-y-1">
+                <div className="flex justify-between">
+                  <span className="text-muted-foreground">Bills Total:</span>
+                  <span className="font-black">₹{confirmDiffDialog.totalBillsAmt.toLocaleString('en-IN')}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-muted-foreground">Statement Deposit:</span>
+                  <span className="font-black text-primary">₹{confirmDiffDialog.entryAmt.toLocaleString('en-IN')}</span>
+                </div>
+                <div className="flex justify-between border-t border-border/50 pt-1">
+                  <span className="text-muted-foreground">Difference:</span>
+                  <span className="font-black text-rose-600">
+                    {confirmDiffDialog.diff > 0 ? `+₹${confirmDiffDialog.diff.toLocaleString('en-IN')}` : `-₹${Math.abs(confirmDiffDialog.diff).toLocaleString('en-IN')}`}
+                  </span>
+                </div>
+              </div>
+              <p className="text-[11px] font-bold text-muted-foreground">
+                Kya aap is difference ke sath match save karna chahte hain?
+              </p>
+              <div className="flex justify-end gap-2 pt-1">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setConfirmDiffDialog(null)}
+                  className="text-xs font-bold"
+                >
+                  Cancel
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  onClick={() => {
+                    handleManualMatchSubmit(confirmDiffDialog.entryId, confirmDiffDialog.query, confirmDiffDialog.entryAmt, true);
+                  }}
+                  className="bg-amber-600 hover:bg-amber-700 text-white text-xs font-black"
+                >
+                  Haan, Match Save Karein
+                </Button>
               </div>
             </div>
           </div>

@@ -18,6 +18,17 @@ export type StatementEntry = {
   matchedBillIds: string[];
   matchType?: 'single' | 'multi';
   matchGroupKey?: string;
+  isManual?: boolean;
+};
+
+export type ManualMatchRecord = {
+  signature: string;
+  entryId?: string;
+  billNos: string[];
+  billIds: string[];
+  amount: number;
+  date: string;
+  updatedAt: string;
 };
 
 export type StatementMatchStats = {
@@ -40,6 +51,7 @@ const LS_MATCHED_BILLS_KEY = 'vitratrack_statement_matched_bills';
 const LS_MATCHED_NOS_KEY = 'vitratrack_statement_matched_nos';
 const LS_STATEMENT_ENTRIES_KEY = 'vitratrack_statement_entries';
 const LS_STATEMENT_STATS_KEY = 'vitratrack_statement_stats';
+const LS_STATEMENT_MANUAL_MATCHES_KEY = 'vitratrack_statement_manual_matches';
 const IDB_STATEMENT_MATCH_KEY = 'vt_stmt_match_payload';
 const SUPABASE_SETTING_KEY = 'statement_match_state';
 
@@ -48,10 +60,24 @@ let _matchedBillIds = new Set<string>();
 let _matchedBillNos = new Set<string>();
 let _cachedStats: StatementMatchStats | null = null;
 let _cachedEntries: StatementEntry[] | null = null;
+let _manualMatches: Record<string, ManualMatchRecord> = {};
 let _isHydratingRemote = false;
 
-function stripGST(bn: string) {
-  return (bn || '').replace(/^GST[-_]/i, '').trim().toUpperCase();
+export function stripGST(bn: string): string {
+  if (!bn) return '';
+  let s = String(bn).trim().toUpperCase();
+  // Strip LeverEdge / distributor prefix if present (e.g. "10C711-GST42155" or "10C711-42155")
+  s = s.replace(/^[0-9A-Z]+[-_](GST)?/i, '');
+  // Strip GST or GST- or GST_ prefix
+  s = s.replace(/^GST[-_]?/i, '');
+  return s.trim();
+}
+
+export function getStatementEntrySignature(entry: { date: string; creditAmount: number; description?: string }): string {
+  const d = (entry.date || '').trim();
+  const amt = Math.round((Number(entry.creditAmount) || 0) * 100) / 100;
+  const cleanDesc = (entry.description || '').toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 50);
+  return `${d}_${amt}_${cleanDesc}`;
 }
 
 export function normDate(v?: string | number): string {
@@ -98,12 +124,16 @@ function saveToLocalStorage(
   matchedIds: Set<string>,
   matchedNos: Set<string>,
   entries: StatementEntry[],
-  stats: StatementMatchStats | null
+  stats: StatementMatchStats | null,
+  manualMatches?: Record<string, ManualMatchRecord>
 ) {
   try {
     localStorage.setItem(LS_MATCHED_BILLS_KEY, JSON.stringify(Array.from(matchedIds)));
     localStorage.setItem(LS_MATCHED_NOS_KEY, JSON.stringify(Array.from(matchedNos)));
     localStorage.setItem(LS_STATEMENT_ENTRIES_KEY, JSON.stringify(entries));
+    if (manualMatches) {
+      localStorage.setItem(LS_STATEMENT_MANUAL_MATCHES_KEY, JSON.stringify(manualMatches));
+    }
     if (stats) {
       localStorage.setItem(LS_STATEMENT_STATS_KEY, JSON.stringify(stats));
     } else {
@@ -134,6 +164,11 @@ function hydrate() {
     if (rawEntries) {
       _cachedEntries = JSON.parse(rawEntries);
     }
+    const rawManual = localStorage.getItem(LS_STATEMENT_MANUAL_MATCHES_KEY);
+    if (rawManual) {
+      const parsed = JSON.parse(rawManual);
+      if (parsed && typeof parsed === 'object') _manualMatches = parsed;
+    }
   } catch {}
 }
 
@@ -158,7 +193,10 @@ export async function hydrateStatementMatchFromRemote(): Promise<boolean> {
           _matchedBillNos = new Set((idbData.matchedNos || []).map((s: string) => stripGST(s)));
           _cachedEntries = idbData.entries;
           _cachedStats = idbData.stats || null;
-          saveToLocalStorage(_matchedBillIds, _matchedBillNos, _cachedEntries || [], _cachedStats);
+          if (idbData.manualMatches && typeof idbData.manualMatches === 'object') {
+            _manualMatches = { ..._manualMatches, ...idbData.manualMatches };
+          }
+          saveToLocalStorage(_matchedBillIds, _matchedBillNos, _cachedEntries || [], _cachedStats, _manualMatches);
           updated = true;
           window.dispatchEvent(new CustomEvent('vt-statement-match-updated'));
         }
@@ -181,8 +219,11 @@ export async function hydrateStatementMatchFromRemote(): Promise<boolean> {
             _matchedBillNos = new Set((parsed.matchedNos || []).map((s: string) => stripGST(s)));
             _cachedEntries = parsed.entries;
             _cachedStats = parsed.stats || null;
+            if (parsed.manualMatches && typeof parsed.manualMatches === 'object') {
+              _manualMatches = { ..._manualMatches, ...parsed.manualMatches };
+            }
 
-            saveToLocalStorage(_matchedBillIds, _matchedBillNos, _cachedEntries || [], _cachedStats);
+            saveToLocalStorage(_matchedBillIds, _matchedBillNos, _cachedEntries || [], _cachedStats, _manualMatches);
             idbSetMany({
               [IDB_STATEMENT_MATCH_KEY]: parsed,
             }).catch(() => {});
@@ -210,19 +251,9 @@ if (typeof window !== 'undefined') {
 
 /**
  * Returns true if the bill was verified and matched against an uploaded bank statement.
- * Strictly enforced: Only GPAY (UPI) and CHEQUE entries can be matched and highlighted!
  */
 export function isBillStatementMatched(b?: Bill | null): boolean {
   if (!b) return false;
-  // Strict rule: ONLY GPay and Cheque entries match
-  const mode = (b.paymentMode || '').toLowerCase();
-  const isGpayOrChq = mode === 'upi' ||
-                      mode === 'cheque' ||
-                      (Number(b.upiAmount) || 0) > 0 ||
-                      (Number(b.chequeAmount) || 0) > 0 ||
-                      Boolean(b.chequeNo && b.chequeNo.trim().length > 0);
-  if (!isGpayOrChq) return false;
-
   hydrate();
   if (b.id && _matchedBillIds.has(b.id)) return true;
   if (b.billNo && _matchedBillNos.has(stripGST(b.billNo))) return true;
@@ -243,6 +274,335 @@ export function getStatementMatchStats(): StatementMatchStats | null {
 export function getStatementEntries(): StatementEntry[] {
   hydrate();
   return _cachedEntries || [];
+}
+
+export function getManualMatches(): Record<string, ManualMatchRecord> {
+  hydrate();
+  return _manualMatches || {};
+}
+
+export function recalculateStats(entries: StatementEntry[], matchedNos: Set<string>): StatementMatchStats {
+  let matchedCount = 0;
+  let matchedAmt = 0;
+  let totalAmt = 0;
+  for (const e of entries) {
+    totalAmt += Number(e.creditAmount) || 0;
+    if (e.matched) {
+      matchedCount++;
+      matchedAmt += Number(e.creditAmount) || 0;
+    }
+  }
+  const now = new Date();
+  const uploadedAt = `${String(now.getDate()).padStart(2, '0')}/${String(now.getMonth() + 1).padStart(2, '0')}/${now.getFullYear()} ${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+  return {
+    totalStatementRows: entries.length,
+    totalCreditAmount: Math.round(totalAmt * 100) / 100,
+    matchedStatementRows: matchedCount,
+    matchedStatementAmount: Math.round(matchedAmt * 100) / 100,
+    unmatchedStatementRows: entries.length - matchedCount,
+    unmatchedStatementAmount: Math.round((totalAmt - matchedAmt) * 100) / 100,
+    matchedBillsCount: matchedNos.size,
+    matchedBillsTotalAmount: Math.round(matchedAmt * 100) / 100,
+    uploadedAt,
+  };
+}
+
+export function parseBillNumbersQuery(query: string): string[] {
+  if (!query) return [];
+  // Split on '+', ',', '/', ';', spaces, or newlines
+  const parts = query.split(/[+,\/\s;]+/).map(s => s.trim()).filter(Boolean);
+  const cleanList: string[] = [];
+  const seen = new Set<string>();
+  for (const p of parts) {
+    const clean = stripGST(p);
+    if (clean && !seen.has(clean)) {
+      seen.add(clean);
+      cleanList.push(clean);
+    }
+  }
+  return cleanList;
+}
+
+export function getBillAmountForMatch(b: Bill, targetAmt?: number): number {
+  const os = Math.round((Number(b.outstandingAmount) || 0) * 100) / 100;
+  const col = Math.round((Number(b.collectedAmount) || 0) * 100) / 100;
+  const eff = getEffAmt(b);
+  const effBank = Math.round(((eff.upi > 0 ? eff.upi : 0) + (eff.chq > 0 ? eff.chq : 0)) * 100) / 100;
+  const net = Math.round(Math.max(0, (Number(b.billNetAmt) || 0) - (Number(b.lineCutAmt) || 0)) * 100) / 100;
+
+  // If a target amount is specified and one candidate matches exactly
+  if (targetAmt !== undefined && targetAmt > 0) {
+    if (Math.abs(os - targetAmt) < 0.05) return os;
+    if (Math.abs(col - targetAmt) < 0.05) return col;
+    if (Math.abs(effBank - targetAmt) < 0.05) return effBank;
+    if (Math.abs(net - targetAmt) < 0.05) return net;
+  }
+
+  // 1. If bank payment exists (UPI / Cheque)
+  if (effBank > 0) return effBank;
+  // 2. Outstanding amount for pending/credit/unpaid bills
+  if (os > 0 && col === 0) return os;
+  // 3. Collected amount if OS is 0
+  if (col > 0 && os === 0) return col;
+  // 4. Default prefer OS if positive
+  if (os > 0) return os;
+  // 5. Prefer collected if positive
+  if (col > 0) return col;
+  // 6. Net bill amount
+  if (net > 0) return net;
+  return 0;
+}
+
+export type BillMatchLookupResult = {
+  queryNo: string;
+  billNo: string;
+  bill?: Bill;
+  found: boolean;
+  amount: number;
+  osAmount: number;
+  colAmount: number;
+  netAmount: number;
+  effBankAmount: number;
+  partyName?: string;
+  rawMode?: string;
+  date?: string;
+};
+
+let _cachedBillsArrayRef: Bill[] | null = null;
+let _cachedBillsArrayLength = 0;
+let _cachedBillsLookupMap: Map<string, Bill> | null = null;
+
+export function getBillsLookupMap(allBills: Bill[]): Map<string, Bill> {
+  if (
+    _cachedBillsLookupMap &&
+    _cachedBillsArrayRef === allBills &&
+    _cachedBillsArrayLength === allBills.length
+  ) {
+    return _cachedBillsLookupMap;
+  }
+
+  const map = new Map<string, Bill>();
+  for (let i = 0; i < allBills.length; i++) {
+    const b = allBills[i];
+    if (!b || !b.billNo) continue;
+    const raw = String(b.billNo).trim().toUpperCase();
+    const clean = stripGST(raw);
+
+    if (clean) map.set(clean, b);
+    map.set(raw, b);
+    if (clean && !raw.startsWith('GST')) {
+      map.set(`GST${clean}`, b);
+    }
+    if (b.srNo) {
+      map.set(String(b.srNo), b);
+    }
+  }
+
+  _cachedBillsArrayRef = allBills;
+  _cachedBillsArrayLength = allBills.length;
+  _cachedBillsLookupMap = map;
+  return map;
+}
+
+export function findBillsForManualMatch(query: string, allBills: Bill[], targetEntryAmt?: number): BillMatchLookupResult[] {
+  const tokens = parseBillNumbersQuery(query);
+  if (tokens.length === 0) return [];
+
+  const billMap = getBillsLookupMap(allBills);
+
+  const results: BillMatchLookupResult[] = tokens.map(token => {
+    const cleanToken = stripGST(token);
+    const b = billMap.get(cleanToken) || billMap.get(token) || (cleanToken ? billMap.get(`GST${cleanToken}`) : undefined);
+    if (b) {
+      const os = Math.round((Number(b.outstandingAmount) || 0) * 100) / 100;
+      const col = Math.round((Number(b.collectedAmount) || 0) * 100) / 100;
+      const eff = getEffAmt(b);
+      const effBank = Math.round(((eff.upi > 0 ? eff.upi : 0) + (eff.chq > 0 ? eff.chq : 0)) * 100) / 100;
+      const net = Math.round(Math.max(0, (Number(b.billNetAmt) || 0) - (Number(b.lineCutAmt) || 0)) * 100) / 100;
+
+      return {
+        queryNo: token,
+        billNo: b.billNo,
+        bill: b,
+        found: true,
+        amount: getBillAmountForMatch(b, targetEntryAmt),
+        osAmount: os,
+        colAmount: col,
+        netAmount: net,
+        effBankAmount: effBank,
+        partyName: b.partyName || '',
+        rawMode: b.paymentMode || '',
+        date: b.paymentDate || b.deliveryDate || b.date || '',
+      };
+    }
+    return {
+      queryNo: token,
+      billNo: token,
+      found: false,
+      amount: 0,
+      osAmount: 0,
+      colAmount: 0,
+      netAmount: 0,
+      effBankAmount: 0,
+      partyName: '',
+      rawMode: '',
+      date: '',
+    };
+  });
+
+  // If all bills were found and targetEntryAmt is specified:
+  // Dynamically check if OS, Col, Bank, or Net amounts equal targetEntryAmt exactly (e.g. 2600 + 2400 = 5000!)
+  if (targetEntryAmt && targetEntryAmt > 0 && results.every(r => r.found)) {
+    const sumOs = Math.round(results.reduce((s, r) => s + r.osAmount, 0) * 100) / 100;
+    const sumCol = Math.round(results.reduce((s, r) => s + r.colAmount, 0) * 100) / 100;
+    const sumNet = Math.round(results.reduce((s, r) => s + r.netAmount, 0) * 100) / 100;
+    const sumBank = Math.round(results.reduce((s, r) => s + r.effBankAmount, 0) * 100) / 100;
+
+    if (Math.abs(sumOs - targetEntryAmt) < 0.05) {
+      results.forEach(r => { r.amount = r.osAmount; });
+    } else if (Math.abs(sumCol - targetEntryAmt) < 0.05) {
+      results.forEach(r => { r.amount = r.colAmount; });
+    } else if (Math.abs(sumBank - targetEntryAmt) < 0.05) {
+      results.forEach(r => { r.amount = r.effBankAmount; });
+    } else if (Math.abs(sumNet - targetEntryAmt) < 0.05) {
+      results.forEach(r => { r.amount = r.netAmount; });
+    }
+  }
+
+  return results;
+}
+
+export function manualMatchStatementEntry(
+  entryId: string,
+  billQueryOrNos: string | string[],
+  allBills: Bill[],
+  allowTolerance = false
+): { ok: boolean; message: string; diff?: number; totalBillsAmt?: number; entryAmt?: number } {
+  hydrate();
+  const entries = _cachedEntries ? [..._cachedEntries] : [];
+  const entryIdx = entries.findIndex(e => e.id === entryId);
+  if (entryIdx === -1) {
+    return { ok: false, message: 'Statement entry nahi mili.' };
+  }
+  const entry = { ...entries[entryIdx] };
+
+  const queryStr = Array.isArray(billQueryOrNos) ? billQueryOrNos.join('+') : billQueryOrNos;
+  const lookup = findBillsForManualMatch(queryStr, allBills, entry.creditAmount);
+
+  if (lookup.length === 0) {
+    return { ok: false, message: 'Koi valid bill number nahi mila.' };
+  }
+
+  const notFound = lookup.filter(x => !x.found);
+  if (notFound.length > 0) {
+    return { ok: false, message: `Bill(s) nahi mile: ${notFound.map(n => n.queryNo).join(', ')}` };
+  }
+
+  const totalBillsAmt = Math.round(lookup.reduce((s, x) => s + x.amount, 0) * 100) / 100;
+  const diff = Math.round((totalBillsAmt - entry.creditAmount) * 100) / 100;
+
+  if (Math.abs(diff) > 1 && !allowTolerance) {
+    return {
+      ok: false,
+      message: `Amount match nahi hua: Bills Total ₹${totalBillsAmt.toLocaleString('en-IN')}, Statement Deposit ₹${entry.creditAmount.toLocaleString('en-IN')} (Diff: ₹${diff.toLocaleString('en-IN')})`,
+      diff,
+      totalBillsAmt,
+      entryAmt: entry.creditAmount,
+    };
+  }
+
+  const resolvedBillNos = lookup.map(x => x.billNo);
+  const resolvedBillIds = lookup.map(x => x.bill?.id).filter(Boolean) as string[];
+
+  entry.matched = true;
+  entry.matchedBillNos = resolvedBillNos;
+  entry.matchedBillIds = resolvedBillIds;
+  entry.matchType = resolvedBillNos.length > 1 ? 'multi' : 'single';
+  entry.matchGroupKey = `MANUAL_${resolvedBillNos.map(stripGST).join('+')}`;
+  entry.isManual = true;
+
+  entries[entryIdx] = entry;
+
+  for (const id of resolvedBillIds) _matchedBillIds.add(id);
+  for (const no of resolvedBillNos) _matchedBillNos.add(stripGST(no));
+
+  const sig = getStatementEntrySignature(entry);
+  const dateAmtKey = `${entry.date}_${Math.round(entry.creditAmount * 100) / 100}`;
+  const rec: ManualMatchRecord = {
+    signature: sig,
+    entryId: entry.id,
+    billNos: resolvedBillNos,
+    billIds: resolvedBillIds,
+    amount: entry.creditAmount,
+    date: entry.date,
+    updatedAt: new Date().toISOString(),
+  };
+  _manualMatches[sig] = rec;
+  _manualMatches[entry.id] = rec;
+  _manualMatches[dateAmtKey] = rec;
+  for (const bn of resolvedBillNos) {
+    _manualMatches[`BILL_${stripGST(bn)}`] = rec;
+  }
+
+  const stats = recalculateStats(entries, _matchedBillNos);
+  saveStatementMatchState(_matchedBillIds, _matchedBillNos, entries, stats, _manualMatches);
+
+  return {
+    ok: true,
+    message: `Match successful! Bill(s): ${resolvedBillNos.join(' + ')} (₹${totalBillsAmt.toLocaleString('en-IN')})`,
+    diff,
+    totalBillsAmt,
+    entryAmt: entry.creditAmount,
+  };
+}
+
+export function unmatchStatementEntry(entryId: string): { ok: boolean; message: string } {
+  hydrate();
+  const entries = _cachedEntries ? [..._cachedEntries] : [];
+  const entryIdx = entries.findIndex(e => e.id === entryId);
+  if (entryIdx === -1) {
+    return { ok: false, message: 'Statement entry nahi mili.' };
+  }
+  const entry = { ...entries[entryIdx] };
+  const oldBillNos = [...entry.matchedBillNos];
+  const oldBillIds = [...entry.matchedBillIds];
+  const sig = getStatementEntrySignature(entry);
+
+  entry.matched = false;
+  entry.matchedBillNos = [];
+  entry.matchedBillIds = [];
+  delete entry.matchType;
+  delete entry.matchGroupKey;
+  delete entry.isManual;
+
+  entries[entryIdx] = entry;
+
+  const dateAmtKey = `${entry.date}_${Math.round(entry.creditAmount * 100) / 100}`;
+  delete _manualMatches[sig];
+  delete _manualMatches[entry.id];
+  delete _manualMatches[dateAmtKey];
+  for (const bn of oldBillNos) {
+    delete _manualMatches[`BILL_${stripGST(bn)}`];
+  }
+
+  for (const bn of oldBillNos) {
+    const clean = stripGST(bn);
+    const stillInOther = entries.some(e => e.matched && e.matchedBillNos.some(x => stripGST(x) === clean));
+    if (!stillInOther) {
+      _matchedBillNos.delete(clean);
+    }
+  }
+  for (const id of oldBillIds) {
+    const stillInOther = entries.some(e => e.matched && e.matchedBillIds.includes(id));
+    if (!stillInOther) {
+      _matchedBillIds.delete(id);
+    }
+  }
+
+  const stats = recalculateStats(entries, _matchedBillNos);
+  saveStatementMatchState(_matchedBillIds, _matchedBillNos, entries, stats, _manualMatches);
+
+  return { ok: true, message: 'Entry unmatch kar di gayi.' };
 }
 
 /**
@@ -270,6 +630,17 @@ export function useStatementMatch() {
     }, [version]),
     stats: getStatementMatchStats(),
     entries: getStatementEntries(),
+    manualMatches: getManualMatches(),
+    manualMatch: useCallback((entryId: string, billQueryOrNos: string | string[], bills: Bill[], allowTolerance?: boolean) => {
+      return manualMatchStatementEntry(entryId, billQueryOrNos, bills, allowTolerance);
+    }, []),
+    unmatch: useCallback((entryId: string) => {
+      return unmatchStatementEntry(entryId);
+    }, []),
+    findBills: useCallback((query: string, bills: Bill[], targetEntryAmt?: number) => {
+      return findBillsForManualMatch(query, bills, targetEntryAmt);
+    }, []),
+    getBillAmt: getBillAmountForMatch,
     clear: clearStatementMatchState,
     reload: hydrateStatementMatchFromRemote,
   };
@@ -280,12 +651,14 @@ export function clearStatementMatchState() {
   _matchedBillNos = new Set();
   _cachedStats = null;
   _cachedEntries = null;
+  _manualMatches = {};
 
   try {
     localStorage.removeItem(LS_MATCHED_BILLS_KEY);
     localStorage.removeItem(LS_MATCHED_NOS_KEY);
     localStorage.removeItem(LS_STATEMENT_STATS_KEY);
     localStorage.removeItem(LS_STATEMENT_ENTRIES_KEY);
+    localStorage.removeItem(LS_STATEMENT_MANUAL_MATCHES_KEY);
   } catch {}
 
   // Clear from IndexedDB
@@ -296,28 +669,35 @@ export function clearStatementMatchState() {
   // Clear from Supabase settings
   apiPushSetting(SUPABASE_SETTING_KEY, '').catch(() => {});
 
-  window.dispatchEvent(new CustomEvent('vt-statement-match-updated'));
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent('vt-statement-match-updated'));
+  }
 }
 
 export function saveStatementMatchState(
   matchedIds: Set<string>,
   matchedNos: Set<string>,
   entries: StatementEntry[],
-  stats: StatementMatchStats
+  stats: StatementMatchStats,
+  manualMatches?: Record<string, ManualMatchRecord>
 ) {
   _matchedBillIds = matchedIds;
   _matchedBillNos = matchedNos;
   _cachedEntries = entries;
   _cachedStats = stats;
+  if (manualMatches) {
+    _manualMatches = manualMatches;
+  }
 
   // 1. LocalStorage
-  saveToLocalStorage(matchedIds, matchedNos, entries, stats);
+  saveToLocalStorage(matchedIds, matchedNos, entries, stats, _manualMatches);
 
   const payload = {
     matchedIds: Array.from(matchedIds),
     matchedNos: Array.from(matchedNos),
     entries,
     stats,
+    manualMatches: _manualMatches,
     updatedAt: new Date().toISOString(),
   };
 
@@ -331,7 +711,9 @@ export function saveStatementMatchState(
     console.warn('[statementMatch] Failed to push statement match to Supabase settings:', err);
   });
 
-  window.dispatchEvent(new CustomEvent('vt-statement-match-updated'));
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent('vt-statement-match-updated'));
+  }
 }
 
 /**
@@ -697,34 +1079,101 @@ export function matchStatementWithBills(
   const allGroups = Array.from(groupsMap.values());
 
   // 3. Match against statement entries
-  const matchedBillIds = new Set<string>();
-  const matchedBillNos = new Set<string>();
-  const updatedEntries: StatementEntry[] = [];
+  hydrate();
+  const matchedBillIds = new Set<string>(_matchedBillIds);
+  const matchedBillNos = new Set<string>(_matchedBillNos);
+  const manualMatches = { ..._manualMatches };
 
-  let matchedStmtCount = 0;
-  let matchedStmtAmt = 0;
+  // Map existing cached entries by ID and signature to preserve any previous match
+  const existingMap = new Map<string, StatementEntry>();
+  if (_cachedEntries && Array.isArray(_cachedEntries)) {
+    for (const ex of _cachedEntries) {
+      if (ex.matched) {
+        existingMap.set(ex.id, ex);
+        existingMap.set(getStatementEntrySignature(ex), ex);
+      }
+    }
+  }
+
+  const updatedEntries: StatementEntry[] = [];
   let totalStmtAmt = 0;
 
   // Clone entries to preserve original
-  const entriesCopy = statementEntries.map(e => ({
-    ...e,
-    matched: false,
-    matchedBillNos: [] as string[],
-    matchedBillIds: [] as string[],
-  }));
+  const entriesCopy: StatementEntry[] = [];
+
+  for (const rawEntry of statementEntries) {
+    totalStmtAmt += rawEntry.creditAmount;
+    const sig = getStatementEntrySignature(rawEntry);
+    const entry: StatementEntry = {
+      ...rawEntry,
+      matched: false,
+      matchedBillNos: [],
+      matchedBillIds: [],
+    };
+
+    // Priority 1: Check manual match record
+    const dateAmtKey = `${rawEntry.date}_${Math.round(rawEntry.creditAmount * 100) / 100}`;
+    const manMatch = manualMatches[sig] || manualMatches[entry.id] || manualMatches[dateAmtKey];
+    if (manMatch && manMatch.billNos.length > 0) {
+      entry.matched = true;
+      entry.matchedBillNos = [...manMatch.billNos];
+      entry.matchedBillIds = [...(manMatch.billIds || [])];
+      entry.matchType = manMatch.billNos.length > 1 ? 'multi' : 'single';
+      entry.matchGroupKey = `MANUAL_${manMatch.billNos.map(stripGST).join('+')}`;
+      entry.isManual = true;
+      for (const bn of manMatch.billNos) matchedBillNos.add(stripGST(bn));
+      for (const id of manMatch.billIds || []) matchedBillIds.add(id);
+      entriesCopy.push(entry);
+      continue;
+    }
+
+    // Priority 2: Check previously matched existing entry
+    const existing = existingMap.get(entry.id) || existingMap.get(sig);
+    if (existing && existing.matched && existing.matchedBillNos.length > 0) {
+      entry.matched = true;
+      entry.matchedBillNos = [...existing.matchedBillNos];
+      entry.matchedBillIds = [...existing.matchedBillIds];
+      entry.matchType = existing.matchType;
+      entry.matchGroupKey = existing.matchGroupKey;
+      entry.isManual = existing.isManual;
+      for (const bn of existing.matchedBillNos) matchedBillNos.add(stripGST(bn));
+      for (const id of existing.matchedBillIds) matchedBillIds.add(id);
+      entriesCopy.push(entry);
+      continue;
+    }
+
+    entriesCopy.push(entry);
+  }
+
+  // Preserve previously matched historical statement entries if not in the new upload
+  const currentSigs = new Set(entriesCopy.map(getStatementEntrySignature));
+  const currentIds = new Set(entriesCopy.map(e => e.id));
+  if (_cachedEntries && Array.isArray(_cachedEntries)) {
+    for (const ex of _cachedEntries) {
+      if (ex.matched && !currentIds.has(ex.id) && !currentSigs.has(getStatementEntrySignature(ex))) {
+        entriesCopy.push(ex);
+        totalStmtAmt += ex.creditAmount;
+        for (const bn of ex.matchedBillNos) matchedBillNos.add(stripGST(bn));
+        for (const id of ex.matchedBillIds) matchedBillIds.add(id);
+      }
+    }
+  }
 
   // PASS 1: Multi-bill groups matching (by exact amount + date)
   // Multi-bill groups take precedence so combined sums match their statement deposit!
+  // Exclude groups where any bill is already matched
   const multiGroups = allGroups.filter(g => g.items.length > 1);
 
   for (const entry of entriesCopy) {
-    totalStmtAmt += entry.creditAmount;
+    if (entry.matched) continue;
 
     // Try matching multi-bill group
     for (const grp of multiGroups) {
       if (grp.matched) continue;
       // Date must match exactly
       if (grp.recDate !== entry.date) continue;
+      // Do not use bills that are already matched
+      if (grp.items.some(item => matchedBillNos.has(stripGST(item.billNo)))) continue;
       // Amount must match
       if (Math.abs(grp.totalAmount - entry.creditAmount) < 0.05) {
         grp.matched = true;
@@ -737,8 +1186,6 @@ export function matchStatementWithBills(
           entry.matchedBillNos.push(item.billNo);
           if (item.bill.id) entry.matchedBillIds.push(item.bill.id);
         }
-        matchedStmtCount++;
-        matchedStmtAmt += entry.creditAmount;
         break;
       }
     }
@@ -757,6 +1204,8 @@ export function matchStatementWithBills(
       if (grp.matched) continue;
       // Date must match exactly
       if (grp.recDate !== entry.date) continue;
+      // Do not use bills that are already matched
+      if (grp.items.some(item => matchedBillNos.has(stripGST(item.billNo)))) continue;
       // Amount must match
       if (Math.abs(grp.totalAmount - entry.creditAmount) < 0.05) {
         grp.matched = true;
@@ -768,8 +1217,6 @@ export function matchStatementWithBills(
         matchedBillNos.add(stripGST(item.billNo));
         entry.matchedBillNos.push(item.billNo);
         if (item.bill.id) entry.matchedBillIds.push(item.bill.id);
-        matchedStmtCount++;
-        matchedStmtAmt += entry.creditAmount;
         break;
       }
     }
@@ -777,24 +1224,11 @@ export function matchStatementWithBills(
     updatedEntries.push(entry);
   }
 
-  // Compute stats
-  const now = new Date();
-  const uploadedAt = `${String(now.getDate()).padStart(2, '0')}/${String(now.getMonth() + 1).padStart(2, '0')}/${now.getFullYear()} ${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+  // Compute stats using shared recalculateStats
+  const stats = recalculateStats(updatedEntries, matchedBillNos);
 
-  const stats: StatementMatchStats = {
-    totalStatementRows: statementEntries.length,
-    totalCreditAmount: Math.round(totalStmtAmt * 100) / 100,
-    matchedStatementRows: matchedStmtCount,
-    matchedStatementAmount: Math.round(matchedStmtAmt * 100) / 100,
-    unmatchedStatementRows: statementEntries.length - matchedStmtCount,
-    unmatchedStatementAmount: Math.round((totalStmtAmt - matchedStmtAmt) * 100) / 100,
-    matchedBillsCount: matchedBillNos.size,
-    matchedBillsTotalAmount: Math.round(matchedStmtAmt * 100) / 100,
-    uploadedAt,
-  };
-
-  // Persist
-  saveStatementMatchState(matchedBillIds, matchedBillNos, updatedEntries, stats);
+  // Persist with manualMatches
+  saveStatementMatchState(matchedBillIds, matchedBillNos, updatedEntries, stats, manualMatches);
 
   return {
     matchedBillIds,
