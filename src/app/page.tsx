@@ -721,13 +721,15 @@ export default function Dashboard() {
         const pTime = (b.paymentTime || '').trim().toUpperCase();
         const dName = (b.driverName || '').trim().toUpperCase();
         const isMoc = (b.billNo || '').toUpperCase().startsWith('MOC') || b.collectionCode === 'MOC' || b.salespersonName === 'MOC';
-        if (!isMoc && b.deliveryDate === displayDate && dName && dName !== 'OWNER') return false;
+        const isOwnerTagged = pTime === 'OWNER' || pTime.startsWith('OWNER:') || pTime.startsWith('OWNER ') || dName === 'OWNER' || ownerSavedBillNos.includes(b.billNo) || ownerSavedBillNos.includes(b.id);
+        // Driver-assignment exclusion applies only when the entry is NOT explicitly owner-tagged
+        if (!isOwnerTagged && !isMoc && b.deliveryDate === displayDate && dName && dName !== 'OWNER') return false;
         if (drivers.some(d => d.role === 'user' && d.name?.trim().toUpperCase() !== 'OWNER' && (
           pTime === d.name?.trim().toUpperCase() || pTime.startsWith(`${d.name?.trim().toUpperCase()}:`) || pTime.startsWith(`${d.name?.trim().toUpperCase()} `)
         ))) return false;
         const hasReceipt = (Number(b.collectedAmount) || 0) > 0 || (Number(b.cashAmount) || 0) > 0 || (Number(b.upiAmount) || 0) > 0 || (Number(b.chequeAmount) || 0) > 0;
         if (!hasReceipt && !['paid', 'cash', 'upi', 'cheque', 'split', 'fbr', 'cancel', 'credit'].includes(mode)) return false;
-        return pTime === 'OWNER' || pTime.startsWith('OWNER:') || pTime.startsWith('OWNER ') || dName === 'OWNER' || ownerSavedBillNos.includes(b.billNo) || ownerSavedBillNos.includes(b.id);
+        return isOwnerTagged;
       });
     } else if (isUserStaff) {
       // Keep the existing USER database counts unchanged.
@@ -981,18 +983,14 @@ export default function Dashboard() {
 
       if (isOwner) {
         // Owner must be explicit payment date matching displayDate and entered by OWNER
-        // Exclude bills that were assigned to a driver on deliveryDate
-        if (!isMoc && dDate === displayDate && dName && dName !== 'OWNER') continue;
+        const isOwnerTagged = pTime === 'OWNER' || pTime.startsWith('OWNER:') || pTime.startsWith('OWNER ') || dName === 'OWNER' ||
+          (Array.isArray(ownerSavedBillNos) && (ownerSavedBillNos.includes(b.billNo) || ownerSavedBillNos.includes(b.id)));
+        // Exclude driver-assigned bills only when the entry is NOT explicitly owner-tagged
+        if (!isOwnerTagged && !isMoc && dDate === displayDate && dName && dName !== 'OWNER') continue;
         const isOtherStaff = drivers.some(d => d.role === 'user' && (d.name || '').trim().toUpperCase() !== 'OWNER' && (pTime === (d.name || '').trim().toUpperCase() || pTime.startsWith((d.name || '').trim().toUpperCase() + ':')));
         if (isOtherStaff) continue;
 
-        const isOwnerPaid = Boolean(pDate) && isoToDisplay(pDate) === displayDate && (
-          pTime === 'OWNER' ||
-          pTime.startsWith('OWNER:') ||
-          pTime.startsWith('OWNER ') ||
-          dName === 'OWNER' ||
-          (Array.isArray(ownerSavedBillNos) && (ownerSavedBillNos.includes(b.billNo) || ownerSavedBillNos.includes(b.id)))
-        );
+        const isOwnerPaid = Boolean(pDate) && isoToDisplay(pDate) === displayDate && isOwnerTagged;
         if (isOwnerPaid) {
           const c = getEffCash(b);
           if (c > 0) {
