@@ -399,6 +399,7 @@ export async function fetchAllBills(options?: { fullHistory?: boolean }): Promis
       .from('bills')
       .select(BILL_SELECT_COLUMNS, { count: 'exact' })
       .order('updated_at', { ascending: false, nullsFirst: false })
+      .order('id', { ascending: true })
       .range(0, CHUNK_SIZE - 1);
 
     const { data: firstPage, count, error: countErr } = await query;
@@ -422,13 +423,19 @@ export async function fetchAllBills(options?: { fullHistory?: boolean }): Promis
       const batchEnd = Math.min(batchStart + BATCH_CONCURRENCY, totalPages);
       for (let p = batchStart; p < batchEnd; p++) {
         const start = p * CHUNK_SIZE;
-        batchPromises.push(
-          supabase
-            .from('bills')
-            .select(BILL_SELECT_COLUMNS)
-            .order('updated_at', { ascending: false, nullsFirst: false })
-            .range(start, start + CHUNK_SIZE - 1)
-        );
+        batchPromises.push((async () => {
+          for (let attempt = 0; attempt < 4; attempt++) {
+            const res = await supabase!
+              .from('bills')
+              .select(BILL_SELECT_COLUMNS)
+              .order('updated_at', { ascending: false, nullsFirst: false })
+              .order('id', { ascending: true })
+              .range(start, start + CHUNK_SIZE - 1);
+            if (!res.error) return res;
+            await new Promise(r => setTimeout(r, 400 * (attempt + 1)));
+          }
+          throw new Error('bills page ' + start + ' failed');
+        })());
       }
       const resList = await Promise.all(batchPromises);
       for (const res of resList) {
