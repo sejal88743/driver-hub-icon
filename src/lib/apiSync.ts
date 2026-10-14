@@ -1935,7 +1935,7 @@ export async function apiFetchBillsSince(sinceIso: string): Promise<Bill[]> {
 
     if (!fallback.error && Array.isArray(fallback.data)) {
       const sinceTime = new Date(validSince).getTime();
-      return (fallback.data as Record<string, unknown>[])
+      return (fallback.data as unknown as Record<string, unknown>[])
         .map(mapBillFromSupabase)
         .filter(b => {
           if (!b.updatedAt) return true;
