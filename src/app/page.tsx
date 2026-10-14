@@ -2224,11 +2224,41 @@ export default function Dashboard() {
   // ── Save ALL pending overflow bills together ──────────────────────────────────
   async function handleOverflowSaveAll(itemsSnap: Array<{ billNo: string; partyName: string; billNetAmt: number; lineCutInput: string; applied?: number; lineCut?: number; netPayable?: number }>) {
     if (overflowSaving || itemsSnap.length === 0) return;
+
+    // Strict validation: rec amount bill no wise settle hoke remain amount = 0 hona zaroori hai!
+    let checkRem = Number(overflowTotalCollected) || 0;
+    for (const item of itemsSnap) {
+      const allBills = getBills();
+      const bill = allBills.find(b => (b.billNo || '').toLowerCase() === (item.billNo || '').toLowerCase());
+      const billNet = Number(item.billNetAmt) || Number(bill?.billNetAmt) || Number(bill?.outstandingAmount) || 0;
+      const existingLc = (Number(bill?.lineCutAmt) || 0) || (Number(bill?.cancelLine) || 0);
+
+      const lineCut = item.lineCut !== undefined
+        ? item.lineCut
+        : (item.lineCutInput !== '' && item.lineCutInput !== undefined
+            ? Math.max(0, Math.min(Number(item.lineCutInput) || 0, billNet))
+            : (existingLc > 0 ? existingLc : 0));
+
+      const netPayable = Math.max(0, billNet - lineCut);
+      const applied = item.applied !== undefined ? item.applied : Math.min(checkRem, netPayable);
+      checkRem = Math.max(0, checkRem - applied);
+    }
+
+    if (Math.round(checkRem * 100) / 100 !== 0) {
+      setSaveError(`Rec amount bill no wise settle hoke remain amount 0 hona zaroori hai! Abhi ₹${Math.round(checkRem).toLocaleString('en-IN')} baki hai. Remain amount 0 hone par hi save hoga.`);
+      return;
+    }
+
     setOverflowSaving(true);
     setSaveError(null);
     const chainRecDate = overflowRecDateSaved || isoToDisplay(dashDate) || dashDate;
     const chainChequeDate = overflowChequeDateSaved || null;
     let rem = Number(overflowTotalCollected) || 0;
+
+    const validBillNos = itemsSnap.map(x => x.billNo.trim());
+    const chainGroupKey = itemsSnap.length > 1
+      ? (overflowChequeSaved ? `CHQ:${overflowChequeSaved}` : (overflowMode === 'UPI' ? `GPAY:${validBillNos.join('+')}` : `CHAIN:${validBillNos.join('+')}`))
+      : null;
 
     for (const item of itemsSnap) {
       const allBills = getBills();
@@ -2238,16 +2268,16 @@ export default function Dashboard() {
 
       let lineCut = item.lineCut !== undefined
         ? item.lineCut
-        : (item.lineCutInput !== ''
+        : (item.lineCutInput !== '' && item.lineCutInput !== undefined
             ? Math.max(0, Math.min(Number(item.lineCutInput) || 0, billNet))
-            : (existingLc > 0 ? existingLc : Math.max(0, billNet - rem)));
+            : (existingLc > 0 ? existingLc : 0));
 
       const netPayable = Math.max(0, billNet - lineCut);
       const applied = item.applied !== undefined ? item.applied : Math.min(rem, netPayable);
       rem = Math.max(0, rem - applied);
 
-      // Auto-cover remaining shortfall with Line Cut so every bill in the chain is marked PAID
-      const effectiveLineCut = (lineCut > 0) ? lineCut : Math.max(0, billNet - applied);
+      // Auto-cover remaining shortfall with Line Cut so every bill in the chain is marked PAID if user hasn't explicitly set line cut to 0
+      const effectiveLineCut = (lineCut > 0) ? lineCut : (item.lineCutInput === '0' ? 0 : Math.max(0, billNet - applied));
 
       const appliedSplit = {
         cash:   (overflowMode === 'Cash' || overflowMode === 'Split') ? applied : 0,
@@ -2264,7 +2294,7 @@ export default function Dashboard() {
         dashDate,
         overflowChequeSaved || null,
         overflowBankSaved || null,
-        null,
+        chainGroupKey,
         appliedSplit,
         effectiveLineCut > 0 ? effectiveLineCut : null,
         chainRecDate,

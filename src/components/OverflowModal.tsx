@@ -111,7 +111,7 @@ export default function OverflowModal({
 
   // Live calculations for each pending item in the chain
   let rem = Number(overflowTotalCollected) || 0;
-  const processed = pendingItems.map((item, idx) => {
+  const processed = pendingItems.map((item) => {
     const foundBill = findBillInList(item.billNo, allAvailableBills);
     const billNetAmt = Number(item.billNetAmt) || Number(foundBill?.billNetAmt) || Number(foundBill?.outstandingAmount) || 0;
     const existingLc = (Number(foundBill?.lineCutAmt) || 0) || (Number(foundBill?.cancelLine) || 0);
@@ -120,8 +120,7 @@ export default function OverflowModal({
     if (item.lineCutInput !== '' && item.lineCutInput !== undefined) {
       lineCut = Math.max(0, Math.min(Number(item.lineCutInput) || 0, billNetAmt));
     } else {
-      // Default line cut if money runs short on this item
-      lineCut = existingLc > 0 ? existingLc : Math.max(0, billNetAmt - rem);
+      lineCut = existingLc > 0 ? existingLc : 0;
     }
 
     const netPayable = Math.max(0, billNetAmt - lineCut);
@@ -129,11 +128,17 @@ export default function OverflowModal({
     rem = Math.max(0, rem - applied);
     return { ...item, billNetAmt, lineCut, applied, netPayable };
   });
-  const remaining = rem;
+  const remaining = Math.round(rem * 100) / 100;
+  const isFullySettled = remaining === 0 && pendingItems.length > 0;
 
   const handleAddNextBill = () => {
     const bn = nextBillInput.trim();
     if (!bn) return;
+
+    if (remaining <= 0) {
+      setNextBillErr(`Pura rec amount (₹${overflowTotalCollected.toLocaleString('en-IN')}) settle ho chuka hai (Remain ₹0 hai)!`);
+      return;
+    }
     
     const foundBill = findBillInList(bn, allAvailableBills);
     if (!foundBill) {
@@ -147,16 +152,7 @@ export default function OverflowModal({
     
     const billNetAmt = Number(foundBill.billNetAmt) || Number(foundBill.outstandingAmount) || 0;
     const existingLc = (Number(foundBill.lineCutAmt) || 0) || (Number(foundBill.cancelLine) || 0);
-
-    // Auto-calculate line cut for the new bill if remaining money is less than the bill net amount
-    let nextLineCut = '0';
-    if (existingLc > 0) {
-      nextLineCut = String(existingLc);
-    } else if (remaining < billNetAmt) {
-      // Auto apply line cut for the shortfall so the bill is 100% covered!
-      const shortfall = Math.max(0, billNetAmt - remaining);
-      nextLineCut = String(shortfall);
-    }
+    const nextLineCut = existingLc > 0 ? String(existingLc) : '0';
 
     setNextBillErr('');
     setPendingItems(prev => [
@@ -195,22 +191,25 @@ export default function OverflowModal({
         <div className="flex items-center justify-between px-5 pt-5 pb-3 border-b border-border/40" id="overflow-header">
           <div>
             <h3 className="font-black text-sm uppercase text-primary">Chain Payment</h3>
-            <p className="text-[10px] font-bold text-muted-foreground uppercase mt-0.5">
-              Total: <span className="text-primary font-black">₹{overflowTotalCollected.toLocaleString('en-IN')}</span>
-              <span className="mx-1.5 text-border">·</span>
-              Mode: <span className="text-primary font-black">{overflowMode}</span>
+            <div className="flex items-center flex-wrap gap-1.5 text-[10px] font-bold text-muted-foreground uppercase mt-1">
+              <span>Total: <strong className="text-primary font-black">₹{overflowTotalCollected.toLocaleString('en-IN')}</strong></span>
+              <span className="text-border">·</span>
+              <span>Mode: <strong className="text-primary font-black">{overflowMode}</strong></span>
+              <span className="text-border">·</span>
               {remaining > 0 ? (
-                <>
-                  <span className="mx-1.5 text-border">·</span>
-                  <span className="text-orange-500 font-black">Rem: ₹{remaining.toLocaleString('en-IN')}</span>
-                </>
+                <span className="text-amber-700 bg-amber-500/15 border border-amber-500/30 px-2 py-0.5 rounded-md font-black">
+                  Rem: ₹{remaining.toLocaleString('en-IN')}
+                </span>
+              ) : isFullySettled ? (
+                <span className="text-emerald-700 bg-emerald-500/15 border border-emerald-500/30 px-2 py-0.5 rounded-md font-black flex items-center gap-1">
+                  <Check className="w-3 h-3 stroke-[3]" /> Remain: ₹0 (Settled)
+                </span>
               ) : (
-                <>
-                  <span className="mx-1.5 text-border">·</span>
-                  <span className="text-emerald-600 font-black">Full Allocated</span>
-                </>
+                <span className="text-destructive bg-destructive/10 border border-destructive/30 px-2 py-0.5 rounded-md font-black">
+                  Over: ₹{Math.abs(remaining).toLocaleString('en-IN')}
+                </span>
               )}
-            </p>
+            </div>
           </div>
           <button 
             id="overflow-close-btn"
@@ -275,16 +274,42 @@ export default function OverflowModal({
           ))}
         </div>
 
+        {/* Settlement Status Banner */}
+        <div className="px-5 pt-1">
+          {remaining > 0 ? (
+            <div className="bg-amber-500/10 border border-amber-500/30 rounded-xl px-3 py-2 text-center text-amber-800 dark:text-amber-300 space-y-0.5" id="overflow-remaining-banner">
+              <p className="text-[10px] font-black uppercase flex items-center justify-center gap-1">
+                ⚠️ Baki ₹{remaining.toLocaleString('en-IN')} Settle Karna Baki Hai
+              </p>
+              <p className="text-[8.5px] font-bold text-muted-foreground">
+                Agla bill add karke Remain Amount = ₹0 karein. Remain 0 hone par hi entry save hogi!
+              </p>
+            </div>
+          ) : isFullySettled ? (
+            <div className="bg-emerald-500/10 border border-emerald-500/30 rounded-xl px-3 py-2 text-center text-emerald-800 dark:text-emerald-300 space-y-0.5" id="overflow-settled-banner">
+              <p className="text-[10px] font-black uppercase flex items-center justify-center gap-1 text-emerald-700 dark:text-emerald-400">
+                <Check className="w-3.5 h-3.5 stroke-[3] text-emerald-600" /> Pura Rec Amount Settle Ho Gaya (Remain = ₹0)
+              </p>
+              <p className="text-[8.5px] font-bold text-muted-foreground">
+                Sabhi bills me pura amount divide ho chuka hai. Niche Save All par click karein.
+              </p>
+            </div>
+          ) : (
+            <div className="bg-destructive/10 border border-destructive/30 rounded-xl px-3 py-1.5 text-center text-destructive">
+              <p className="text-[9.5px] font-black uppercase">
+                ⚠️ Over-allocated by ₹{Math.abs(remaining).toLocaleString('en-IN')}! Line cut ya bills adjust karein.
+              </p>
+            </div>
+          )}
+        </div>
+
         {/* Next bill input */}
-        <div className="px-5 pb-5 pt-1 space-y-2" id="overflow-actions-container">
+        <div className="px-5 pb-5 pt-2 space-y-2" id="overflow-actions-container">
           <div>
             <div className="flex items-center justify-between mb-1">
               <p className="text-[9px] font-black text-orange-600 uppercase">
                 {remaining > 0 ? `Baki ₹${remaining.toLocaleString('en-IN')} — Agla Bill No:` : 'Aur Bill Add Karein:'}
               </p>
-              {remaining > 0 && (
-                <span className="text-[8px] font-bold text-muted-foreground uppercase">Auto Line Cut Active</span>
-              )}
             </div>
             <div className="flex gap-1.5">
               <input
@@ -292,10 +317,21 @@ export default function OverflowModal({
                 id="overflow-next-bill-input"
                 type="text" 
                 inputMode="numeric"
-                placeholder="NEXT BILL NO..."
+                placeholder={remaining > 0 ? "NEXT BILL NO (REMAIN SETTLE)..." : "ALL SETTLED (REMAIN ₹0)"}
                 value={nextBillInput}
                 onChange={e => { setNextBillInput(e.target.value); setNextBillErr(''); }}
-                onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); handleAddNextBill(); } }}
+                onKeyDown={e => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault();
+                    if (nextBillInput.trim()) {
+                      handleAddNextBill();
+                    } else if (isFullySettled && !overflowSaving && pendingItems.length > 0) {
+                      onSaveAll(processed);
+                    } else if (!isFullySettled) {
+                      setNextBillErr(`Remain amount ₹${remaining.toLocaleString('en-IN')} bacha hai! Agla bill no dalein.`);
+                    }
+                  }
+                }}
                 className={cn(
                   "flex-1 h-10 px-3 bg-muted rounded-xl text-sm font-black border-2 outline-none uppercase text-center transition-all", 
                   nextBillErr ? "border-destructive" : "border-border focus:border-primary"
@@ -304,8 +340,8 @@ export default function OverflowModal({
               <Button 
                 id="overflow-add-bill-btn"
                 onClick={handleAddNextBill} 
-                disabled={!nextBillInput.trim()} 
-                className="h-10 px-4 rounded-xl font-black uppercase text-[10px] bg-orange-500 hover:bg-orange-600 text-white cursor-pointer shrink-0"
+                disabled={!nextBillInput.trim() || remaining <= 0} 
+                className="h-10 px-4 rounded-xl font-black uppercase text-[10px] bg-orange-500 hover:bg-orange-600 disabled:opacity-40 text-white cursor-pointer shrink-0"
               >
                 Add Bill
               </Button>
@@ -328,19 +364,32 @@ export default function OverflowModal({
             </Button>
             <Button
               id="overflow-save-all-btn"
-              onClick={() => onSaveAll(processed)}
-              disabled={overflowSaving || pendingItems.length === 0}
+              onClick={() => {
+                if (!isFullySettled) {
+                  setNextBillErr(`Remain amount ₹${remaining.toLocaleString('en-IN')} bacha hai! Remain amount = 0 hoga tohi entry save hogi.`);
+                  nextInputRef.current?.focus();
+                  return;
+                }
+                onSaveAll(processed);
+              }}
+              disabled={overflowSaving || pendingItems.length === 0 || !isFullySettled}
               className={cn(
-                "flex-[2] rounded-2xl font-black uppercase text-[10px] h-11 text-white cursor-pointer", 
-                remaining <= 0 ? "bg-emerald-600 hover:bg-emerald-700" : "bg-primary hover:bg-primary/90"
+                "flex-[2] rounded-2xl font-black uppercase text-[10px] h-11 text-white cursor-pointer transition-all", 
+                isFullySettled 
+                  ? "bg-emerald-600 hover:bg-emerald-700 shadow-md shadow-emerald-600/30 ring-2 ring-emerald-500/50" 
+                  : "bg-muted text-muted-foreground/60 border border-border cursor-not-allowed opacity-75"
               )}
             >
               {overflowSaving ? (
                 <Loader2 className="w-4 h-4 animate-spin" id="overflow-save-all-loader" />
+              ) : isFullySettled ? (
+                <>
+                  <Check className="w-3.5 h-3.5 mr-1.5 stroke-[3]" />
+                  Save All ({pendingItems.length} Bill{pendingItems.length > 1 ? 's' : ''})
+                </>
               ) : (
                 <>
-                  <Check className="w-3.5 h-3.5 mr-1.5" />
-                  Save All ({pendingItems.length} Bill{pendingItems.length > 1 ? 's' : ''})
+                  Remain ₹{remaining.toLocaleString('en-IN')} — Save Locked
                 </>
               )}
             </Button>
