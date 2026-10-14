@@ -1537,8 +1537,8 @@ export function bulkMergeBillsInStore(mergedBills: Bill[]) {
 }
 
 // ─── Add new bills (from XLS import — no delete) ─────────────────────────────
-export function addBillsToStore(newBills: Bill[]) {
-  if (newBills.length === 0) return;
+export async function addBillsToStore(newBills: Bill[]): Promise<boolean> {
+  if (newBills.length === 0) return true;
   const existingKeys = new Set(_bills.map(b => getBillDedupeKey(b)));
   const toAdd: Bill[] = [];
   for (const b of newBills) {
@@ -1548,15 +1548,24 @@ export function addBillsToStore(newBills: Bill[]) {
       toAdd.push(b);
     }
   }
-  if (toAdd.length === 0) return;
+  if (toAdd.length === 0) return true;
   _bills = [..._bills, ...toAdd];
   dispatchUpdate();
   persistLocalState(true);
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent('broadcast-bills-update', { detail: toAdd }));
+  }
   markWriteStart();
-  import('@/lib/apiSync')
-    .then(m => m.apiInsertBills(toAdd))
-    .catch(() => {})
-    .finally(() => markWriteEnd());
+  try {
+    const { apiBulkUpsertWithProgress } = await import('@/lib/apiSync');
+    await apiBulkUpsertWithProgress(toAdd);
+    return true;
+  } catch (err) {
+    console.warn('[addBillsToStore] Supabase sync warning:', err);
+    return false;
+  } finally {
+    markWriteEnd();
+  }
 }
 
 // ─── Add bills to memory only — no API call; caller handles Supabase save ────
@@ -2150,6 +2159,10 @@ export async function patchBillInMemory(billNo: string, patch: Partial<Bill>): P
   _bills = nextBills;
   dispatchUpdate();
   persistLocalState(true);
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent('broadcast-bill-update', { detail: _bills[idx] }));
+    window.dispatchEvent(new CustomEvent('broadcast-sync-trigger', { detail: Date.now() }));
+  }
   const bill = _bills[idx];
   markWriteStart();
   let confirmed = false;
@@ -2174,14 +2187,44 @@ export async function patchBillInMemory(billNo: string, patch: Partial<Bill>): P
   return confirmed;
 }
 
-// ─── Batch patch — local update + immediate parallel Supabase sync ───────────
+// ─── Batch patch — local update + chunked bulk Supabase sync ───────────
 export async function patchBillsInMemory(patches: Array<{ billNo: string; patch: Partial<Bill> }>): Promise<boolean> {
+  if (!patches || patches.length === 0) return true;
+
+  const cleanBn = (s: string) => String(s || '').trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
+  const stripGst = (s: string) => cleanBn(s).replace(/^GST/i, '').replace(/^MOC/i, '');
+  const digitsOnly = (s: string) => String(s || '').replace(/\D/g, '').replace(/^0+/, '');
+
+  const billIndexMap = new Map<string, number>();
+  for (let i = 0; i < _bills.length; i++) {
+    const b = _bills[i];
+    if (b.id) billIndexMap.set(`id:${b.id}`, i);
+    const c = cleanBn(b.billNo);
+    if (c && !billIndexMap.has(`bn:${c}`)) billIndexMap.set(`bn:${c}`, i);
+    const st = stripGst(b.billNo);
+    if (st && !billIndexMap.has(`st:${st}`)) billIndexMap.set(`st:${st}`, i);
+    const dg = digitsOnly(b.billNo);
+    if (dg && !billIndexMap.has(`dg:${dg}`)) billIndexMap.set(`dg:${dg}`, i);
+  }
+
   const toSync: Array<{ id: string; patch: Partial<Bill>; billNo: string }> = [];
+  const updatedBills: Bill[] = [];
+  const nowStr = `${nowDMY()} ${nowHM()}`;
+  const nowIso = new Date().toISOString();
+
   for (const { billNo, patch } of patches) {
-    const normKey = getBillDedupeKey({ billNo, id: billNo });
-    const norm = (billNo || '').trim().toLowerCase();
-    const idx = _bills.findIndex(b => (normKey && getBillDedupeKey(b) === normKey) || (b.billNo || '').trim().toLowerCase() === norm || b.id === billNo);
+    if (!patch || Object.keys(patch).length === 0) continue;
+    let idx = -1;
+    const c = cleanBn(billNo);
+    const st = stripGst(billNo);
+    const dg = digitsOnly(billNo);
+    if (c && billIndexMap.has(`bn:${c}`)) idx = billIndexMap.get(`bn:${c}`)!;
+    else if (st && billIndexMap.has(`st:${st}`)) idx = billIndexMap.get(`st:${st}`)!;
+    else if (dg && billIndexMap.has(`dg:${dg}`)) idx = billIndexMap.get(`dg:${dg}`)!;
+    else if (billIndexMap.has(`id:${billNo}`)) idx = billIndexMap.get(`id:${billNo}`)!;
+
     if (idx === -1) continue;
+
     const delHist = updateDelPendingHistoryOnPatch(_bills[idx], patch);
     if (delHist && !('delPendingHistory' in patch)) {
       patch.delPendingHistory = delHist;
@@ -2194,44 +2237,37 @@ export async function patchBillsInMemory(patches: Array<{ billNo: string; patch:
         amount: patch.collectedAmount ?? _bills[idx].collectedAmount,
         changes: Object.keys(patch).map(k => `${k}=${String((patch as Record<string, unknown>)[k] ?? '')}`).join(' | '),
       }),
-      editDate: `${nowDMY()} ${nowHM()}`,
-      updatedAt: new Date().toISOString(),
+      editDate: nowStr,
+      updatedAt: nowIso,
     };
     _bills[idx] = { ..._bills[idx], ...withHist };
-    toSync.push({ id: _bills[idx].id, patch: withHist, billNo });
+    toSync.push({ id: _bills[idx].id, patch: withHist, billNo: _bills[idx].billNo });
+    updatedBills.push(_bills[idx]);
   }
-  if (toSync.length === 0) return false;
+
+  if (toSync.length === 0) return true;
+
+  _bills = [..._bills]; // New array reference for React reactivity
   dispatchUpdate();
   persistLocalState(true);
+
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent('broadcast-bills-update', {
+      detail: updatedBills
+    }));
+  }
+
   markWriteStart();
-  let allSuccess = true;
   try {
-    const { apiPatchBill } = await import('@/lib/apiSync');
-    const { removeDirtyEntry, enqueueDirty } = await import('@/lib/localQueue');
-    const results = await Promise.all(
-      toSync.map(async (item) => {
-        try {
-          const res = await apiPatchBill(item.id, item.patch, item.billNo);
-          if (res?.ok) {
-            removeDirtyEntry(item.id, item.billNo);
-            return true;
-          } else {
-            enqueueDirty(item.id, item.patch, item.billNo);
-            return false;
-          }
-        } catch {
-          enqueueDirty(item.id, item.patch, item.billNo);
-          return false;
-        }
-      })
-    );
-    allSuccess = results.every(Boolean);
-  } catch {
-    allSuccess = false;
+    const { apiBulkUpsertWithProgress } = await import('@/lib/apiSync');
+    await apiBulkUpsertWithProgress(updatedBills);
+    return true;
+  } catch (err) {
+    console.warn('[patchBillsInMemory] Supabase sync warning:', err);
+    return false;
   } finally {
     markWriteEnd();
   }
-  return allSuccess;
 }
 
 /**
@@ -2248,6 +2284,7 @@ export async function bulkPatchBillsInMemory(
 
   const cleanBn = (s: string) => String(s || '').trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
   const stripGst = (s: string) => cleanBn(s).replace(/^GST/i, '').replace(/^MOC/i, '');
+  const digitsOnly = (s: string) => String(s || '').replace(/\D/g, '').replace(/^0+/, '');
 
   const billIndexMap = new Map<string, number>();
   for (let i = 0; i < _bills.length; i++) {
@@ -2257,6 +2294,8 @@ export async function bulkPatchBillsInMemory(
     if (c && !billIndexMap.has(`bn:${c}`)) billIndexMap.set(`bn:${c}`, i);
     const st = stripGst(b.billNo);
     if (st && !billIndexMap.has(`st:${st}`)) billIndexMap.set(`st:${st}`, i);
+    const dg = digitsOnly(b.billNo);
+    if (dg && !billIndexMap.has(`dg:${dg}`)) billIndexMap.set(`dg:${dg}`, i);
   }
 
   const updatedBills: Bill[] = [];
@@ -2272,10 +2311,13 @@ export async function bulkPatchBillsInMemory(
     } else {
       const c = cleanBn(billNo);
       const st = stripGst(billNo);
+      const dg = digitsOnly(billNo);
       if (c && billIndexMap.has(`bn:${c}`)) {
         idx = billIndexMap.get(`bn:${c}`)!;
       } else if (st && billIndexMap.has(`st:${st}`)) {
         idx = billIndexMap.get(`st:${st}`)!;
+      } else if (dg && billIndexMap.has(`dg:${dg}`)) {
+        idx = billIndexMap.get(`dg:${dg}`)!;
       }
     }
 
@@ -2301,8 +2343,15 @@ export async function bulkPatchBillsInMemory(
     return { success: true, updatedCount: 0, total: patches.length };
   }
 
+  _bills = [..._bills]; // New array reference for React reactivity
   dispatchUpdate();
   persistLocalState(true);
+
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent('broadcast-bills-update', {
+      detail: updatedBills
+    }));
+  }
 
   markWriteStart();
   try {
@@ -2601,6 +2650,9 @@ export async function patchBillDirect(billNo: string, patch: Partial<Bill>): Pro
   _bills[idx] = { ..._bills[idx], ...patch };
   dispatchUpdate();
   persistLocalState(true);
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent('broadcast-bill-update', { detail: _bills[idx] }));
+  }
   const bill = _bills[idx];
 
   markWriteStart();
@@ -2934,9 +2986,14 @@ export async function savePayment(
   }
 
   // Update in-memory and local storage immediately for 0ms UI responsiveness
+  _bills = [..._bills];
   _bills[index] = { ..._bills[index], ...patch };
   dispatchUpdate();
   persistLocalState(true);
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent('broadcast-bill-update', { detail: _bills[index] }));
+    window.dispatchEvent(new CustomEvent('broadcast-sync-trigger', { detail: Date.now() }));
+  }
 
   const targetBillId = _bills[index].id;
 

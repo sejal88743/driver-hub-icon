@@ -213,13 +213,41 @@ export default function DriverPage() {
           const range = XLSX.utils.decode_range(wsTyped['!ref']);
 
           // Expanded keywords for robust matching
-          const BILL_KEYWORDS = ['bill_number', 'bill number', 'bill no', 'billno', 'bill_no', 'bill', 'invoice no', 'invoice number', 'invoiceno', 'inv no', 'inv_no', 'doc no', 'doc_no', 'document no', 'ref no', 'ref_no', 'bill#', 'invoice', 'bill/inv'];
-          // ONLY HHT VAN is recognized as driver name (VAN NAME is ignored)
-          const DRIVER_KEYWORDS = ['hht van', 'hhtvan', 'hht_van', 'hht van name', 'hht_van_name', 'hht_van_no', 'hht van no'];
-          const DATE_KEYWORDS = ['trip date', 'tripdate', 'trip_date', 'del date', 'delivery date', 'delivery_date', 'dispatch date', 'date', 'bill date', 'invoice date'];
-          const PARTY_KEYWORDS = ['party name', 'party_name', 'customer name', 'customer_name', 'retailer name', 'party', 'customer', 'account name', 'outlet', 'party/customer', 'client', 'firm', 'firm name'];
-          const AMT_KEYWORDS = ['net amt', 'net amount', 'bill amt', 'bill amount', 'total amt', 'amount', 'grand total', 'val', 'value', 'net_amt', 'bill_amt', 'invoice amt', 'invoice amount'];
-          const LINECUT_KEYWORDS = ['line cut', 'linecut', 'line_cut', 'lc amt', 'lc amount', 'cut amt', 'cut amount', 'deduction', 'less amt', 'less amount', 'short amt', 'diff amt', 'diff amount'];
+          const BILL_KEYWORDS = [
+            'bill_number', 'bill number', 'bill no', 'billno', 'bill_no', 'bill',
+            'invoice no', 'invoice number', 'invoiceno', 'inv no', 'inv_no',
+            'doc no', 'doc_no', 'document no', 'ref no', 'ref_no', 'bill#', 'invoice', 'bill/inv', 'billrefno'
+          ];
+          const HHT_VAN_KEYWORDS = [
+            'hht van', 'hhtvan', 'hht_van', 'hht van name', 'hht_van_name', 'hht_van_no', 'hht van no', 'hht_van_number'
+          ];
+          const DRIVER_FALLBACK_KEYWORDS = [
+            'driver name', 'driver_name', 'driver', 'van driver', 'delivery boy',
+            'delivery person', 'delivery_boy', 'driver / van'
+          ];
+          const DATE_KEYWORDS = [
+            'trip date', 'tripdate', 'trip_date', 'del date', 'delivery date', 'delivery_date',
+            'dispatch date', 'date', 'bill date', 'invoice date'
+          ];
+          const PARTY_KEYWORDS = [
+            'party name', 'party_name', 'customer name', 'customer_name', 'retailer name',
+            'party', 'customer', 'account name', 'outlet', 'party/customer', 'client', 'firm', 'firm name'
+          ];
+          const LINECUT_KEYWORDS = [
+            'line cut', 'linecut', 'line_cut', 'line cut amt', 'line cut amount',
+            'linecut amt', 'linecut amount', 'line_cut_amt', 'line_cut_amount',
+            'lc amt', 'lc amount', 'l/c amt', 'l/c amount', 'l/c', 'lc', 'l.c.', 'l.c. amount',
+            'cut amt', 'cut amount', 'cut value', 'cut val', 'cut',
+            'deduction', 'deduction amt', 'deduction amount', 'less amt', 'less amount',
+            'short amt', 'short amount', 'shortage', 'shortage amt', 'shortage amount',
+            'diff amt', 'diff amount', 'damage amt', 'damage amount', 'damage',
+            'return amt', 'return amount', 'item cut', 'line item cut', 'shortfall amt', 'shortfall amount'
+          ];
+          const AMT_KEYWORDS = [
+            'net amt', 'net amount', 'bill amt', 'bill amount', 'total amt',
+            'bill value', 'billvalue', 'grand total', 'net_amt', 'bill_amt',
+            'invoice amt', 'invoice amount', 'amount', 'val', 'value'
+          ];
 
           // Auto-detect header row — scan first 25 rows
           let headerRow = range.s.r;
@@ -228,7 +256,11 @@ export default function DriverPage() {
             for (let c = range.s.c; c <= range.e.c; c++) {
               const cell = ws[XLSX.utils.encode_cell({ r, c })] as { v?: unknown } | undefined;
               const val = String(cell?.v || '').toLowerCase().trim();
-              if (BILL_KEYWORDS.some(kw => val.includes(kw)) || DRIVER_KEYWORDS.some(kw => val.includes(kw))) {
+              if (
+                BILL_KEYWORDS.some(kw => val.includes(kw)) ||
+                HHT_VAN_KEYWORDS.some(kw => val.includes(kw)) ||
+                DRIVER_FALLBACK_KEYWORDS.some(kw => val.includes(kw))
+              ) {
                 found = true;
                 break;
               }
@@ -236,23 +268,40 @@ export default function DriverPage() {
             if (found) { headerRow = r; break; }
           }
 
-          function findCol(keywords: string[]): number {
+          function findCol(keywords: string[], excludeSubstrings: string[] = []): number {
+            // Priority 1: Exact match
             for (let c = range.s.c; c <= range.e.c; c++) {
               const cell = ws[XLSX.utils.encode_cell({ r: headerRow, c })] as { v?: unknown } | undefined;
               const val = String(cell?.v || '').toLowerCase().trim();
-              if (keywords.some(kw => val === kw || val.includes(kw))) return c;
+              if (!val) continue;
+              if (excludeSubstrings.some(ex => val.includes(ex))) continue;
+              if (keywords.some(kw => val === kw)) return c;
+            }
+            // Priority 2: Substring includes
+            for (let c = range.s.c; c <= range.e.c; c++) {
+              const cell = ws[XLSX.utils.encode_cell({ r: headerRow, c })] as { v?: unknown } | undefined;
+              const val = String(cell?.v || '').toLowerCase().trim();
+              if (!val) continue;
+              if (excludeSubstrings.some(ex => val.includes(ex))) continue;
+              if (keywords.some(kw => val.includes(kw))) return c;
             }
             return -1;
           }
 
           let COL_BILL_NO = findCol(BILL_KEYWORDS);
-          let COL_DRIVER = findCol(DRIVER_KEYWORDS);
+          let COL_LINECUT = findCol(LINECUT_KEYWORDS);
+          // Amount column must NOT match the line cut column or line cut keywords
+          let COL_AMT = findCol(AMT_KEYWORDS, ['line', 'cut', 'short', 'diff', 'deduct', 'discount', 'adj', 'damage', 'return', 'less', 'claim']);
+          if (COL_AMT === COL_LINECUT) COL_AMT = -1;
+
+          // Driver: check HHT VAN first, fallback to standard Driver column
+          let COL_DRIVER = findCol(HHT_VAN_KEYWORDS);
+          if (COL_DRIVER === -1) {
+            COL_DRIVER = findCol(DRIVER_FALLBACK_KEYWORDS, ['vehicle', 'plate', 'truck', 'van no', 'van number']);
+          }
+
           let COL_TRIP_DATE = findCol(DATE_KEYWORDS);
           let COL_PARTY = findCol(PARTY_KEYWORDS);
-          let COL_AMT = findCol(AMT_KEYWORDS);
-          let COL_LINECUT = findCol(LINECUT_KEYWORDS);
-          // Line cut column must not be the same as the amount column
-          if (COL_LINECUT !== -1 && COL_LINECUT === COL_AMT) COL_LINECUT = -1;
 
           // If bill column not found by header, inspect contents of first data row
           if (COL_BILL_NO === -1) {
@@ -268,7 +317,7 @@ export default function DriverPage() {
 
           if (COL_BILL_NO === -1) COL_BILL_NO = 1; // Fallback to second column
           const colBill = COL_BILL_NO;
-          const colDriver = COL_DRIVER; // Only parse driver if HHT VAN column is present
+          const colDriver = COL_DRIVER;
           const colDate = COL_TRIP_DATE;
 
           // Pre-index current bills for fast multi-tiered lookup
@@ -310,12 +359,12 @@ export default function DriverPage() {
             const partyVal = String(partyCell?.v || '').trim();
             let netAmtVal = 0;
             if (amtCell?.v != null) {
-              const parsedAmt = parseFloat(String(amtCell.v).replace(/,/g, ''));
+              const parsedAmt = parseFloat(String(amtCell.v).replace(/,/g, '').replace(/[^0-9.-]/g, ''));
               if (!isNaN(parsedAmt)) netAmtVal = parsedAmt;
             }
             let lineCutVal = 0;
             if (lcCell?.v != null) {
-              const parsedLc = parseFloat(String(lcCell.v).replace(/,/g, ''));
+              const parsedLc = parseFloat(String(lcCell.v).replace(/,/g, '').replace(/[^0-9.-]/g, ''));
               if (!isNaN(parsedLc)) lineCutVal = Math.abs(parsedLc);
             }
 
@@ -325,12 +374,14 @@ export default function DriverPage() {
 
             const patch: { deliveryDate?: string; driverName?: string; paymentMode?: string; partyName?: string; billNetAmt?: number; lineCutAmt?: number } = {};
 
-            // Multi-tiered bill matching
+            // Multi-tiered bill matching (handles both '49552' and 'GST49552')
             const bnLower = rawBn.toLowerCase().trim();
             const bnStrip = strip(rawBn);
             const bnDigits = getDigits(rawBn);
+            const bnWithGst = /^\d{3,6}$/.test(rawBn.trim()) ? ('gst' + rawBn.trim().toLowerCase()) : bnLower;
 
             let idx = exactMap.get(bnLower) ?? -1;
+            if (idx === -1 && bnWithGst !== bnLower) idx = exactMap.get(bnWithGst) ?? -1;
             if (idx === -1 && bnStrip) idx = strippedMap.get(bnStrip) ?? -1;
             if (idx === -1 && bnDigits) idx = digitsMap.get(bnDigits) ?? -1;
             if (idx === -1) {
@@ -391,12 +442,15 @@ export default function DriverPage() {
               const canonicalDr = dr ? (canonicalDriverMap.get(dr.toLowerCase().trim()) ?? dr) : '';
               if (canonicalDr) allDriverNames.add(canonicalDr);
 
+              // Standardize numeric bill numbers (e.g. 49552 -> GST49552) for uniform search and reports
+              const formattedBn = /^\d{3,6}$/.test(rawBn.trim()) ? ('GST' + rawBn.trim()) : rawBn.trim();
+
               // Create NEW bill so driver cards display ALL bills in uploaded XLS
               const newIsFullCut = lineCutVal > 0 && netAmtVal > 0 && (netAmtVal - lineCutVal) <= 1;
               const newBill: Bill = {
-                id: 'xls_' + Date.now() + '_' + Math.random().toString(36).substr(2, 6),
-                billNo: rawBn,
-                partyName: partyVal || `Party ${rawBn}`,
+                id: (typeof crypto !== 'undefined' && crypto.randomUUID) ? crypto.randomUUID() : ('xls_' + Date.now() + '_' + Math.random().toString(36).substr(2, 6)),
+                billNo: formattedBn,
+                partyName: partyVal || `Party ${formattedBn}`,
                 date: effectiveTripDate,
                 deliveryDate: effectiveTripDate,
                 billNetAmt: netAmtVal || 0,
@@ -414,12 +468,13 @@ export default function DriverPage() {
                 partyCode: '',
                 partyHulCode: '',
                 beatName: '',
-                outstandingAmount: netAmtVal || 0,
+                outstandingAmount: newIsFullCut ? 0 : Math.max(0, (netAmtVal || 0) - lineCutVal),
                 billAgeing: 0,
               };
               newBillsCreated.push(newBill);
               currentBills.push(newBill);
               const newIdx = currentBills.length - 1;
+              exactMap.set(formattedBn.toLowerCase(), newIdx);
               exactMap.set(bnLower, newIdx);
               if (bnStrip) strippedMap.set(bnStrip, newIdx);
               if (bnDigits) digitsMap.set(bnDigits, newIdx);
@@ -433,7 +488,7 @@ export default function DriverPage() {
         await patchBillsInMemory(xlsPatches);
       }
       if (newBillsCreated.length > 0) {
-        addBillsToStore(newBillsCreated);
+        await addBillsToStore(newBillsCreated);
       }
 
       // Auto-jump date picker safely to the most common trip date
@@ -450,7 +505,7 @@ export default function DriverPage() {
         .map(n => ({ id: Math.random().toString(36).substr(2, 9), name: n }));
       if (newDrivers.length > 0) await saveDrivers([...existingDrivers, ...newDrivers]);
 
-      refresh();
+      refresh(true);
       setXlsStats({ updated: totalUpdated, created: totalCreated, missing: totalMissing });
       setXlsStatus('ok');
       setTimeout(() => setXlsStatus('idle'), 5000);
@@ -721,20 +776,33 @@ export default function DriverPage() {
           (Number(b.collectedAmount) || 0) > 0 ||
           (Number(b.cashAmount) || 0) > 0 ||
           (Number(b.upiAmount) || 0) > 0 ||
-          (Number(b.chequeAmount) || 0) > 0;
-        const hasLineCut = (Number(b.lineCutAmt) || 0) > 0 || !!(b.cancelLine && b.cancelLine !== '0');
-        if (hasMoneyReceived || hasLineCut) return false;
+          (Number(b.chequeAmount) || 0) > 0 ||
+          !!b.paymentDate;
+        if (hasMoneyReceived) return false;
+
+        const net = Number(b.billNetAmt) || 0;
+        const lc = Number(b.lineCutAmt) || 0;
+        if (lc > 0 && net > 0 && (net - lc) <= 1) return false; // Full line cut is FBR
 
         return true;
       };
 
-      const pendingAmt = dbills.filter(isPending).reduce((s, b) => s + (Number(b.billNetAmt) || 0), 0);
+      const lineCutAmt = dbills.reduce((s, b) => {
+        const directLc = Number(b.lineCutAmt) || 0;
+        if (directLc > 0) return s + directLc;
+        if ((Number(b.collectedAmount) || 0) > 0 && Number(b.billNetAmt) > Number(b.collectedAmount)) {
+          return s + (Number(b.billNetAmt) - Number(b.collectedAmount));
+        }
+        return s;
+      }, 0);
+
+      const pendingAmt = dbills.filter(isPending).reduce((s, b) => {
+        const net = Number(b.billNetAmt) || 0;
+        const lc = Number(b.lineCutAmt) || 0;
+        return s + Math.max(0, net - lc);
+      }, 0);
       const cancelAmt = dbills.filter(b => b.paymentMode === 'Cancel' || b.paymentMode === 'FBR').reduce((s, b) => s + (Number(b.billNetAmt) || 0), 0);
       const creditAmt = dbills.filter(b => (b.paymentMode || '').trim().toUpperCase() === 'CREDIT').reduce((s, b) => s + (Number(b.billNetAmt) || 0), 0);
-
-      const lineCutAmt = dbills
-        .filter(b => (b.collectedAmount || 0) > 0)
-        .reduce((s, b) => s + (Number(b.billNetAmt) - Number(b.collectedAmount)), 0);
 
       // Total Load is derived from all assigned bills for this driver/date
       const loadAmt = dbills.reduce((s, b) => s + Number(b.billNetAmt), 0);
@@ -1880,6 +1948,11 @@ export default function DriverPage() {
                                       <span className="text-[7px] text-muted-foreground flex-1 truncate">
                                         ₹{(b.billNetAmt||0).toLocaleString('en-IN')}
                                       </span>
+                                      {Number(b.lineCutAmt) > 0 && (
+                                        <span className="text-[7px] font-black bg-rose-50 text-rose-600 border border-rose-200 px-1 rounded shrink-0" title={`Line Cut: ₹${b.lineCutAmt}`}>
+                                          LC: ₹{Number(b.lineCutAmt).toLocaleString('en-IN')}
+                                        </span>
+                                      )}
                                       {getRole() === 'owner' && (
                                         <button
                                           onClick={e => { e.stopPropagation(); handleDeleteBillAssignment(b.billNo, date, e); }}

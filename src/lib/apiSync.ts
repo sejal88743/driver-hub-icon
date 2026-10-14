@@ -801,6 +801,9 @@ export async function apiPatchBill(id: string, patch: Partial<Bill>, _billNo?: s
       return { ok: false };
     }
     dispatchSyncStatus('ok');
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('broadcast-bill-update', { detail: { id, billNo: _billNo, ...patch } }));
+    }
     return { ok: true };
   } catch (err) {
     console.error('[apiSync] apiPatchBill error (after retries):', err);
@@ -1881,32 +1884,69 @@ export async function rpcDashboardCounts(targetDate: string, driver: string): Pr
 // 15k+ rows), fetch only rows whose `updated_at` changed since the last sync.
 export async function apiFetchBillsSince(sinceIso: string): Promise<Bill[]> {
   if (!supabase) return [];
-  const CHUNK = 1000;
-  const out: Bill[] = [];
-  let offset = 0;
+  const now = Date.now();
+  let validSince = sinceIso;
+  const sinceMs = new Date(sinceIso).getTime();
+  // Guard against invalid or future client device timestamps
+  if (isNaN(sinceMs) || sinceMs > now) {
+    validSince = new Date(now - 300_000).toISOString();
+  }
+
   let activeCols = BILL_SELECT_COLUMNS;
-  while (true) {
-    const { data, error } = await supabase
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const { data, error } = await supabase
+        .from('bills')
+        .select(activeCols)
+        .gt('updated_at', validSince)
+        .order('updated_at', { ascending: false })
+        .limit(250);
+
+      if (error) {
+        const missing = extractMissingColumnFromError(error);
+        if (missing && activeCols.includes(missing)) {
+          activeCols = activeCols
+            .split(',')
+            .filter(c => c.trim().toLowerCase() !== missing.toLowerCase())
+            .join(',');
+          continue;
+        }
+        console.warn('[apiSync] apiFetchBillsSince query error:', error);
+        break;
+      }
+
+      if (Array.isArray(data)) {
+        return (data as unknown as Record<string, unknown>[]).map(mapBillFromSupabase);
+      }
+      break;
+    } catch (err) {
+      console.warn('[apiSync] apiFetchBillsSince exception:', err);
+      break;
+    }
+  }
+
+  // Resilient fallback: fetch the top 100 most recently modified bills using descending index
+  try {
+    const fallback = await supabase
       .from('bills')
       .select(activeCols)
-      .gt('updated_at', sinceIso)
-      .order('updated_at')
-      .range(offset, offset + CHUNK - 1);
-    if (error) {
-      const missing = extractMissingColumnFromError(error);
-      if (missing && activeCols.includes(missing)) {
-        activeCols = activeCols
-          .split(',')
-          .filter(c => c.trim().toLowerCase() !== missing.toLowerCase())
-          .join(',');
-        continue;
-      }
-      throw error;
+      .order('updated_at', { ascending: false })
+      .limit(100);
+
+    if (!fallback.error && Array.isArray(fallback.data)) {
+      const sinceTime = new Date(validSince).getTime();
+      return fallback.data
+        .map(mapBillFromSupabase)
+        .filter(b => {
+          if (!b.updatedAt) return true;
+          const t = new Date(b.updatedAt).getTime();
+          return isNaN(t) || t >= (sinceTime - 60_000);
+        });
     }
-    if (!data || data.length === 0) break;
-    out.push(...(data as unknown as Record<string, unknown>[]).map(mapBillFromSupabase));
-    if (data.length < CHUNK) break;
-    offset += data.length;
+  } catch (fbErr) {
+    console.warn('[apiSync] apiFetchBillsSince fallback failed:', fbErr);
   }
-  return out;
+
+  return [];
 }
+

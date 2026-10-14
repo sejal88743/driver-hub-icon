@@ -103,9 +103,12 @@ export function getDirtyCount(): number {
 // ─── Is a specific bill still un-flushed (i.e. NOT confirmed in Supabase)? ─────
 export function isDirtyPending(id?: string, billNo?: string): boolean {
   if (!id && !billNo) return false;
+  const now = Date.now();
+  // Entries older than 3 minutes (180s) expire and must not permanently block incoming cross-device updates
   return readDirtyQueue().some(e =>
-    (!!id && !!e.id && e.id === id) ||
-    (!!billNo && !!e.billNo && e.billNo === billNo)
+    (now - (e.ts || 0) < 180_000) &&
+    ((!!id && !!e.id && e.id === id) ||
+     (!!billNo && !!e.billNo && e.billNo === billNo))
   );
 }
 

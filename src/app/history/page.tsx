@@ -332,9 +332,9 @@ export default function HistoryPage() {
 
   const handleManualMatchSubmit = (
     entryId: string,
-    queryOrAmt: string | number,
-    amtOrAllowTol?: number | boolean,
-    allowTolOrQuery?: boolean | string
+    queryOrAmt?: any,
+    amtOrAllowTol?: any,
+    allowTolOrQuery?: any
   ) => {
     let queryStr = '';
     let targetAmt = 0;
@@ -344,14 +344,19 @@ export default function HistoryPage() {
       queryStr = queryOrAmt;
       targetAmt = typeof amtOrAllowTol === 'number' ? amtOrAllowTol : 0;
       allowTolerance = typeof allowTolOrQuery === 'boolean' ? allowTolOrQuery : (typeof amtOrAllowTol === 'boolean' ? amtOrAllowTol : false);
-    } else {
-      // Called as (entryId, entryAmt, allowTolerance, query)
+    } else if (typeof queryOrAmt === 'number') {
       targetAmt = Number(queryOrAmt) || 0;
       allowTolerance = typeof amtOrAllowTol === 'boolean' ? amtOrAllowTol : false;
       queryStr = typeof allowTolOrQuery === 'string' ? allowTolOrQuery : (allowTolOrQuery != null ? String(allowTolOrQuery) : '');
+    } else if (queryOrAmt && typeof queryOrAmt === 'object') {
+      queryStr = String((queryOrAmt as any)?.query ?? (queryOrAmt as any)?.billNo ?? '');
+      targetAmt = Number(amtOrAllowTol) || 0;
+      allowTolerance = Boolean(allowTolOrQuery);
+    } else {
+      queryStr = typeof allowTolOrQuery === 'string' ? allowTolOrQuery : '';
     }
 
-    const qTrim = (queryStr || '').trim();
+    const qTrim = String(queryStr || '').trim();
     if (!qTrim) {
       setManualFeedback(prev => ({ ...prev, [entryId]: { type: 'err', text: 'Bill no(s) likhein (e.g. 42155+44855)' } }));
       return;

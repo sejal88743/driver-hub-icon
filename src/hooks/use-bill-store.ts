@@ -10,13 +10,13 @@ import { applyDirtyPatches, isDirtyPending, flushDirtyQueue } from '@/lib/localQ
 // guarantees instant real-time live sync across all devices with minimal egress.
 
 // Adaptive polling intervals:
-// - Safety fallback when Realtime WebSocket is live: 60s
-// - Fast fallback when Realtime WebSocket is offline: 20s
-// - Idle backoff when user is away (> 2 min): 180s (3 min)
+// - Safety fallback when Realtime WebSocket is live: 8s
+// - Fast fallback when Realtime WebSocket is offline: 10s
+// - Idle backoff when user is away (> 2 min): 30s
 // - Hidden tab / background: 0s (Completely pauses polling)
-const POLL_SAFETY_MS = 15_000;
-const POLL_FAST_MS = 20_000;
-const POLL_IDLE_MS = 180_000;
+const POLL_SAFETY_MS = 8_000;
+const POLL_FAST_MS = 10_000;
+const POLL_IDLE_MS = 30_000;
 const POLL_TICK_MS = 2_000;
 
 
@@ -77,12 +77,13 @@ function patch(delta: Partial<StoreSnapshot>) {
   notify();
 }
 
-function readLocal() {
+function readLocal(force = false) {
   const b = getBills();
   const d = getDrivers();
   const bk = getBanks();
   const s = getSummaries();
   if (
+    !force &&
     currentSnapshot.bills === b &&
     currentSnapshot.drivers === d &&
     currentSnapshot.banks === bk &&
@@ -91,22 +92,24 @@ function readLocal() {
   ) {
     return;
   }
-  patch({
-    bills: b,
-    drivers: d,
-    banks: bk,
-    summaries: s,
+  currentSnapshot = {
+    bills: [...b],
+    drivers: [...d],
+    banks: [...bk],
+    summaries: [...s],
     loading: false,
-  });
+    syncing: currentSnapshot.syncing,
+  };
+  notify();
 }
 
 let readLocalScheduled = false;
-function scheduleReadLocal() {
+function scheduleReadLocal(force = false) {
   if (readLocalScheduled) return;
   readLocalScheduled = true;
   requestAnimationFrame(() => {
     readLocalScheduled = false;
-    readLocal();
+    readLocal(force);
   });
 }
 
@@ -122,36 +125,63 @@ function scheduleDebouncedFullSync(delayMs = 1500) {
 }
 
 // ─── Light incremental sync: only pull bills changed since last sync ─────────
-async function doDeltaSync() {
+export async function doDeltaSync(force = false) {
+  const now = Date.now();
   if (!deltaCursor) {
     const savedTs = typeof window !== 'undefined' ? localStorage.getItem('vitratrack_last_sync_ts') : null;
-    deltaCursor = savedTs || new Date(Date.now() - 24 * 3600 * 1000).toISOString();
+    deltaCursor = savedTs || new Date(now - 24 * 3600 * 1000).toISOString();
   }
-  if (deltaInFlight || syncInFlight) return;
-  const now = Date.now();
-  if (isWriteInProgress() || (now - getLastWriteAt() < 2500)) return;
+  // Sanity check: if stored timestamp is in the future or invalid, clamp to 5 min ago
+  if (deltaCursor && new Date(deltaCursor).getTime() > now) {
+    deltaCursor = new Date(now - 300_000).toISOString();
+  }
+
+  if (deltaInFlight || (syncInFlight && !force)) return;
+  if (!force && (isWriteInProgress() || (now - getLastWriteAt() < 2500))) return;
   deltaInFlight = true;
-  const cursorAt = new Date(Date.now() - 5_000).toISOString();
+
+  // Use a 3-minute rolling overlap to ensure mobile phone / laptop clock drift never skips entries made on other devices
+  const rollingCursor = new Date(now - 180_000).toISOString();
+
   try {
     const changed = await apiFetchBillsSince(deltaCursor);
-    deltaCursor = cursorAt;
-    try {
-      if (typeof window !== 'undefined') localStorage.setItem('vitratrack_last_sync_ts', cursorAt);
-    } catch {}
-    if (changed.length > 0) {
+
+    let maxServerTs = 0;
+    if (Array.isArray(changed) && changed.length > 0) {
+      for (const b of changed) {
+        if (b.updatedAt) {
+          const t = new Date(b.updatedAt).getTime();
+          if (!isNaN(t) && t > maxServerTs) maxServerTs = t;
+        }
+      }
+
       // Never let the server overwrite rows still waiting to be pushed up
       const safe = changed.filter(b => !isDirtyPending(b.id, b.billNo));
       if (safe.length > 0) {
         applyBillsDelta(safe);
-        readLocal();
+        readLocal(true);
         if (syncChannel) {
           try { syncChannel.postMessage({ type: 'delta-synced', cursor: deltaCursor }); } catch {}
         }
       }
     }
+
+    if (maxServerTs > 0) {
+      const candidate = new Date(maxServerTs - 60_000).toISOString();
+      deltaCursor = candidate < rollingCursor ? candidate : rollingCursor;
+    } else {
+      deltaCursor = rollingCursor;
+    }
+
+    try {
+      if (typeof window !== 'undefined') localStorage.setItem('vitratrack_last_sync_ts', deltaCursor);
+    } catch {}
+
     window.dispatchEvent(new CustomEvent('sync-status', { detail: 'ok' }));
   } catch (err) {
     console.warn('[useBillStore] delta sync failed:', err);
+    // On transient failure, rewind cursor slightly so next poll retries recent modifications safely
+    deltaCursor = new Date(now - 600_000).toISOString();
   } finally {
     deltaInFlight = false;
   }
@@ -282,6 +312,57 @@ let realtimeReconnectTimer: ReturnType<typeof setTimeout> | null = null;
 let isIntentionallyClosing = false;
 let reconnectAttempts = 0;
 
+export function broadcastBillChange(bill: Bill) {
+  if (!bill) return;
+  if (realtimeChannel) {
+    try {
+      realtimeChannel.send({
+        type: 'broadcast',
+        event: 'bill_updated',
+        payload: { bill },
+      }).catch?.(() => {});
+    } catch {}
+  }
+}
+
+export function broadcastBillsChange(bills: Bill[]) {
+  if (!bills || bills.length === 0) return;
+  if (realtimeChannel) {
+    try {
+      realtimeChannel.send({
+        type: 'broadcast',
+        event: 'bills_updated',
+        payload: { bills: bills.slice(0, 50) },
+      }).catch?.(() => {});
+    } catch {}
+  }
+}
+
+export function broadcastSyncTrigger() {
+  if (realtimeChannel) {
+    try {
+      realtimeChannel.send({
+        type: 'broadcast',
+        event: 'sync_trigger',
+        payload: { ts: Date.now() },
+      }).catch?.(() => {});
+    } catch {}
+  }
+}
+
+// Window event listeners so other modules can trigger broadcast without circular imports
+if (typeof window !== 'undefined') {
+  window.addEventListener('broadcast-bill-update', ((e: CustomEvent) => {
+    if (e.detail) broadcastBillChange(e.detail);
+  }) as EventListener);
+  window.addEventListener('broadcast-bills-update', ((e: CustomEvent) => {
+    if (e.detail) broadcastBillsChange(e.detail);
+  }) as EventListener);
+  window.addEventListener('broadcast-sync-trigger', (() => {
+    broadcastSyncTrigger();
+  }) as EventListener);
+}
+
 function initSupabaseRealtime(force = false) {
   if (!supabase) return;
   if (realtimeChannel) {
@@ -301,9 +382,37 @@ function initSupabaseRealtime(force = false) {
   try {
     realtimeChannel = supabase
       .channel('vitratrack_realtime_all')
-      // Note: Do NOT listen to raw wildcard events on 42,000+ bills table!
-      // Listening to 42,000 rows generated ~400,000 realtime messages and exhausted free tier.
-      // Delta sync (doDeltaSync) already fetches changed bills incrementally every few seconds with near-zero egress.
+      // 1. Instant cross-device broadcast for manual bill entries & payments
+      .on(
+        'broadcast',
+        { event: 'bill_updated' },
+        (payload: any) => {
+          const incomingBill = payload?.payload?.bill;
+          if (incomingBill) {
+            applyBillsDelta([incomingBill]);
+            readLocal(true);
+          }
+        }
+      )
+      .on(
+        'broadcast',
+        { event: 'bills_updated' },
+        (payload: any) => {
+          const incomingBills = payload?.payload?.bills;
+          if (Array.isArray(incomingBills) && incomingBills.length > 0) {
+            applyBillsDelta(incomingBills);
+            readLocal(true);
+          }
+        }
+      )
+      .on(
+        'broadcast',
+        { event: 'sync_trigger' },
+        () => {
+          void doDeltaSync(true);
+        }
+      )
+      // 2. Postgres change listeners for driver summaries, drivers, banks, contacts, settings
       .on(
         'postgres_changes',
         { event: '*', schema: 'public', table: 'driver_summaries' },
@@ -424,7 +533,7 @@ function initGlobalSync() {
   readLocal();
 
   window.addEventListener('bill-store-update', () => {
-    readLocal();
+    readLocal(true);
     if (syncChannel) {
       try { syncChannel.postMessage('data-updated'); } catch { /* ignore */ }
     }
