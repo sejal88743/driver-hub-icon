@@ -25,7 +25,7 @@ import ResetPwModal from '@/components/ResetPwModal';
 import BillDetailsModal from '@/components/BillDetailsModal';
 import LineCutPopup from '@/components/LineCutPopup';
 import OverflowModal from '@/components/OverflowModal';
-import { getTodayISO, getTodayDMY, isoToDisplay, displayToIso, calculateDaysBetween } from '@/lib/dateUtils';
+import { getTodayISO, getTodayDMY, isoToDisplay, displayToIso, calculateDaysBetween, normDateStr } from '@/lib/dateUtils';
 import { openWhatsApp } from '@/lib/whatsapp';
 import { useStatementMatch, STATEMENT_MATCHED_AMOUNT_CLS } from '@/lib/statementMatch';
 
@@ -687,9 +687,18 @@ export default function Dashboard() {
   }, [debouncedQuery, filteredBillNos, selectedBillNo]);
 
   const driverStats = useMemo(() => {
-    const isOwner = selectedDriver === 'OWNER';
     const selUpper = (selectedDriver || '').trim().toUpperCase();
-    const isUserStaff = !isOwner && (selUpper === 'PRATIXA' || !!drivers.find(d => d.name?.trim().toUpperCase() === selUpper && d.role === 'user'));
+    const matchedDriver = drivers.find(drv => (drv.name || '').trim().toUpperCase() === selUpper);
+    const curRole = getRole();
+    const isOwner = isOwnerSelected || selUpper === 'OWNER' || selUpper === '👑 OWNER' || matchedDriver?.role === 'owner' || (curRole === 'owner' && !selUpper);
+    const isUserStaff = isUserSelected || (!isOwner && (
+      matchedDriver?.role === 'user' ||
+      selUpper === 'PRATIXA' ||
+      selUpper === 'KHUSHI' ||
+      selUpper === 'TARACHAND' ||
+      selUpper === 'SEJAL' ||
+      (curRole === 'user' && !selUpper)
+    ));
 
     // If no driver selected, show overall database total count, done, and pending
     if (!selectedDriver) {
@@ -712,27 +721,8 @@ export default function Dashboard() {
 
     let dbills: typeof bills = [];
     const snapshotBillNos = new Set<string>();
-    if (isOwner) {
-      // OWNER counts follow its receipt table, not the complete ledger.
-      dbills = bills.filter(b => {
-        if (!b.paymentDate || isoToDisplay(b.paymentDate) !== displayDate) return false;
-        const mode = (b.paymentMode || '').trim().toLowerCase();
-        if (mode === 'assigned') return false;
-        const pTime = (b.paymentTime || '').trim().toUpperCase();
-        const dName = (b.driverName || '').trim().toUpperCase();
-        const isMoc = (b.billNo || '').toUpperCase().startsWith('MOC') || b.collectionCode === 'MOC' || b.salespersonName === 'MOC';
-        const isOwnerTagged = pTime === 'OWNER' || pTime.startsWith('OWNER:') || pTime.startsWith('OWNER ') || dName === 'OWNER' || ownerSavedBillNos.includes(b.billNo) || ownerSavedBillNos.includes(b.id);
-        // Driver-assignment exclusion applies only when the entry is NOT explicitly owner-tagged
-        if (!isOwnerTagged && !isMoc && b.deliveryDate === displayDate && dName && dName !== 'OWNER') return false;
-        if (drivers.some(d => d.role === 'user' && d.name?.trim().toUpperCase() !== 'OWNER' && (
-          pTime === d.name?.trim().toUpperCase() || pTime.startsWith(`${d.name?.trim().toUpperCase()}:`) || pTime.startsWith(`${d.name?.trim().toUpperCase()} `)
-        ))) return false;
-        const hasReceipt = (Number(b.collectedAmount) || 0) > 0 || (Number(b.cashAmount) || 0) > 0 || (Number(b.upiAmount) || 0) > 0 || (Number(b.chequeAmount) || 0) > 0;
-        if (!hasReceipt && !['paid', 'cash', 'upi', 'cheque', 'split', 'fbr', 'cancel', 'credit'].includes(mode)) return false;
-        return isOwnerTagged;
-      });
-    } else if (isUserStaff) {
-      // Keep the existing USER database counts unchanged.
+    if (isOwner || isUserStaff) {
+      // Both OWNER and USER staff manage the full ledger — show ALL bills count!
       dbills = bills;
     } else {
       // Regular drivers: bills assigned to driver on selected date OR in delPendingHistory snapshot
@@ -796,7 +786,7 @@ export default function Dashboard() {
 
     const pendingCount = Math.max(0, totalCount - doneCount);
     return { total: totalCount, paid: doneCount, pending: pendingCount, isStaff: isOwner || isUserStaff };
-  }, [selectedDriver, displayDate, bills, drivers, ownerSavedBillNos]);
+  }, [selectedDriver, displayDate, bills, drivers, ownerSavedBillNos, isOwnerSelected, isUserSelected]);
 
   // ── Total Cash Count & Collection for Selected Date (Driver, User, Owner) ──
   // Deduplicates by billNo to ensure duplicate entries don't double count cash.
@@ -983,14 +973,18 @@ export default function Dashboard() {
 
       if (isOwner) {
         // Owner must be explicit payment date matching displayDate and entered by OWNER
-        const isOwnerTagged = pTime === 'OWNER' || pTime.startsWith('OWNER:') || pTime.startsWith('OWNER ') || dName === 'OWNER' ||
-          (Array.isArray(ownerSavedBillNos) && (ownerSavedBillNos.includes(b.billNo) || ownerSavedBillNos.includes(b.id)));
-        // Exclude driver-assigned bills only when the entry is NOT explicitly owner-tagged
-        if (!isOwnerTagged && !isMoc && dDate === displayDate && dName && dName !== 'OWNER') continue;
+        // Exclude bills that were assigned to a driver on deliveryDate
+        if (!isMoc && normDateStr(dDate) === normDateStr(displayDate) && dName && dName !== 'OWNER') continue;
         const isOtherStaff = drivers.some(d => d.role === 'user' && (d.name || '').trim().toUpperCase() !== 'OWNER' && (pTime === (d.name || '').trim().toUpperCase() || pTime.startsWith((d.name || '').trim().toUpperCase() + ':')));
         if (isOtherStaff) continue;
 
-        const isOwnerPaid = Boolean(pDate) && isoToDisplay(pDate) === displayDate && isOwnerTagged;
+        const isOwnerPaid = Boolean(pDate) && normDateStr(pDate) === normDateStr(displayDate) && (
+          pTime === 'OWNER' ||
+          pTime.startsWith('OWNER:') ||
+          pTime.startsWith('OWNER ') ||
+          dName === 'OWNER' ||
+          (Array.isArray(ownerSavedBillNos) && (ownerSavedBillNos.includes(b.billNo) || ownerSavedBillNos.includes(b.id)))
+        );
         if (isOwnerPaid) {
           const c = getEffCash(b);
           if (c > 0) {
@@ -1002,7 +996,7 @@ export default function Dashboard() {
       } else if (isUserStaff) {
         // Must be genuinely entered by this specific user and paymentDate === displayDate
         // Exclude any deliveryDate === displayDate entry from user table cash stats (except MOC)
-        if (!isMoc && dDate === displayDate) continue;
+        if (!isMoc && normDateStr(dDate) === normDateStr(displayDate)) continue;
 
         const isThisUser = (
           pTime === selUpper ||
@@ -1010,7 +1004,7 @@ export default function Dashboard() {
           pTime.startsWith(selUpper + ' ') ||
           (isMoc && (dName === selUpper || pTime === selUpper))
         );
-        const matchesDate = pDate === displayDate || (isMoc && (b.date === displayDate || dDate === displayDate));
+        const matchesDate = normDateStr(pDate) === normDateStr(displayDate) || (isMoc && (normDateStr(b.date) === normDateStr(displayDate) || normDateStr(dDate) === normDateStr(displayDate)));
         if (isThisUser && matchesDate) {
           const c = getEffCash(b);
           if (c > 0) {

@@ -218,22 +218,40 @@ function buildUpdates(groups: Map<string, BillGroup>, existingBills: Bill[]): {
   updates: BillReportUpdate[];
   missing: Map<string, BillGroup>;
 } {
-  const existingByBillNo = new Map<string, Bill>();
+  const exactMap = new Map<string, Bill>();
+  const strippedMap = new Map<string, Bill>();
+  const digitsMap = new Map<string, Bill>();
+
   for (const bill of existingBills) {
-    const billNo = text(bill.billNo);
-    if (billNo) existingByBillNo.set(billNo, bill);
+    const bn = text(bill.billNo);
+    if (!bn) continue;
+    const lower = bn.toLowerCase().trim();
+    exactMap.set(lower, bill);
+    const strip = lower.replace(/^gst[-/]?/i, '').replace(/[^a-zA-Z0-9]/g, '');
+    if (strip) strippedMap.set(strip, bill);
+    const digits = lower.replace(/\D/g, '').replace(/^0+/, '');
+    if (digits) digitsMap.set(digits, bill);
+  }
+
+  function findExistingBill(rawBn: string): Bill | undefined {
+    const lower = text(rawBn).toLowerCase().trim();
+    if (exactMap.has(lower)) return exactMap.get(lower);
+    const withGst = /^\d{3,6}$/.test(lower) ? ('gst' + lower) : lower;
+    if (exactMap.has(withGst)) return exactMap.get(withGst);
+    const strip = lower.replace(/^gst[-/]?/i, '').replace(/[^a-zA-Z0-9]/g, '');
+    if (strip && strippedMap.has(strip)) return strippedMap.get(strip);
+    const digits = lower.replace(/\D/g, '').replace(/^0+/, '');
+    if (digits && digitsMap.has(digits)) return digitsMap.get(digits);
+    return undefined;
   }
 
   const updates: BillReportUpdate[] = [];
   const missing = new Map<string, BillGroup>();
 
   for (const [billNo, group] of groups) {
-    const existing = existingByBillNo.get(billNo);
+    const existing = findExistingBill(billNo);
     if (!existing) {
-      // Collect groups for new bill creation. Any group that had at least one
-      // non-negative row (including 0-value bills) is accepted; pure
-      // line-cut-only groups (only negative rows) are still skipped.
-      if (group.hasNonNegativeRow) missing.set(billNo, group);
+      missing.set(billNo, group);
       continue;
     }
 
@@ -257,9 +275,12 @@ function buildUpdates(groups: Map<string, BillGroup>, existingBills: Bill[]): {
       patch.billNetAmt = group.positiveBillValue;
     }
 
-    // 4. Negative Bill Value (- amount -> lineCutAmt)
+    // 4. Negative Bill Value (- amount in bill value -> ADD to lineCutAmt)
+    // Rule: "xls me bill velue me agar - amt he to vah line cut amt me add hota tha pahle same vesa hi hona chashiye"
     if (group.negativeBillValue > 0) {
-      patch.lineCutAmt = group.negativeBillValue;
+      const prevLc = Number(existing.lineCutAmt) || 0;
+      patch.lineCutAmt = prevLc + group.negativeBillValue;
+      patch.cancelLine = String(patch.lineCutAmt);
     }
 
     // 5. Calculate effective net bill amount & effective line cut amount
@@ -280,7 +301,7 @@ function buildUpdates(groups: Map<string, BillGroup>, existingBills: Bill[]): {
     const isLockedPayment = cash > 0 || upi > 0 || cheque > 0 || (recAmt > 0 && curMode === 'paid');
 
     if (recAmt === 0 && !isLockedPayment) {
-      // If rec amount is 0 and line cut amt >= bill amount (net balance = 0), auto set FBR
+      // If rec amount is 0 and line cut amt >= bill amount (net balance <= 1), auto set FBR
       if (effectiveBillAmt > 0 && (effectiveBillAmt - effectiveLineCutAmt <= 0 || Math.abs(effectiveBillAmt - effectiveLineCutAmt) <= 1)) {
         patch.paymentMode = 'FBR';
         patch.paymentMethod = 'FBR';
@@ -317,7 +338,7 @@ function buildUpdates(groups: Map<string, BillGroup>, existingBills: Bill[]): {
 
     if (Object.keys(patch).length > 0) {
       updates.push({
-        billNo,
+        billNo: existing.billNo,
         patch,
         positiveRow: group.positiveBillValue > 0,
         negativeRow: group.negativeBillValue > 0,
@@ -334,9 +355,9 @@ function buildNewBills(missing: Map<string, BillGroup>, spNames: string[]): Bill
   const newBills: Bill[] = [];
 
   for (const [billNo, g] of missing) {
-    const billAmt = g.positiveBillValue;
+    const billAmt = g.positiveBillValue > 0 ? g.positiveBillValue : (g.negativeBillValue > 0 ? g.negativeBillValue : 0);
     const lineCutAmt = g.negativeBillValue;
-    const isFBR = billAmt > 0 && (billAmt - lineCutAmt <= 0 || Math.abs(billAmt - lineCutAmt) <= 1);
+    const isFBR = (g.positiveBillValue === 0 && g.negativeBillValue > 0) || (billAmt > 0 && (billAmt - lineCutAmt <= 0 || Math.abs(billAmt - lineCutAmt) <= 1));
 
     let parsedTs = today.getTime();
     if (g.billDate) {
@@ -366,7 +387,7 @@ function buildNewBills(missing: Map<string, BillGroup>, spNames: string[]): Bill
       outstandingAmount: isFBR ? 0 : Math.max(0, billAmt - lineCutAmt),
       billAgeing: ageing,
       lineCutAmt: lineCutAmt || 0,
-      cancelLine: '',
+      cancelLine: lineCutAmt > 0 ? String(lineCutAmt) : '',
       ...(isFBR ? { paymentMode: 'FBR' } : {}),
     } as Bill);
   }
@@ -528,10 +549,9 @@ export async function processBillsReportBuffer(
     if (newBills.length > 0) {
       details.push(`New bills added: ${newBills.length}${fbrNewCount ? ` (${fbrNewCount} FBR)` : ''}`);
     }
-    const missingPureLineCut = [...parsed.groups.entries()]
-      .filter(([bn, g]) => g.positiveBillValue === 0 && g.negativeBillValue > 0 && !byBillNo.has(bn)).length;
-    if (missingPureLineCut > 0) {
-      details.push(`Skipped (only line-cut, no bill amount — naya bill nahi banega): ${missingPureLineCut}`);
+    const pureLineCutNew = newBills.filter(b => b.paymentMode === 'FBR' && b.lineCutAmt === b.billNetAmt).length;
+    if (pureLineCutNew > 0) {
+      details.push(`Sales Return / Line-Cut Bills created as FBR: ${pureLineCutNew}`);
     }
 
     onStatus({

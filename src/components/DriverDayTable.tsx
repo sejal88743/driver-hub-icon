@@ -151,7 +151,7 @@ export default function DriverDayTable({ bills, selectedDriver, displayDate, onS
     const allDrivers = getDrivers();
     const selUpper = (selectedDriver || '').trim().toUpperCase();
     const matchedDriver = allDrivers.find(drv => (drv.name || '').trim().toUpperCase() === selUpper);
-    const isOwner = selUpper === 'OWNER' || matchedDriver?.role === 'owner';
+    const isOwner = selUpper === 'OWNER' || selUpper === '👑 OWNER' || matchedDriver?.role === 'owner';
     const isStaffUser = !isOwner && (
       Boolean(selectedDriverIsOwnerOrUser) ||
       matchedDriver?.role === 'user' ||
@@ -422,14 +422,20 @@ export default function DriverDayTable({ bills, selectedDriver, displayDate, onS
 
   // Bills excluded from totals: currently Credit, OR collected on a different date
   function isExcludedFromTotals(b: Bill): boolean {
+    const isStaffOrOwner = selectedDriver === 'OWNER' || Boolean(selectedDriverIsOwnerOrUser) || isOwnerRole;
+    // In Owner / Staff mode, rows are already filtered for this owner/user on displayDate — do not exclude them!
+    if (isStaffOrOwner) return false;
+
     const _bm = (b.paymentMode || '').toLowerCase();
     if (_bm === 'credit') return true;
     const isMoc = (b.billNo || '').toUpperCase().startsWith('MOC') || b.collectionCode === 'MOC' || b.salespersonName === 'MOC';
     if (isMoc) {
-      const matchesDate = b.paymentDate === displayDate || b.date === displayDate || b.deliveryDate === displayDate;
+      const matchesDate = normDateStr(b.paymentDate) === normDateStr(displayDate) || normDateStr(b.date) === normDateStr(displayDate) || normDateStr(b.deliveryDate) === normDateStr(displayDate);
       return !matchesDate;
     }
-    if (b.paymentDate && b.paymentDate !== displayDate && (b.collectedAmount || 0) > 0) return true;
+    const payNorm = normDateStr(b.paymentDate);
+    const dispNorm = normDateStr(displayDate);
+    if (payNorm && dispNorm && payNorm !== dispNorm && (Number(b.collectedAmount) || 0) > 0) return true;
     return false;
   }
 
@@ -439,7 +445,6 @@ export default function DriverDayTable({ bills, selectedDriver, displayDate, onS
     const _bm = (b.paymentMode || '').toLowerCase();
     const eff = getEffectiveAmounts(b);
     const hasMoneyRec = eff.cash > 0 || eff.upi > 0 || eff.chq > 0 || (Number(b.collectedAmount) || 0) > 0;
-    const hasRecDate = !!b.paymentDate && b.paymentDate.trim() !== '' && b.paymentDate !== '—';
     const isSnap = snapshotBillNos.has(b.billNo);
     const isFBR = !isSnap && (_bm === 'fbr' || _bm === 'cancel') && !hasMoneyRec;
     if (isFBR) { totals.fbr += b.billNetAmt; counts.fbr++; return; }
@@ -450,7 +455,7 @@ export default function DriverDayTable({ bills, selectedDriver, displayDate, onS
     }
     if (isExcludedFromTotals(b)) return;
     totals.amt += b.billNetAmt;
-    if (hasMoneyRec && hasRecDate) {
+    if (hasMoneyRec) {
       totals.cash += eff.cash;
       totals.upi  += eff.upi;
       totals.chq  += eff.chq;
@@ -922,7 +927,7 @@ export default function DriverDayTable({ bills, selectedDriver, displayDate, onS
 
       // Check Owner
       const ownerBills = bills.filter(b => {
-        if (b.paymentDate !== displayDate) return false;
+        if (!b.paymentDate || normDateStr(b.paymentDate) !== normDateStr(displayDate)) return false;
         const pTime = (b.paymentTime || '').trim().toUpperCase();
         const dName = (b.driverName || '').trim().toUpperCase();
         const isSaved = Array.isArray(ownerSavedBillNos) && ownerSavedBillNos.includes(b.billNo);
@@ -968,7 +973,7 @@ export default function DriverDayTable({ bills, selectedDriver, displayDate, onS
 
       for (const uName of staffNamesSet) {
         const uBills = bills.filter(b => {
-          if (b.paymentDate !== displayDate) return false;
+          if (!b.paymentDate || normDateStr(b.paymentDate) !== normDateStr(displayDate)) return false;
           const pTime = (b.paymentTime || '').trim().toUpperCase();
           return pTime === uName || pTime.startsWith(uName + ':') || pTime.startsWith(uName + ' ');
         });
@@ -1269,13 +1274,13 @@ export default function DriverDayTable({ bills, selectedDriver, displayDate, onS
               const isCredit = !isSnapshot && _bm === 'credit';
               const collected = b.collectedAmount || 0;
               // Bill collected on a different date (originally credit, now paid on Date B)
-              const isPaidElsewhere = !isSnapshot && !isCredit && !isFBR && !isDelPend && hasRecDate && b.paymentDate !== displayDate && hasMoneyRec;
+              const isPaidElsewhere = !isSnapshot && !isCredit && !isFBR && !isDelPend && hasRecDate && normDateStr(b.paymentDate) !== normDateStr(displayDate) && hasMoneyRec;
               // Strict rule: PAID ONLY WHEN Cash, GPay, Cheque received AND paymentDate present!
               const isPaid = !isSnapshot && !isFBR && !isDelPend && !isCredit && !isPaidElsewhere && hasMoneyRec && hasRecDate;
               // Today's delivery, driver assigned, no payment/FBR/credit/del-pending entry yet → ASSIGNED
               // (matches paymentMode = "Assigned" saved in Supabase; never shown/saved as Credit).
               const isAssignedToday = !isSnapshot && !isFBR && !isDelPend && !isCredit && !isPaid && !isPaidElsewhere
-                && !!b.driverName && b.deliveryDate === displayDate;
+                && !!b.driverName && normDateStr(b.deliveryDate) === normDateStr(displayDate);
 
               const statusLabel = isFBR ? 'FBR' : isDelPend ? 'DEL PEND' : isCredit ? 'CREDIT' : isPaidElsewhere ? 'REC' : isPaid ? 'PAID' : isAssignedToday ? 'ASSIGNED' : 'UNPAID';
               const statusCls = isFBR ? 'bg-red-500 text-white' : isDelPend ? 'bg-amber-400 text-black' : isCredit ? 'bg-green-500 text-white' : isPaidElsewhere ? 'bg-indigo-500 text-white' : isPaid ? 'bg-emerald-100 text-emerald-700' : isAssignedToday ? 'bg-blue-500 text-white' : 'bg-red-100 text-red-700';

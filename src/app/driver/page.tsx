@@ -249,24 +249,32 @@ export default function DriverPage() {
             'invoice amt', 'invoice amount', 'amount', 'val', 'value'
           ];
 
-          // Auto-detect header row — scan first 25 rows
-          let headerRow = range.s.r;
-          for (let r = range.s.r; r <= Math.min(range.s.r + 25, range.e.r); r++) {
-            let found = false;
+          // Auto-detect header row by column match score — avoids false matching on title/metadata rows like 'BillWise Sales Register'
+          let bestHeaderRow = -1;
+          let bestScore = 0;
+          for (let r = range.s.r; r <= Math.min(range.s.r + 35, range.e.r); r++) {
+            let score = 0;
+            let cellCount = 0;
             for (let c = range.s.c; c <= range.e.c; c++) {
               const cell = ws[XLSX.utils.encode_cell({ r, c })] as { v?: unknown } | undefined;
               const val = String(cell?.v || '').toLowerCase().trim();
-              if (
-                BILL_KEYWORDS.some(kw => val.includes(kw)) ||
-                HHT_VAN_KEYWORDS.some(kw => val.includes(kw)) ||
-                DRIVER_FALLBACK_KEYWORDS.some(kw => val.includes(kw))
-              ) {
-                found = true;
-                break;
-              }
+              if (!val) continue;
+              cellCount++;
+              // Skip metadata and title blocks
+              if (val.includes('register') || val.includes('distributor') || val.includes('list of') || val.includes('report type') || val.includes('division')) continue;
+              if (BILL_KEYWORDS.some(kw => val === kw || val === kw + ' no' || val === kw + ' number' || (val.length <= 25 && val.includes(kw)))) score += 3;
+              if (AMT_KEYWORDS.some(kw => val === kw || (val.length <= 25 && val.includes(kw)))) score += 2;
+              if (PARTY_KEYWORDS.some(kw => val === kw || (val.length <= 25 && val.includes(kw)))) score += 2;
+              if (DATE_KEYWORDS.some(kw => val === kw || (val.length <= 25 && val.includes(kw)))) score += 2;
+              if (HHT_VAN_KEYWORDS.some(kw => val.includes(kw)) || DRIVER_FALLBACK_KEYWORDS.some(kw => val.includes(kw))) score += 2;
+              if (LINECUT_KEYWORDS.some(kw => val.includes(kw))) score += 2;
             }
-            if (found) { headerRow = r; break; }
+            if (cellCount >= 2 && score > bestScore) {
+              bestScore = score;
+              bestHeaderRow = r;
+            }
           }
+          let headerRow = bestHeaderRow !== -1 ? bestHeaderRow : range.s.r;
 
           function findCol(keywords: string[], excludeSubstrings: string[] = []): number {
             // Priority 1: Exact match
@@ -358,14 +366,21 @@ export default function DriverPage() {
             const dr = String(drCell?.v || '').trim();
             const partyVal = String(partyCell?.v || '').trim();
             let netAmtVal = 0;
+            let lineCutVal = 0;
             if (amtCell?.v != null) {
               const parsedAmt = parseFloat(String(amtCell.v).replace(/,/g, '').replace(/[^0-9.-]/g, ''));
-              if (!isNaN(parsedAmt)) netAmtVal = parsedAmt;
+              if (!isNaN(parsedAmt)) {
+                if (parsedAmt < 0) {
+                  // Negative bill value represents a line cut / sales return deduction
+                  lineCutVal += Math.abs(parsedAmt);
+                } else {
+                  netAmtVal = parsedAmt;
+                }
+              }
             }
-            let lineCutVal = 0;
             if (lcCell?.v != null) {
               const parsedLc = parseFloat(String(lcCell.v).replace(/,/g, '').replace(/[^0-9.-]/g, ''));
-              if (!isNaN(parsedLc)) lineCutVal = Math.abs(parsedLc);
+              if (!isNaN(parsedLc)) lineCutVal += Math.abs(parsedLc);
             }
 
             const parsedRawDate = dtCell?.v != null ? excelSerialToDate(dtCell.v) : '';
@@ -425,12 +440,16 @@ export default function DriverPage() {
               // Line Cut from XLS: if line cut covers the full bill amount → bill becomes FBR
               // (Del Pending / Assigned status is removed). Paid/Credit bills are never touched.
               if (lineCutVal > 0) {
-                patch.lineCutAmt = lineCutVal;
+                const prevLc = Number(curBill.lineCutAmt) || 0;
+                const totalLc = prevLc + lineCutVal;
+                patch.lineCutAmt = totalLc;
+                patch.cancelLine = String(totalLc);
                 const effBillAmt = netAmtVal > 0 ? netAmtVal : (curBill.billNetAmt || 0);
-                const isFullCut = effBillAmt > 0 && (effBillAmt - lineCutVal) <= 1;
+                const isFullCut = effBillAmt > 0 && (effBillAmt - totalLc) <= 1;
                 if (isFullCut && !hasPaymentRec && !isCredit) {
                   patch.paymentMode = 'FBR';
                 }
+                patch.outstandingAmount = isFullCut ? 0 : Math.max(0, effBillAmt - totalLc - (Number(curBill.collectedAmount) || 0));
               }
               if (Object.keys(patch).length > 0) {
                 currentBills[idx] = { ...currentBills[idx], ...patch };
@@ -446,19 +465,21 @@ export default function DriverPage() {
               const formattedBn = /^\d{3,6}$/.test(rawBn.trim()) ? ('GST' + rawBn.trim()) : rawBn.trim();
 
               // Create NEW bill so driver cards display ALL bills in uploaded XLS
-              const newIsFullCut = lineCutVal > 0 && netAmtVal > 0 && (netAmtVal - lineCutVal) <= 1;
+              const effNetAmt = netAmtVal > 0 ? netAmtVal : (lineCutVal > 0 ? lineCutVal : 0);
+              const newIsFullCut = lineCutVal > 0 && (effNetAmt <= lineCutVal || Math.abs(effNetAmt - lineCutVal) <= 1);
               const newBill: Bill = {
                 id: (typeof crypto !== 'undefined' && crypto.randomUUID) ? crypto.randomUUID() : ('xls_' + Date.now() + '_' + Math.random().toString(36).substr(2, 6)),
                 billNo: formattedBn,
                 partyName: partyVal || `Party ${formattedBn}`,
                 date: effectiveTripDate,
                 deliveryDate: effectiveTripDate,
-                billNetAmt: netAmtVal || 0,
+                billNetAmt: effNetAmt,
                 collectedAmount: 0,
                 cashAmount: 0,
                 upiAmount: 0,
                 chequeAmount: 0,
                 lineCutAmt: lineCutVal || 0,
+                cancelLine: lineCutVal > 0 ? String(lineCutVal) : '',
                 paymentMode: newIsFullCut ? 'FBR' : (canonicalDr ? 'Assigned' : 'Unpaid'),
                 driverName: canonicalDr,
                 delPendingHistory: [],
@@ -468,7 +489,7 @@ export default function DriverPage() {
                 partyCode: '',
                 partyHulCode: '',
                 beatName: '',
-                outstandingAmount: newIsFullCut ? 0 : Math.max(0, (netAmtVal || 0) - lineCutVal),
+                outstandingAmount: newIsFullCut ? 0 : Math.max(0, effNetAmt - lineCutVal),
                 billAgeing: 0,
               };
               newBillsCreated.push(newBill);
