@@ -1,6 +1,6 @@
 import { useState, useRef, useCallback, useMemo, useEffect } from 'react';
 import { X, Plus, Trash2, Check, Loader2, Landmark, Wallet, Smartphone, Hash, CalendarDays, Mic, MicOff, Volume2 } from 'lucide-react';
-import { displayToIso, isoToDisplay, getTodayISO } from '@/lib/dateUtils';
+import { displayToIso, isoToDisplay, getTodayISO, normDateStr } from '@/lib/dateUtils';
 
 function stripGST(bn: string) {
   return (bn || '').replace(/^GST[-_]/i, '').trim();
@@ -130,7 +130,7 @@ export default function MultiBillEntryModal({ bills, banks, selectedDriver, disp
     return m;
   }, [bills]);
 
-  // Strict check: ONLY bills assigned to selectedDriver are allowed!
+  // Strict check: ONLY bills assigned to selectedDriver for displayDate are allowed!
   const isBillAllowed = useCallback((b: Bill | undefined | null): { allowed: boolean; reason?: string } => {
     if (!b) return { allowed: false, reason: 'Bill data nahi mila' };
     if (!selectedDriver || !selectedDriver.trim()) {
@@ -147,21 +147,29 @@ export default function MultiBillEntryModal({ bills, banks, selectedDriver, disp
     if (bDriver !== selUpper) {
       return { allowed: false, reason: `Bill #${b.billNo} '${b.driverName || 'dusre driver'}' ka hai, '${selectedDriver}' ka nahi!` };
     }
+    const bDate = normDateStr(b.deliveryDate || b.date);
+    const targetDate = normDateStr(displayDate);
+    if (bDate !== targetDate) {
+      return { allowed: false, reason: `Bill #${b.billNo} '${bDate || 'dusri date'}' ka hai, '${displayDate}' ke liye assign nahi hai!` };
+    }
     return { allowed: true };
-  }, [selectedDriver]);
+  }, [selectedDriver, displayDate]);
 
-  // Driver bills strictly restricted to selectedDriver
+  // Driver bills strictly restricted to selectedDriver AND active date
   const driverBills = useMemo(() => {
     if (!selectedDriver || !selectedDriver.trim()) return [];
     const selUpper = selectedDriver.trim().toUpperCase();
+    const targetDate = normDateStr(displayDate);
     return bills.filter(b => {
       if (selUpper !== 'OWNER') {
         const bDriver = (b.driverName || '').trim().toUpperCase();
         if (bDriver !== selUpper) return false;
+        const bDate = normDateStr(b.deliveryDate || b.date);
+        if (bDate !== targetDate) return false;
       }
       return true;
     });
-  }, [bills, selectedDriver]);
+  }, [bills, selectedDriver, displayDate]);
 
   // Sorted so active date bills appear first in suggestions & voice matching
   const sortedDriverBills = useMemo(() => {

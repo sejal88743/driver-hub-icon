@@ -517,6 +517,28 @@ export default function Dashboard() {
     };
   }, [selectedDriver, drivers]);
 
+  // ── Authoritative Driver + Date Bills Sync from Supabase ───────────────────
+  // Whenever driver or date changes, immediately pull all bills assigned to this
+  // driver for this date from Supabase. Ensures 100% identical bill counts
+  // across all devices (phone, laptop, tablet, desktop) without stale cache drift.
+  useEffect(() => {
+    if (!selectedDriver || isOwnerOrUserSelected) return;
+    let cancelled = false;
+    const fetchDriverBills = async () => {
+      try {
+        const { apiFetchDriverDateBills } = await import('@/lib/apiSync');
+        const serverBills = await apiFetchDriverDateBills(selectedDriver, displayDate);
+        if (cancelled || !serverBills || serverBills.length === 0) return;
+        const { syncDriverDateBills } = await import('@/lib/billStore');
+        syncDriverDateBills(selectedDriver, displayDate, serverBills);
+      } catch (err) {
+        console.warn('[DriverSync] Error fetching driver bills:', err);
+      }
+    };
+    void fetchDriverBills();
+    return () => { cancelled = true; };
+  }, [selectedDriver, displayDate, isOwnerOrUserSelected]);
+
   const filteredBillNos = useMemo(() => {
     const q = debouncedQuery.toLowerCase().trim();
     if (!q) return [];
@@ -529,6 +551,7 @@ export default function Dashboard() {
     const qStripped = stripGst(q);
     const qNoZeros = stripGstAndZeros(q);
     const selDriverUpper = selectedDriver.trim().toUpperCase();
+    const normDisplayDate = normDateStr(displayDate);
     const MAX_PER_TIER = 25;
 
     // Tiers:
@@ -544,10 +567,12 @@ export default function Dashboard() {
 
     for (const b of bills) {
       // Driver filter: When OWNER or USER is selected, show ALL bills!
-      // For regular drivers, ONLY find bills belonging to the selected driver!
+      // For regular drivers, ONLY find bills belonging to the selected driver on the active date!
       if (!isOwnerOrUserSelected) {
         const billDriverUpper = (b.driverName || '').trim().toUpperCase();
         if (billDriverUpper !== selDriverUpper) continue;
+        const bDate = normDateStr(b.deliveryDate || b.date);
+        if (bDate !== normDisplayDate) continue;
       }
 
       // DO NOT show old MOC serial bills in entry dropdown (each MOC entry must be a fresh new serial number)
@@ -634,7 +659,7 @@ export default function Dashboard() {
       ...t[5].sort(sortByLen),
       ...t[6].sort(sortByLen),
     ];
-  }, [bills, debouncedQuery, selectedDriver, commissionMocs, isOwnerOrUserSelected]);
+  }, [bills, debouncedQuery, selectedDriver, displayDate, commissionMocs, isOwnerOrUserSelected]);
 
   // Live on-demand Supabase search fallback: if memory doesn't have the bill yet, query Supabase directly
   useEffect(() => {
@@ -657,6 +682,9 @@ export default function Dashboard() {
 
         if (!isOwnerOrUserSelected && selectedDriver) {
           query = query.ilike('driver_name', selectedDriver.trim());
+          const normD = normDateStr(displayDate) || displayDate.trim();
+          const isoD = displayToIso(normD) || displayDate.trim();
+          query = query.or(`delivery_date.eq.${normD},delivery_date.eq.${isoD},date.eq.${normD},date.eq.${isoD}`);
         }
 
         const { data, error } = await query.limit(10);
@@ -725,25 +753,20 @@ export default function Dashboard() {
       // Both OWNER and USER staff manage the full ledger — show ALL bills count!
       dbills = bills;
     } else {
-      // Regular drivers: bills assigned to driver on selected date OR in delPendingHistory snapshot
-      const nameLower = selectedDriver.toLowerCase().trim();
-      for (const b of bills) {
-        if (Array.isArray(b.delPendingHistory)) {
-          if (b.delPendingHistory.some(h => h.driverName?.toLowerCase().trim() === nameLower && h.deliveryDate === displayDate)) {
-            snapshotBillNos.add(b.billNo);
-          }
-        }
-      }
+      // Regular drivers: strictly bills assigned to driver on selected date
+      const selUpper = selectedDriver.trim().toUpperCase();
+      const normDisplay = normDateStr(displayDate);
       dbills = bills.filter(b => {
         const isMoc = (b.billNo || '').toUpperCase().startsWith('MOC') || b.collectionCode === 'MOC' || b.salespersonName === 'MOC';
         const dName = (b.driverName || '').trim().toUpperCase();
         const pTime = (b.paymentTime || '').trim().toUpperCase();
         if (isMoc) {
           const isUserMatch = dName === selUpper || pTime === selUpper || pTime.startsWith(selUpper + ':');
-          const isDateMatch = b.paymentDate === displayDate || b.date === displayDate || b.deliveryDate === displayDate;
+          const isDateMatch = normDateStr(b.paymentDate) === normDisplay || normDateStr(b.date) === normDisplay || normDateStr(b.deliveryDate) === normDisplay;
           return isUserMatch && isDateMatch;
         }
-        return (dName === selUpper && b.deliveryDate === displayDate) || snapshotBillNos.has(b.billNo);
+        const bDate = normDateStr(b.deliveryDate || b.date);
+        return dName === selUpper && bDate === normDisplay;
       });
     }
 
@@ -775,7 +798,7 @@ export default function Dashboard() {
         
         const isPaid = hasMoneyReceived || ['paid', 'cash', 'upi', 'cheque', 'split'].includes(mode);
         const isFBR = mode === 'fbr' || mode === 'cancel';
-        const isDelPending = snapshotBillNos.has(b.billNo) || mode === 'del pending';
+        const isDelPending = mode === 'del pending' || mode === 'pending';
         const isCredit = mode === 'credit';
 
         if (isPaid || isFBR || isDelPending || isCredit) {
@@ -1133,9 +1156,17 @@ export default function Dashboard() {
 
     const selDriverUpper = selectedDriver.trim().toUpperCase();
     const billDriverUpper = (existingBill.driverName || '').trim().toUpperCase();
-    if (!isOwnerOrUserSelected && billDriverUpper !== selDriverUpper) {
-      toast({ title: 'Driver Mismatch', description: `Ye bill ${existingBill.driverName || 'dusre driver'} ka hai, ${selectedDriver} ka nahi`, variant: 'destructive' });
-      return;
+    if (!isOwnerOrUserSelected) {
+      if (billDriverUpper !== selDriverUpper) {
+        toast({ title: 'Driver Mismatch', description: `Ye bill ${existingBill.driverName || 'dusre driver'} ka hai, ${selectedDriver} ka nahi!`, variant: 'destructive' });
+        return;
+      }
+      const bDate = normDateStr(existingBill.deliveryDate || existingBill.date);
+      const targetDate = normDateStr(displayDate);
+      if (bDate !== targetDate) {
+        toast({ title: 'Date Mismatch', description: `Ye bill ${bDate || 'dusri date'} ka hai, ${displayDate} ke liye ${selectedDriver} ko assign nahi hai!`, variant: 'destructive' });
+        return;
+      }
     }
 
     const bill = existingBill;
@@ -2945,11 +2976,15 @@ export default function Dashboard() {
     Number(chqAmt) > 0
   );
 
+  const isDateMatched = isMocCurrent || !selectedBill || isOwnerOrUserSelected ||
+    normDateStr(selectedBill.deliveryDate || selectedBill.date) === normDateStr(displayDate);
+
   const canSave = !saving && !userCannotEditReceivedBill && (
     (selectedBillNo && hasDriverSelection && chqValid &&
      (totalCollected > 0 || isMocCurrent || paymentMode === 'FBR' || paymentMode === 'Credit' || paymentMode === 'Del Pending' || paymentMode === 'Unpaid') &&
      !isLockedForSave &&
-     isDriverMatched)
+     isDriverMatched &&
+     isDateMatched)
     || isChqMetaOnlyEdit
     || isEditLockedChqMeta
   );

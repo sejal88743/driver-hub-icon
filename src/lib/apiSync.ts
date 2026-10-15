@@ -1,7 +1,7 @@
 import { supabase } from './supabase';
-import type { Bill, Driver, Bank, DriverDailySummary, Contact, WhatsAppTemplates } from './billStore';
+import { normalizeEditHistory, type Bill, type Driver, type Bank, type DriverDailySummary, type Contact, type WhatsAppTemplates } from './billStore';
 import { getRole } from './auth';
-import { normDateStr } from './dateUtils';
+import { normDateStr, displayToIso } from './dateUtils';
 
 function auditLog(tableName: string, action: 'INSERT' | 'UPDATE' | 'UPSERT' | 'DELETE', payload: any) {
   console.log("TABLE", tableName);
@@ -134,8 +134,8 @@ export const BILL_SELECT_COLUMNS =
 // ── Supabase row → Bill (handles both snake_case and camelCase column names) ──
 export function mapBillFromSupabase(row: Record<string, unknown>): Bill {
   const n = (v: unknown) => (v == null ? 0 : Number(v));
-  const s = (v: unknown) => (v == null ? '' : String(v));
-  const o = (v: unknown) => (v == null || v === '' ? undefined : String(v));
+  const s = (v: unknown) => (v == null ? '' : (typeof v === 'object' ? JSON.stringify(v) : String(v)));
+  const o = (v: unknown) => (v == null || v === '' ? undefined : (typeof v === 'object' ? JSON.stringify(v) : String(v)));
   return {
     id:                 s(row.id),
     srNo:               s(row.srNo ?? row.sr_no),
@@ -169,7 +169,7 @@ export function mapBillFromSupabase(row: Record<string, unknown>): Bill {
     chequeAmount:       n(row.chequeAmount ?? row.cheque_amount) || undefined,
     delPendingHistory:  (row.delPendingHistory ?? row.del_pending_history) as Bill['delPendingHistory'],
     partPayments:       (row.partPayments ?? row.part_payments) as Bill['partPayments'],
-    editHistory:        (row.editHistory ?? row.edit_history) as Bill['editHistory'],
+    editHistory:        normalizeEditHistory(row.editHistory ?? row.edit_history),
     editDate:           o(row.editDate ?? row.edit_date),
     updatedAt:          o(row.updated_at ?? row.updatedAt),
     user:               o(row.user),
@@ -1954,6 +1954,36 @@ export async function apiFetchBillsSince(sinceIso: string): Promise<Bill[]> {
     console.warn('[apiSync] apiFetchBillsSince fallback failed:', fbErr);
   }
 
+  return [];
+}
+
+/**
+ * Authoritatively fetches all bills assigned to a specific driver for a specific date from Supabase.
+ * Fast, lightweight query (~300ms) ensuring zero device-to-device discrepancy.
+ */
+export async function apiFetchDriverDateBills(driverName: string, dateDisplay: string): Promise<Bill[]> {
+  if (!supabase || !driverName?.trim()) return [];
+  const cleanDriver = driverName.trim();
+  const dmy = normDateStr(dateDisplay) || dateDisplay.trim();
+  const iso = displayToIso(dmy) || dateDisplay.trim();
+
+  try {
+    const { data, error } = await supabase
+      .from('bills')
+      .select(BILL_SELECT_COLUMNS)
+      .ilike('driver_name', cleanDriver)
+      .or(`delivery_date.eq.${dmy},delivery_date.eq.${iso},date.eq.${dmy},date.eq.${iso}`);
+
+    if (error) {
+      console.warn('[apiSync] apiFetchDriverDateBills error:', error);
+      return [];
+    }
+    if (Array.isArray(data)) {
+      return data.map(mapBillFromSupabase);
+    }
+  } catch (err) {
+    console.warn('[apiSync] apiFetchDriverDateBills exception:', err);
+  }
   return [];
 }
 

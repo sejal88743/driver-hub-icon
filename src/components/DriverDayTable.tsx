@@ -275,8 +275,9 @@ export default function DriverDayTable({ bills, selectedDriver, displayDate, onS
         return false;
       });
     } else {
-      // Driver view: strictly show bills assigned to this driver whose deliveryDate matches the selected date (or snapshots, or MOC entered under this driver)
+      // Driver view: strictly show bills assigned to this driver whose deliveryDate/date matches the selected date
       const seenDriverBills = new Set<string>();
+      const normDisplay = normDateStr(displayDate);
       result = bills.filter(b => {
         if (!b.billNo) return false;
         const isMoc = (b.billNo || '').toUpperCase().startsWith('MOC') || b.collectionCode === 'MOC' || b.salespersonName === 'MOC';
@@ -286,15 +287,20 @@ export default function DriverDayTable({ bills, selectedDriver, displayDate, onS
         const dName = (b.driverName || '').trim().toUpperCase();
         const pTime = (b.paymentTime || '').trim().toUpperCase();
 
-        const isMatch = (
-          (dName === selUpper && (
-            b.deliveryDate === displayDate ||
-            (!b.deliveryDate && b.date === displayDate) ||
-            (isMoc && (b.paymentDate === displayDate || b.date === displayDate || b.deliveryDate === displayDate))
-          )) ||
-          (isMoc && (pTime === selUpper || pTime.startsWith(selUpper + ':') || pTime.startsWith(selUpper + ' ')) && (b.paymentDate === displayDate || b.date === displayDate || b.deliveryDate === displayDate)) ||
-          (b.billNo && snapshotBillNos.has(b.billNo))
-        );
+        if (isMoc) {
+          const isMatchMoc = (
+            (dName === selUpper || pTime === selUpper || pTime.startsWith(selUpper + ':') || pTime.startsWith(selUpper + ' ')) &&
+            (normDateStr(b.paymentDate) === normDisplay || normDateStr(b.date) === normDisplay || normDateStr(b.deliveryDate) === normDisplay)
+          );
+          if (isMatchMoc) {
+            seenDriverBills.add(normNo);
+            return true;
+          }
+          return false;
+        }
+
+        const bDate = normDateStr(b.deliveryDate || b.date);
+        const isMatch = (dName === selUpper && bDate === normDisplay);
 
         if (isMatch) {
           seenDriverBills.add(normNo);

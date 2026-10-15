@@ -20,7 +20,7 @@ import {
 import TopNav from '@/components/TopNav';
 import { Button } from '@/components/ui/button';
 import { useBillStore } from '@/hooks/use-bill-store';
-import type { Bill, BillEditEntry } from '@/lib/billStore';
+import { normalizeEditHistory, formatBillChanges, type Bill, type BillEditEntry } from '@/lib/billStore';
 import { cn } from '@/lib/utils';
 import {
   useStatementMatch,
@@ -53,13 +53,19 @@ function rowTone(mode?: string) {
 }
 
 function histOf(b: Bill): BillEditEntry[] {
-  return Array.isArray(b.editHistory) ? b.editHistory : [];
+  return normalizeEditHistory(b.editHistory);
 }
 
 function lastActor(b: Bill): string {
   const h = histOf(b);
-  if (h.length) return `${h[h.length - 1].by} (${h[h.length - 1].role})`;
-  return b.owner || b.user || '—';
+  if (h.length) {
+    const last = h[h.length - 1];
+    const byStr = typeof last.by === 'object' ? JSON.stringify(last.by) : (last.by || '');
+    const roleStr = typeof last.role === 'object' ? JSON.stringify(last.role) : (last.role || '');
+    return `${byStr} (${roleStr})`;
+  }
+  const fallback = b.owner || b.user;
+  return typeof fallback === 'object' ? JSON.stringify(fallback) : (fallback || '—');
 }
 
 function parseDateDisplay(d?: string | null): number {
@@ -859,17 +865,17 @@ export default function HistoryPage() {
                               <tbody>
                                 {h.map((e, i) => (
                                   <tr key={i} className="border-t border-border/60 font-semibold">
-                                    <td className="px-1 py-0.5">{e.seq}</td>
-                                    <td className="px-1 py-0.5 whitespace-nowrap">{e.date}</td>
-                                    <td className="px-1 py-0.5 whitespace-nowrap">{e.time}</td>
-                                    <td className="px-1 py-0.5 uppercase">{e.by}</td>
-                                    <td className="px-1 py-0.5 uppercase">{e.role}</td>
-                                    <td className="px-1 py-0.5 uppercase">{e.action}</td>
-                                    <td className="px-1 py-0.5 uppercase">{e.mode || '—'}</td>
+                                    <td className="px-1 py-0.5">{typeof e.seq === 'object' ? JSON.stringify(e.seq) : e.seq}</td>
+                                    <td className="px-1 py-0.5 whitespace-nowrap">{typeof e.date === 'object' ? JSON.stringify(e.date) : (e.date || '')}</td>
+                                    <td className="px-1 py-0.5 whitespace-nowrap">{typeof e.time === 'object' ? JSON.stringify(e.time) : (e.time || '')}</td>
+                                    <td className="px-1 py-0.5 uppercase">{typeof e.by === 'object' ? JSON.stringify(e.by) : (e.by || '')}</td>
+                                    <td className="px-1 py-0.5 uppercase">{typeof e.role === 'object' ? JSON.stringify(e.role) : (e.role || '')}</td>
+                                    <td className="px-1 py-0.5 uppercase">{typeof e.action === 'object' ? JSON.stringify(e.action) : (e.action || '')}</td>
+                                    <td className="px-1 py-0.5 uppercase">{typeof e.mode === 'object' ? JSON.stringify(e.mode) : (e.mode || '—')}</td>
                                     <td className="px-1 py-0.5 text-right tabular-nums">
-                                      {e.amount != null ? e.amount.toLocaleString('en-IN') : '—'}
+                                      {e.amount != null ? (typeof e.amount === 'number' ? e.amount.toLocaleString('en-IN') : String(e.amount)) : '—'}
                                     </td>
-                                    <td className="px-1 py-0.5">{e.changes || '—'}</td>
+                                    <td className="px-1 py-0.5">{formatBillChanges(e.changes)}</td>
                                   </tr>
                                 ))}
                               </tbody>

@@ -3,7 +3,7 @@ import { cleanSalespersonName, cleanPartyName, standardizeBills, calculateSimila
 import { MASTER_SALESPERSON_DIRECTORY, findMasterSalesperson, getMasterSalespersonMobile } from './salespersonDirectory';
 import { getRole } from './auth';
 import { getGreenPartyNameByCode, loadGreenPartiesFromSettings, getGreenParties } from './greenParties';
-import { excelSerialToDate, isoToDisplay, displayToIso } from './dateUtils';
+import { excelSerialToDate, isoToDisplay, displayToIso, normDateStr } from './dateUtils';
 
 function getTodayISO() {
   const now = new Date();
@@ -112,10 +112,110 @@ export function appendEditHistory(
     action: entry.action,
     mode: entry.mode,
     amount: entry.amount,
-    changes: entry.changes,
+    changes: formatBillChanges(entry.changes),
   };
   const next = [...prev, line];
   return next.length > 100 ? next.slice(next.length - 100) : next;
+}
+
+/** Formats any changes string or object (including { extraColumns: ... }) safely into human-readable text */
+export function formatBillChanges(changes: unknown): string {
+  if (!changes) return '—';
+  if (typeof changes === 'string') {
+    const trimmed = changes.trim();
+    if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+      try {
+        const parsed = JSON.parse(trimmed);
+        return formatBillChanges(parsed);
+      } catch {
+        return changes;
+      }
+    }
+    return changes;
+  }
+  if (typeof changes === 'object') {
+    const obj = changes as Record<string, any>;
+    if (obj.extraColumns && typeof obj.extraColumns === 'object') {
+      return Object.entries(obj.extraColumns)
+        .map(([k, v]) => `${k}: ${typeof v === 'object' ? JSON.stringify(v) : String(v)}`)
+        .join(', ');
+    }
+    try {
+      return Object.entries(obj)
+        .map(([k, v]) => `${k}: ${typeof v === 'object' ? JSON.stringify(v) : String(v)}`)
+        .join(', ');
+    } catch {
+      return JSON.stringify(changes);
+    }
+  }
+  return String(changes);
+}
+
+/** Normalizes and sanitizes editHistory arrays from Supabase/Postgres so entries are safe React primitives */
+export function normalizeEditHistory(raw: unknown): BillEditEntry[] {
+  if (!raw) return [];
+  let arr: unknown[] = [];
+  if (Array.isArray(raw)) {
+    arr = raw;
+  } else if (typeof raw === 'string') {
+    try {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) arr = parsed;
+    } catch {
+      return [];
+    }
+  } else {
+    return [];
+  }
+
+  return arr.map((item: any, idx: number) => {
+    if (!item || typeof item !== 'object') {
+      return {
+        seq: idx + 1,
+        date: '',
+        time: '',
+        by: String(item ?? ''),
+        role: '',
+        action: 'edit',
+        changes: '—',
+      };
+    }
+
+    let byStr = typeof item.by === 'string' ? item.by : (typeof item.user === 'string' ? item.user : 'system');
+    if (typeof byStr === 'object') byStr = JSON.stringify(byStr);
+
+    let roleStr = typeof item.role === 'string' ? item.role : 'user';
+    if (typeof roleStr === 'object') roleStr = JSON.stringify(roleStr);
+
+    let actionStr = typeof item.action === 'string' ? item.action : 'edit';
+    if (typeof actionStr === 'object') actionStr = JSON.stringify(actionStr);
+
+    let modeStr = item.mode != null ? (typeof item.mode === 'string' ? item.mode : String(item.mode)) : undefined;
+
+    let dateStr = typeof item.date === 'string' ? item.date : '';
+    let timeStr = typeof item.time === 'string' ? item.time : '';
+    if (!dateStr && item.timestamp) {
+      try {
+        const d = new Date(item.timestamp);
+        if (!isNaN(d.getTime())) {
+          dateStr = d.toLocaleDateString('en-GB');
+          timeStr = d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
+        }
+      } catch {}
+    }
+
+    return {
+      seq: typeof item.seq === 'number' ? item.seq : idx + 1,
+      date: dateStr,
+      time: timeStr,
+      by: String(byStr),
+      role: String(roleStr),
+      action: String(actionStr),
+      mode: modeStr,
+      amount: typeof item.amount === 'number' ? item.amount : (typeof item.collectedAmount === 'number' ? item.collectedAmount : undefined),
+      changes: formatBillChanges(item.changes),
+    };
+  });
 }
 
 
@@ -315,6 +415,69 @@ export function getBillDedupeKey(b: Partial<Bill> | null | undefined): string {
     return (b.id && b.id.trim()) || (bn || 'moc_unknown');
   }
   return bn || (b.id ? b.id.trim() : '');
+}
+
+/**
+ * Synchronizes authoritative driver bills from Supabase into local memory store.
+ * Merges server records and ensures the local device has all assigned bills.
+ */
+export function syncDriverDateBills(driverName: string, dateDisplay: string, serverBills: Bill[]) {
+  if (!driverName || !serverBills || serverBills.length === 0) return;
+  const targetDate = normDateStr(dateDisplay);
+  if (!targetDate) return;
+
+  const serverBillMap = new Map<string, Bill>();
+  for (const sb of serverBills) {
+    const k = getBillDedupeKey(sb);
+    if (k) serverBillMap.set(k, sb);
+  }
+
+  let changed = false;
+  const updatedBills = [..._bills];
+  const existingKeys = new Set<string>();
+
+  for (let i = 0; i < updatedBills.length; i++) {
+    const b = updatedBills[i];
+    const k = getBillDedupeKey(b);
+    if (!k) continue;
+    existingKeys.add(k);
+
+    const sb = serverBillMap.get(k);
+    if (sb) {
+      const bDriver = (b.driverName || '').trim().toUpperCase();
+      const sbDriver = (sb.driverName || '').trim().toUpperCase();
+      const bDate = normDateStr(b.deliveryDate || b.date);
+      const sbDate = normDateStr(sb.deliveryDate || sb.date);
+
+      if (
+        bDriver !== sbDriver ||
+        bDate !== sbDate ||
+        b.collectedAmount !== sb.collectedAmount ||
+        b.paymentMode !== sb.paymentMode ||
+        b.cashAmount !== sb.cashAmount ||
+        b.upiAmount !== sb.upiAmount ||
+        b.chequeAmount !== sb.chequeAmount
+      ) {
+        updatedBills[i] = { ...b, ...sb };
+        changed = true;
+      }
+    }
+  }
+
+  for (const [k, sb] of serverBillMap.entries()) {
+    if (!existingKeys.has(k)) {
+      updatedBills.push(sb);
+      changed = true;
+    }
+  }
+
+  if (changed) {
+    _bills = updatedBills;
+    persistLocalState();
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new Event('bill-store-update'));
+    }
+  }
 }
 
 let persistTimer: ReturnType<typeof setTimeout> | null = null;
