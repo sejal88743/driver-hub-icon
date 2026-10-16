@@ -4,7 +4,7 @@ import { Check, Loader2, RotateCcw, Pencil, Wallet, Smartphone, Landmark, Hash, 
 import { Button } from '@/components/ui/button';
 import { toast } from '@/hooks/use-toast';
 import { useBillStore } from '@/hooks/use-bill-store';
-import { savePayment, getSystemPassword, getBills, saveBills, patchBillInMemory, patchBillDirect, setDailyUnlocked, getBanks, getUserPerm, getBillSearchAutoResetSec, addBillsToMemoryOnly, getSalespersonContacts, saveSalespersonContacts, findSalespersonContact, cleanSalespersonName, calculateBillDiscountPercent, Bill } from '@/lib/billStore';
+import { savePayment, getSystemPassword, getBills, saveBills, patchBillInMemory, patchBillDirect, setDailyUnlocked, getBanks, getUserPerm, getBillSearchAutoResetSec, addBillsToMemoryOnly, getSalespersonContacts, saveSalespersonContacts, findSalespersonContact, cleanSalespersonName, calculateBillDiscountPercent, findBillFast, Bill } from '@/lib/billStore';
 import { getRole, getLoggedInName } from '@/lib/auth';
 import { cn } from '@/lib/utils';
 import TopNav from '@/components/TopNav';

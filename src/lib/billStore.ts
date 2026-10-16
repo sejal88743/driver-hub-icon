@@ -481,6 +481,45 @@ export function syncDriverDateBills(driverName: string, dateDisplay: string, ser
 }
 
 let persistTimer: ReturnType<typeof setTimeout> | null = null;
+let isPersisting = false;
+let pendingPersist = false;
+
+// ─── Fast O(1) in-memory bill index Maps ──────────────────────────────────────
+const _billIndexById = new Map<string, number>();
+const _billIndexByNo = new Map<string, number>();
+const _billIndexByKey = new Map<string, number>();
+
+export function rebuildBillIndexMaps() {
+  _billIndexById.clear();
+  _billIndexByNo.clear();
+  _billIndexByKey.clear();
+  for (let i = 0; i < _bills.length; i++) {
+    const b = _bills[i];
+    if (b.id) _billIndexById.set(b.id, i);
+    const bn = (b.billNo || '').trim().toUpperCase();
+    if (bn && !_billIndexByNo.has(bn)) _billIndexByNo.set(bn, i);
+    const key = getBillDedupeKey(b);
+    if (key && !_billIndexByKey.has(key)) _billIndexByKey.set(key, i);
+  }
+}
+
+export function findBillIndexFast(billNoOrId?: string, billId?: string): number {
+  if (!billNoOrId && !billId) return -1;
+  if (billId && _billIndexById.has(billId)) return _billIndexById.get(billId)!;
+  if (billNoOrId) {
+    if (_billIndexById.has(billNoOrId)) return _billIndexById.get(billNoOrId)!;
+    const norm = billNoOrId.trim().toUpperCase();
+    if (_billIndexByNo.has(norm)) return _billIndexByNo.get(norm)!;
+    const key = getBillDedupeKey({ billNo: billNoOrId, id: billId });
+    if (key && _billIndexByKey.has(key)) return _billIndexByKey.get(key)!;
+  }
+  return -1;
+}
+
+export function findBillFast(billNoOrId?: string, billId?: string): Bill | undefined {
+  const idx = findBillIndexFast(billNoOrId, billId);
+  return idx >= 0 ? _bills[idx] : undefined;
+}
 
 export function persistLocalState(immediate = false) {
   if (typeof window === 'undefined') return;
@@ -488,18 +527,44 @@ export function persistLocalState(immediate = false) {
     clearTimeout(persistTimer);
     persistTimer = null;
   }
+
+  const scheduleTask = () => {
+    if (isPersisting) {
+      pendingPersist = true;
+      return;
+    }
+    isPersisting = true;
+    try {
+      doPersistLocalState();
+    } finally {
+      isPersisting = false;
+      if (pendingPersist) {
+        pendingPersist = false;
+        persistLocalState();
+      }
+    }
+  };
+
   if (immediate) {
-    doPersistLocalState();
+    // Non-blocking micro-delay ensures UI frame paints immediately with 0 input lag
+    setTimeout(() => {
+      if ('requestIdleCallback' in window) {
+        (window as any).requestIdleCallback(scheduleTask, { timeout: 1200 });
+      } else {
+        scheduleTask();
+      }
+    }, 0);
     return;
   }
+
   persistTimer = setTimeout(() => {
     persistTimer = null;
-    if (typeof window !== 'undefined' && 'requestIdleCallback' in window) {
-      window.requestIdleCallback(() => doPersistLocalState(), { timeout: 800 });
+    if ('requestIdleCallback' in window) {
+      (window as any).requestIdleCallback(scheduleTask, { timeout: 2000 });
     } else {
-      doPersistLocalState();
+      scheduleTask();
     }
-  }, 200);
+  }, 1000);
 }
 
 let _hasLoggedQuotaWarning = false;
@@ -540,44 +605,14 @@ function doPersistLocalState() {
 
   // 2. Micro-cache for fast initial-render in localStorage (top recent bills only, stripped of bulky history)
   if (_bills.length > 0) {
-    // Top 60 bills without heavy edit logs is only ~15KB
     const lightBills = _bills.slice(0, 60).map(b => {
       const { editHistory, delPendingHistory, ...rest } = b;
       return rest;
     });
-    const saved = safeSetLocalStorage(LS_BILLS_KEY, JSON.stringify(lightBills));
-    if (!saved) {
-      // If quota is tight, fallback to ultra-compact 15 bills
-      const tinyBills = _bills.slice(0, 15).map(b => {
-        const { editHistory, delPendingHistory, ...rest } = b;
-        return rest;
-      });
-      const savedTiny = safeSetLocalStorage(LS_BILLS_KEY, JSON.stringify(tinyBills));
-      if (!savedTiny) {
-        // If localStorage is completely full, remove the bills key to guarantee space for drivers/settings
-        try { localStorage.removeItem(LS_BILLS_KEY); } catch {}
-      }
-    }
+    safeSetLocalStorage(LS_BILLS_KEY, JSON.stringify(lightBills));
   }
 
-  // 3. Save critical metadata entities independently so one never blocks another
-  if (_drivers.length > 0) {
-    safeSetLocalStorage(LS_DRIVERS_KEY, JSON.stringify(_drivers));
-  }
-  if (_banks.length > 0) {
-    safeSetLocalStorage(LS_BANKS_KEY, JSON.stringify(_banks));
-  }
-  if (_summaries.length > 0) {
-    safeSetLocalStorage(LS_SUMMARIES_KEY, JSON.stringify(_summaries));
-  }
-  if (_partyContacts.length > 0) {
-    safeSetLocalStorage(LS_PARTY_CONTACTS_KEY, JSON.stringify(_partyContacts));
-  }
-  if (_salespersonContacts.length > 0) {
-    safeSetLocalStorage(LS_SALESPERSON_CONTACTS_KEY, JSON.stringify(_salespersonContacts));
-  }
-
-  // 4. Commit to IndexedDB asynchronously
+  // 3. Commit to IndexedDB asynchronously
   if (Object.keys(idbPayload).length > 0) {
     idbSetMany(idbPayload).catch(() => {});
   }
@@ -632,6 +667,7 @@ if (typeof window !== 'undefined') {
       if (Array.isArray(parsed) && parsed.length > 0) _salespersonContacts = parsed;
     }
     _salespersonContacts = ensureMasterSalespersonContacts(_salespersonContacts).contacts;
+    rebuildBillIndexMaps();
   } catch (e) {
     console.warn('[billStore] Sync hydration error', e);
   }
@@ -684,6 +720,7 @@ function _initIdbHydration(): Promise<void> {
         }
       }
       _bills = Array.from(mergedMap.values());
+      rebuildBillIndexMaps();
       updated = true;
     }
 
@@ -854,6 +891,7 @@ export function setServerData(data: {
       if (key) seen.set(key, cleaned);
     }
     _bills = Array.from(seen.values());
+    rebuildBillIndexMaps();
   }
   if (data.drivers !== undefined) {
     _drivers = data.drivers;
@@ -2296,9 +2334,12 @@ function updateDelPendingHistoryOnPatch(
 }
 
 export async function patchBillInMemory(billNo: string, patch: Partial<Bill>): Promise<boolean> {
-  const normKey = getBillDedupeKey({ billNo, id: billNo });
-  const norm = (billNo || '').trim().toLowerCase();
-  const idx = _bills.findIndex(b => (normKey && getBillDedupeKey(b) === normKey) || (b.billNo || '').trim().toLowerCase() === norm || b.id === billNo);
+  let idx = findBillIndexFast(billNo);
+  if (idx === -1) {
+    const normKey = getBillDedupeKey({ billNo, id: billNo });
+    const norm = (billNo || '').trim().toLowerCase();
+    idx = _bills.findIndex(b => (normKey && getBillDedupeKey(b) === normKey) || (b.billNo || '').trim().toLowerCase() === norm || b.id === billNo);
+  }
   if (idx === -1) return false;
   const delHist = updateDelPendingHistoryOnPatch(_bills[idx], patch);
   if (delHist && !('delPendingHistory' in patch)) {
@@ -2320,8 +2361,10 @@ export async function patchBillInMemory(billNo: string, patch: Partial<Bill>): P
   const nextBills = [..._bills];
   nextBills[idx] = { ...nextBills[idx], ...patch };
   _bills = nextBills;
+  if (_bills[idx].id) _billIndexById.set(_bills[idx].id, idx);
+  if (_bills[idx].billNo) _billIndexByNo.set(_bills[idx].billNo.trim().toUpperCase(), idx);
   dispatchUpdate();
-  persistLocalState(true);
+  persistLocalState();
   if (typeof window !== 'undefined') {
     window.dispatchEvent(new CustomEvent('broadcast-bill-update', { detail: _bills[idx] }));
     window.dispatchEvent(new CustomEvent('broadcast-sync-trigger', { detail: Date.now() }));
@@ -2898,17 +2941,22 @@ export async function savePayment(
   const isMocBn = normBillNo.startsWith('MOC') || normBillNo.includes('MOC') || (billId && billId.startsWith('moc_'));
   const targetKey = getBillDedupeKey({ billNo, id: billId || undefined });
 
-  let index = -1;
-  if (billId) {
-    index = _bills.findIndex(b => b.id === billId);
-  }
+  let index = findBillIndexFast(billNo, billId);
   if (index === -1 && targetKey) {
-    index = _bills.findIndex(b => getBillDedupeKey(b) === targetKey);
+    index = _billIndexByKey.get(targetKey) ?? -1;
   }
-  if (index === -1 && billNo && !isMocBn) {
-    index = _bills.findIndex(b => (b.billNo || '').trim().toUpperCase() === normBillNo);
-    if (index === -1) {
-      index = _bills.findIndex(b => b.id === billNo || (b.billNo || '').trim() === billNo.trim());
+  if (index === -1) {
+    if (billId) {
+      index = _bills.findIndex(b => b.id === billId);
+    }
+    if (index === -1 && targetKey) {
+      index = _bills.findIndex(b => getBillDedupeKey(b) === targetKey);
+    }
+    if (index === -1 && billNo && !isMocBn) {
+      index = _bills.findIndex(b => (b.billNo || '').trim().toUpperCase() === normBillNo);
+      if (index === -1) {
+        index = _bills.findIndex(b => b.id === billNo || (b.billNo || '').trim() === billNo.trim());
+      }
     }
   }
 
@@ -3151,8 +3199,10 @@ export async function savePayment(
   // Update in-memory and local storage immediately for 0ms UI responsiveness
   _bills = [..._bills];
   _bills[index] = { ..._bills[index], ...patch };
+  if (_bills[index].id) _billIndexById.set(_bills[index].id, index);
+  if (_bills[index].billNo) _billIndexByNo.set(_bills[index].billNo.trim().toUpperCase(), index);
   dispatchUpdate();
-  persistLocalState(true);
+  persistLocalState();
   if (typeof window !== 'undefined') {
     window.dispatchEvent(new CustomEvent('broadcast-bill-update', { detail: _bills[index] }));
     window.dispatchEvent(new CustomEvent('broadcast-sync-trigger', { detail: Date.now() }));
@@ -3188,9 +3238,12 @@ export async function savePayment(
 
 // ─── resetBill: clears all payment fields, keeps billNetAmt unchanged ──────────
 export async function resetBill(billNo: string) {
-  const normKey = getBillDedupeKey({ billNo, id: billNo });
-  const normBillNo = (billNo || '').trim().toUpperCase();
-  const index = _bills.findIndex(b => (normKey && getBillDedupeKey(b) === normKey) || (b.billNo || '').trim().toUpperCase() === normBillNo || b.id === billNo);
+  let index = findBillIndexFast(billNo);
+  if (index === -1) {
+    const normKey = getBillDedupeKey({ billNo, id: billNo });
+    const normBillNo = (billNo || '').trim().toUpperCase();
+    index = _bills.findIndex(b => (normKey && getBillDedupeKey(b) === normKey) || (b.billNo || '').trim().toUpperCase() === normBillNo || b.id === billNo);
+  }
   if (index === -1) return;
   const patch: Partial<Bill> = {
     paymentMode: '',
@@ -3209,7 +3262,7 @@ export async function resetBill(billNo: string) {
   };
   _bills[index] = { ..._bills[index], ...patch };
   dispatchUpdate();
-  persistLocalState(true);
+  persistLocalState();
   const billId = _bills[index].id;
   
   import('@/lib/localQueue').then(({ enqueueDirty }) => {
@@ -3238,7 +3291,7 @@ export async function resetBill(billNo: string) {
 export async function deleteBill(billNo: string, id?: string): Promise<boolean> {
   const normBillNo = (billNo || '').trim().toUpperCase();
   const targetId = id;
-  const targetBill = _bills.find(b => (targetId && b.id === targetId) || (normBillNo && (b.billNo || '').trim().toUpperCase() === normBillNo));
+  const targetBill = findBillFast(billNo, id) || _bills.find(b => (targetId && b.id === targetId) || (normBillNo && (b.billNo || '').trim().toUpperCase() === normBillNo));
   const effectiveId = targetId || targetBill?.id || '';
   const effectiveBillNo = targetBill?.billNo || billNo;
 
@@ -3248,6 +3301,7 @@ export async function deleteBill(billNo: string, id?: string): Promise<boolean> 
     if (normBillNo && (b.billNo || '').trim().toUpperCase() === normBillNo) return false;
     return true;
   });
+  rebuildBillIndexMaps();
 
   // 2. Remove from dirty queue
   try {
@@ -3257,7 +3311,7 @@ export async function deleteBill(billNo: string, id?: string): Promise<boolean> 
 
   // 3. Dispatch update and persist
   dispatchUpdate();
-  persistLocalState(true);
+  persistLocalState();
 
   // 4. Delete from Supabase
   markWriteStart();
@@ -3406,6 +3460,7 @@ export function applyBillsDelta(changed: Bill[]) {
   }
 
   _bills = prepend.length > 0 ? [...prepend, ...next] : next;
+  rebuildBillIndexMaps();
   dispatchUpdate();
   persistLocalState();
   return applied;

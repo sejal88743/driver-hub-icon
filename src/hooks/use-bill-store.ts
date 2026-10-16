@@ -576,7 +576,7 @@ function initGlobalSync() {
     void flushPendingWrites();
   }, 15000);
 
-  // Initial load: Hydrate immediately from cache, then run full sync to ensure 100% of all bills are loaded
+  // Initial load: Hydrate immediately from cache with 0ms delay, then delta sync in background
   void (async () => {
     try {
       await whenStoreHydrated();
@@ -587,17 +587,9 @@ function initGlobalSync() {
       patch({ loading: false });
       const savedTs = typeof window !== 'undefined' ? localStorage.getItem('vitratrack_last_sync_ts') : null;
       deltaCursor = savedTs || new Date(Date.now() - 24 * 3600 * 1000).toISOString();
-      // Cache se boot: SIRF delta sync — last visit ke baad changed rows hi aati hain,
-      // pura 42k bills dobara download NAHI hota. Full sync sirf fresh device par
-      // (khali cache) ya admin ke manual Settings sync par chalega.
-      // One-time repair: earlier paging could miss bills; force a single full reload.
-      const REPAIR_KEY = 'vitratrack_full_reload_v2';
-      if (typeof window !== 'undefined' && !localStorage.getItem(REPAIR_KEY)) {
-        localStorage.setItem(REPAIR_KEY, '1');
-        void doFullSync(true);
-      } else {
-        void doDeltaSync();
-      }
+      // Cache boot: ALWAYS delta sync — only changed rows since last visit are fetched.
+      // 40k+ bills are already in local IndexedDB and never re-downloaded on normal boot.
+      void doDeltaSync();
     } else {
       // Fresh device or empty local cache: do initial full sync
       void doFullSync(true);

@@ -166,27 +166,31 @@ export default function DriverDayTable({ bills, selectedDriver, displayDate, onS
       // OWNER view: Show all bills where payment was received / entered by OWNER on displayDate
       // Driver-assigned bills (deliveryDate = selectedDate) must NEVER appear here unless received by OWNER
       const seenOwnerBills = new Set<string>();
+      const normTargetDate = normDateStr(displayDate);
       result = bills.filter(b => {
         if (!b.billNo) return false;
+        // Fast guard: Receipt date is authoritative — skip bills of other dates immediately
+        if (!b.paymentDate || normDateStr(b.paymentDate) !== normTargetDate) return false;
+
         const isMoc = (b.billNo || '').toUpperCase().startsWith('MOC') || b.collectionCode === 'MOC' || b.salespersonName === 'MOC';
         const normNo = isMoc ? (b.id || b.billNo || '') : (b.billNo || '').trim().toUpperCase();
         if (seenOwnerBills.has(normNo)) return false;
 
+        // If bill was assigned to a driver on deliveryDate = displayDate, do not show in owner view
+        if (!isMoc && b.deliveryDate === displayDate && b.driverName && b.driverName.trim().toUpperCase() !== 'OWNER') return false;
+
+        const _bm = (b.paymentMode || '').toLowerCase();
+        // Assigned bills / uncollected bills belong only to the driver's table — never in owner view
+        if (_bm === 'assigned') return false;
+
         const eff = getEffectiveAmounts(b);
         const collected = Number(b.collectedAmount) || 0;
-        const _bm = (b.paymentMode || '').toLowerCase();
         const hasMoneyRec = eff.cash > 0 || eff.upi > 0 || eff.chq > 0 || collected > 0;
         const isFBR = (_bm === 'fbr' || _bm === 'cancel');
         const isCredit = _bm === 'credit';
         const isPaid = _bm === 'paid' || _bm === 'cash' || _bm === 'upi' || _bm === 'cheque' || _bm === 'split';
 
-        // Assigned bills / uncollected bills belong only to the driver's table — never in owner view
-        if (_bm === 'assigned') return false;
         if (!hasMoneyRec && !isFBR && !isCredit && !isPaid) return false;
-        // If bill was assigned to a driver on deliveryDate = displayDate, do not show in owner view
-        if (!isMoc && b.deliveryDate === displayDate && b.driverName && b.driverName.trim().toUpperCase() !== 'OWNER') return false;
-        // Receipt date is authoritative: old bill/delivery/entry dates cannot widen this view.
-        if (!b.paymentDate || normDateStr(b.paymentDate) !== normDateStr(displayDate)) return false;
 
         const isSavedByOwnerList = Array.isArray(ownerSavedBillNos) && (ownerSavedBillNos.includes(b.billNo) || ownerSavedBillNos.includes(b.id));
         const pTime = (b.paymentTime || '').trim().toUpperCase();
