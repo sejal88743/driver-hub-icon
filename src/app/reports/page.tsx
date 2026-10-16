@@ -397,6 +397,7 @@ export default function ReportsPage() {
   }, [breakdownAgg]);
 
   const dateWiseData = useMemo(() => {
+    if (viewMode !== 'datewise') return [];
     const map = new Map<string, { recDate: string; totalBillsAmt: number; recCash: number; recGpay: number; recChq: number; totalFbr: number; totalLineCut: number; totalCredit: number; billCount: number }>();
     expandedBills.forEach(b => {
       const recDate = b.paymentDate || '—';
@@ -424,9 +425,10 @@ export default function ReportsPage() {
       const parseD = (s: string) => { const [d, m, y] = s.split('/'); return new Date(+y, +m - 1, +d).getTime(); };
       return parseD(a.recDate) - parseD(b.recDate);
     });
-  }, [expandedBills]);
+  }, [expandedBills, viewMode]);
 
   const driverWiseData = useMemo(() => {
+    if (viewMode !== 'driverwise') return [];
     const map = new Map<string, Bill[]>();
     for (const b of expandedBills) {
       const key = (b.driverName || '(Unassigned)').trim();
@@ -465,9 +467,10 @@ export default function ReportsPage() {
           return (a.billNo || '').localeCompare(b.billNo || '', 'en', { numeric: true });
         }),
       }));
-  }, [expandedBills]);
+  }, [expandedBills, viewMode]);
 
   const beatWiseData = useMemo(() => {
+    if (viewMode !== 'beatwise' && !selectedBeat) return [];
     const map = new Map<string, Bill[]>();
     for (const b of expandedBills) {
       const key = (b.beatName || '(Unassigned Beat)').trim() || '(Unassigned Beat)';
@@ -480,7 +483,7 @@ export default function ReportsPage() {
         name,
         bills: [...grpBills].sort((a, b) => (a.billNo || '').localeCompare(b.billNo || '', 'en', { numeric: true })),
       }));
-  }, [expandedBills]);
+  }, [expandedBills, viewMode, selectedBeat]);
 
   function getEffAmt(b: Bill) {
     const ca = Number(b.cashAmount) || 0;
