@@ -4,13 +4,13 @@ import { Toaster } from '@/components/ui/toaster';
 import { ConnectionStatus } from '@/components/ConnectionStatus';
 import { WhatsAppPaymentPopup } from '@/components/WhatsAppPaymentPopup';
 import { lazy, Suspense, useState, useEffect } from 'react';
-import Dashboard from '@/app/page';
 import LoginPage from '@/app/login/page';
 import { getRole, Role } from '@/lib/auth';
 import { useBillStore } from '@/hooks/use-bill-store';
 import F1CalculatorModal from '@/components/F1CalculatorModal';
 import { Calculator } from 'lucide-react';
 
+const Dashboard = lazy(() => import('@/app/page'));
 const BillsPage = lazy(() => import('@/app/bills/page'));
 const OutstandingPage = lazy(() => import('@/app/outstanding/page'));
 const DriverPage = lazy(() => import('@/app/driver/page'));
@@ -113,8 +113,12 @@ function AuthGuard({ children, allowedRoles }: { children: React.ReactNode; allo
   return <>{children}</>;
 }
 
-export default function App() {
+function StoreSyncInitializer() {
   useBillStore();
+  return null;
+}
+
+export default function App() {
   const [showCalc, setShowCalc] = useState(false);
   const role = getRole();
 
@@ -138,6 +142,7 @@ export default function App() {
 
   return (
     <TooltipProvider>
+      <StoreSyncInitializer />
       <FontSizeApplier />
       <OfflineGate>
         <ConnectionStatus />

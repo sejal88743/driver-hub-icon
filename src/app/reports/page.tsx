@@ -1,6 +1,6 @@
 
 
-import { useState, useMemo, useRef, useCallback, useDeferredValue, useEffect, Fragment } from 'react';
+import { useState, useMemo, useRef, useCallback, useDeferredValue, useEffect, Fragment, lazy, Suspense } from 'react';
 import { useBillStore } from '@/hooks/use-bill-store';
 import { FileText, Sheet as SheetIcon, Filter, Loader2, ChevronUp, ChevronDown, Calculator, IndianRupee } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -9,13 +9,14 @@ import { cn } from '@/lib/utils';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Bill } from '@/lib/billStore';
 import BillEditModal from '@/components/BillEditModal';
-import SalespersonAutoDispatchModal from '@/components/SalespersonAutoDispatchModal';
 import { cleanPartyName, cleanSalespersonName, buildCanonicalMap } from '@/lib/nameStandardizer';
 import { isGreenParty } from '@/lib/greenParties';
 import { getCommissionMocs, CommissionMoc, isMocBill as checkIsMocBill, extractMocNumber, getDisplayBillNo, isBillMatchingMocCode } from '@/lib/commissionMoc';
 import { safeReadWorkbook } from '@/lib/xlsxHelper';
 import { buildStatementWorksheet } from '@/lib/statementReport';
 import { isBillStatementMatched, STATEMENT_MATCHED_AMOUNT_CLS } from '@/lib/statementMatch';
+
+const SalespersonAutoDispatchModal = lazy(() => import('@/components/SalespersonAutoDispatchModal'));
 
 type SortConfig = {
   key: keyof Bill | 'diff';
@@ -397,6 +398,7 @@ export default function ReportsPage() {
   }, [breakdownAgg]);
 
   const dateWiseData = useMemo(() => {
+    if (viewMode !== 'datewise') return [];
     const map = new Map<string, { recDate: string; totalBillsAmt: number; recCash: number; recGpay: number; recChq: number; totalFbr: number; totalLineCut: number; totalCredit: number; billCount: number }>();
     expandedBills.forEach(b => {
       const recDate = b.paymentDate || '—';
@@ -424,9 +426,10 @@ export default function ReportsPage() {
       const parseD = (s: string) => { const [d, m, y] = s.split('/'); return new Date(+y, +m - 1, +d).getTime(); };
       return parseD(a.recDate) - parseD(b.recDate);
     });
-  }, [expandedBills]);
+  }, [expandedBills, viewMode]);
 
   const driverWiseData = useMemo(() => {
+    if (viewMode !== 'driverwise') return [];
     const map = new Map<string, Bill[]>();
     for (const b of expandedBills) {
       const key = (b.driverName || '(Unassigned)').trim();
@@ -465,9 +468,10 @@ export default function ReportsPage() {
           return (a.billNo || '').localeCompare(b.billNo || '', 'en', { numeric: true });
         }),
       }));
-  }, [expandedBills]);
+  }, [expandedBills, viewMode]);
 
   const beatWiseData = useMemo(() => {
+    if (viewMode !== 'beatwise' && !selectedBeat) return [];
     const map = new Map<string, Bill[]>();
     for (const b of expandedBills) {
       const key = (b.beatName || '(Unassigned Beat)').trim() || '(Unassigned Beat)';
@@ -480,7 +484,7 @@ export default function ReportsPage() {
         name,
         bills: [...grpBills].sort((a, b) => (a.billNo || '').localeCompare(b.billNo || '', 'en', { numeric: true })),
       }));
-  }, [expandedBills]);
+  }, [expandedBills, viewMode, selectedBeat]);
 
   function getEffAmt(b: Bill) {
     const ca = Number(b.cashAmount) || 0;
@@ -2533,11 +2537,15 @@ export default function ReportsPage() {
       />
     )}
 
-    <SalespersonAutoDispatchModal
-      isOpen={showAutoDispatch}
-      onClose={() => setShowAutoDispatch(false)}
-      bills={bills}
-    />
+    {showAutoDispatch && (
+      <Suspense fallback={null}>
+        <SalespersonAutoDispatchModal
+          isOpen={showAutoDispatch}
+          onClose={() => setShowAutoDispatch(false)}
+          bills={bills}
+        />
+      </Suspense>
+    )}
 
     {/* ── MOC Commission Picker Modal for Reports ── */}
     {showMocPicker && (

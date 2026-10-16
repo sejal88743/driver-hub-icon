@@ -368,16 +368,21 @@ export default function Dashboard() {
 
   const displayDate = isoToDisplay(dashDate);
 
-  const billMap = useMemo(() => {
+  const storedBillMap = useMemo(() => {
     const m = new Map<string, typeof bills[0]>();
     for (const b of bills) {
       if (b.billNo) m.set(b.billNo, b);
       if (b.id) m.set(b.id, b);
     }
+    return m;
+  }, [bills]);
+
+  const billMap = useMemo(() => {
+    const virtualMocs = new Map<string, Bill>();
     for (const moc of commissionMocs) {
-      if (!m.has(moc.code)) {
+      if (!storedBillMap.has(moc.code)) {
         const mocNum = extractMocNumber(moc.code) || '1';
-        m.set(moc.code, {
+        virtualMocs.set(moc.code, {
           id: `moc_virtual_${moc.code.replace(/\s+/g, '_')}`,
           srNo: '1',
           date: displayDate,
@@ -398,8 +403,11 @@ export default function Dashboard() {
         } as any);
       }
     }
-    return m;
-  }, [bills, commissionMocs, displayDate, selectedDriver]);
+    return {
+      get: (key: string) => storedBillMap.get(key) || virtualMocs.get(key),
+      has: (key: string) => storedBillMap.has(key) || virtualMocs.has(key),
+    };
+  }, [storedBillMap, commissionMocs, displayDate, selectedDriver]);
 
   // ── Draft restore: once bills load, check for a saved draft and apply it ──────
   // Must be placed after billMap so the map is accessible in the effect body.
