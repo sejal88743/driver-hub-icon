@@ -1,6 +1,6 @@
 
 
-import { useState, useMemo, useRef, useCallback, useDeferredValue, useEffect, Fragment } from 'react';
+import { useState, useMemo, useRef, useCallback, useDeferredValue, useEffect, Fragment, lazy, Suspense } from 'react';
 import { useBillStore } from '@/hooks/use-bill-store';
 import { FileText, Sheet as SheetIcon, Filter, Loader2, ChevronUp, ChevronDown, Calculator, IndianRupee } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -9,13 +9,14 @@ import { cn } from '@/lib/utils';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Bill } from '@/lib/billStore';
 import BillEditModal from '@/components/BillEditModal';
-import SalespersonAutoDispatchModal from '@/components/SalespersonAutoDispatchModal';
 import { cleanPartyName, cleanSalespersonName, buildCanonicalMap } from '@/lib/nameStandardizer';
 import { isGreenParty } from '@/lib/greenParties';
 import { getCommissionMocs, CommissionMoc, isMocBill as checkIsMocBill, extractMocNumber, getDisplayBillNo, isBillMatchingMocCode } from '@/lib/commissionMoc';
 import { safeReadWorkbook } from '@/lib/xlsxHelper';
 import { buildStatementWorksheet } from '@/lib/statementReport';
 import { isBillStatementMatched, STATEMENT_MATCHED_AMOUNT_CLS } from '@/lib/statementMatch';
+
+const SalespersonAutoDispatchModal = lazy(() => import('@/components/SalespersonAutoDispatchModal'));
 
 type SortConfig = {
   key: keyof Bill | 'diff';
@@ -2536,11 +2537,15 @@ export default function ReportsPage() {
       />
     )}
 
-    <SalespersonAutoDispatchModal
-      isOpen={showAutoDispatch}
-      onClose={() => setShowAutoDispatch(false)}
-      bills={bills}
-    />
+    {showAutoDispatch && (
+      <Suspense fallback={null}>
+        <SalespersonAutoDispatchModal
+          isOpen={showAutoDispatch}
+          onClose={() => setShowAutoDispatch(false)}
+          bills={bills}
+        />
+      </Suspense>
+    )}
 
     {/* ── MOC Commission Picker Modal for Reports ── */}
     {showMocPicker && (
