@@ -119,6 +119,26 @@
   }
 }
 
+/* Mobile devices: Dashboard page font bold & 20% reduction (options, cards, buttons, inputs) */
+@media (max-width: 768px) {
+  .dashboard-page {
+    zoom: 0.8;
+  }
+  .dashboard-page,
+  .dashboard-page * {
+    font-weight: 700 !important;
+  }
+  .dashboard-page input,
+  .dashboard-page select,
+  .dashboard-page textarea,
+  .dashboard-page button,
+  .dashboard-page option,
+  .dashboard-page th,
+  .dashboard-page td {
+    font-weight: 800 !important;
+  }
+}
+
 @layer utilities {
   .no-scrollbar::-webkit-scrollbar { display: none; }
   .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }

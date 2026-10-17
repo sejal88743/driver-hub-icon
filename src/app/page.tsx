@@ -155,11 +155,46 @@ export default function Dashboard() {
   const assignedDriverNames = useMemo(() => {
     const s = new Set<string>();
     const disp = isoToDisplay(dashDate);
+    const normDash = normDateStr(dashDate) || disp;
+
     for (const b of bills) {
-      if (b.driverName) {
+      const bDel = normDateStr(b.deliveryDate);
+      const bPay = normDateStr(b.paymentDate);
+      const bDate = normDateStr(b.date);
+
+      const isDateMatch =
+        bDel === disp ||
+        bDel === normDash ||
+        b.deliveryDate === disp ||
+        b.deliveryDate === dashDate ||
+        (!bDel && (
+          bPay === disp ||
+          bPay === normDash ||
+          bDate === disp ||
+          bDate === normDash ||
+          b.paymentDate === disp ||
+          b.paymentDate === dashDate ||
+          b.date === disp ||
+          b.date === dashDate
+        ));
+
+      if (isDateMatch && b.driverName) {
         const dName = b.driverName.trim().toUpperCase();
-        if (dName && (b.deliveryDate === disp || (!b.deliveryDate && b.paymentDate === disp))) {
+        if (dName && dName !== 'OWNER') {
           s.add(dName);
+        }
+      }
+
+      // Also check historical Del Pending assignments for this date
+      if (Array.isArray(b.delPendingHistory)) {
+        for (const h of b.delPendingHistory) {
+          if (h.driverName) {
+            const hDate = normDateStr(h.deliveryDate);
+            if (hDate === disp || hDate === normDash || h.deliveryDate === disp || h.deliveryDate === dashDate) {
+              const hName = h.driverName.trim().toUpperCase();
+              if (hName && hName !== 'OWNER') s.add(hName);
+            }
+          }
         }
       }
     }
@@ -497,9 +532,14 @@ export default function Dashboard() {
   const driverBillNos = useMemo(() => {
     if (!selectedDriver) return new Set<string>();
     const selUpper = selectedDriver.trim().toUpperCase();
+    const normDisplay = normDateStr(displayDate);
     return new Set(
       bills
-        .filter(b => b.driverName?.trim().toUpperCase() === selUpper && b.deliveryDate === displayDate)
+        .filter(b => {
+          if ((b.driverName || '').trim().toUpperCase() !== selUpper) return false;
+          const bDate = normDateStr(b.deliveryDate || b.date);
+          return bDate === normDisplay;
+        })
         .map(b => b.billNo)
     );
   }, [bills, selectedDriver, displayDate]);
@@ -3167,7 +3207,7 @@ export default function Dashboard() {
   if (loading) return <div className="flex h-screen items-center justify-center"><Loader2 className="animate-spin text-primary" /></div>;
 
   return (
-    <div className="min-h-screen bg-background pb-4 pt-10 px-0 w-full max-w-none">
+    <div className="min-h-screen bg-background pb-4 pt-10 px-0 w-full max-w-none dashboard-page">
       <TopNav />
       <div className="bg-primary px-3 py-1 rounded-b shadow-md sticky top-10 z-40 w-full">
         <div className="flex items-center justify-between gap-1.5 h-9 max-w-full">
@@ -3298,38 +3338,48 @@ export default function Dashboard() {
               {getRole() === 'owner' && <option value="OWNER" className="text-slate-900 bg-white font-black">👑 OWNER</option>}
               {(() => {
                 const curRole = getRole();
-                const seenNames = new Set<string>();
-                return drivers
-                  .filter(d => isDriverMode ? (!d.role || d.role === 'driver') : true)
-                  .filter(d => {
-                    const dRole = d.role || (d.id?.startsWith('own_') ? 'owner' : d.id?.startsWith('usr_') ? 'user' : 'driver');
-                    if (curRole === 'user' && dRole === 'owner') return false;
-                    return true;
-                  })
-                  .filter(d => {
-                    const key = (d.name || '').trim().toUpperCase();
-                    if (!key || seenNames.has(key)) return false;
-                    const dRole = d.role || (d.id?.startsWith('own_') ? 'owner' : d.id?.startsWith('usr_') ? 'user' : 'driver');
+                const seenKeys = new Set<string>();
+                const options: { id: string; name: string; role?: string }[] = [];
 
-                    // OWNER & USER role staff (e.g. Khushi, Tarachand, Pratixa, etc.) are COMPULSORY shown in dropdown
-                    if (dRole === 'user' || dRole === 'owner') {
-                      seenNames.add(key);
-                      return true;
-                    }
+                // 1. Process known drivers/staff from the drivers store
+                for (const d of drivers) {
+                  const key = (d.name || '').trim().toUpperCase();
+                  if (!key || seenKeys.has(key)) continue;
+                  const dRole = d.role || (d.id?.startsWith('own_') ? 'owner' : d.id?.startsWith('usr_') ? 'user' : 'driver');
+                  if (curRole === 'user' && dRole === 'owner') continue;
+                  if (isDriverMode && dRole !== 'driver') continue;
 
-                    // Regular DRIVERS: ONLY show if assigned delivery on the selected date (or currently selected)
-                    const isAssigned = assignedDriverNames.has(key) || (selectedDriver && selectedDriver.trim().toUpperCase() === key);
-                    if (isAssigned) {
-                      seenNames.add(key);
-                      return true;
-                    }
-                    return false;
-                  })
-                  .map(d => {
-                    const dRole = d.role || (d.id?.startsWith('own_') ? 'owner' : d.id?.startsWith('usr_') ? 'user' : 'driver');
-                    const prefix = !isDriverMode && dRole === 'owner' ? '👑 ' : !isDriverMode && dRole === 'user' ? '👤 ' : '';
-                    return <option key={d.id} value={d.name} className="text-slate-900 bg-white font-medium">{prefix}{d.name}</option>;
-                  });
+                  // OWNER & USER role staff are always shown
+                  if (dRole === 'user' || dRole === 'owner') {
+                    seenKeys.add(key);
+                    options.push({ id: d.id, name: d.name, role: dRole });
+                    continue;
+                  }
+
+                  // Regular DRIVERS: show if assigned delivery on the selected date (or currently selected)
+                  const isAssigned = assignedDriverNames.has(key) || (selectedDriver && selectedDriver.trim().toUpperCase() === key);
+                  if (isAssigned) {
+                    seenKeys.add(key);
+                    options.push({ id: d.id, name: d.name, role: 'driver' });
+                  }
+                }
+
+                // 2. Also ensure ALL assigned drivers for current date appear (even if not explicitly in drivers table)
+                const sortedAssignedNames = Array.from(assignedDriverNames).sort((a, b) => a.localeCompare(b));
+                for (const aName of sortedAssignedNames) {
+                  const key = aName.trim().toUpperCase();
+                  if (key && !seenKeys.has(key) && key !== 'OWNER') {
+                    seenKeys.add(key);
+                    const originalBill = bills.find(b => (b.driverName || '').trim().toUpperCase() === key);
+                    const displayName = originalBill?.driverName?.trim() || aName;
+                    options.push({ id: `assigned_${key}`, name: displayName, role: 'driver' });
+                  }
+                }
+
+                return options.map(d => {
+                  const prefix = !isDriverMode && d.role === 'owner' ? '👑 ' : !isDriverMode && d.role === 'user' ? '👤 ' : '';
+                  return <option key={d.id} value={d.name} className="text-slate-900 bg-white font-medium">{prefix}{d.name}</option>;
+                });
               })()}
             </select>
           </div>
