@@ -387,7 +387,7 @@ export default function DriverPage() {
             const tripDate = parsedRawDate ? toDDMMYYYY(parsedRawDate) : todayFmt;
             if (parsedRawDate) dateCounts.set(tripDate, (dateCounts.get(tripDate) || 0) + 1);
 
-            const patch: { deliveryDate?: string; driverName?: string; paymentMode?: string; partyName?: string; billNetAmt?: number; lineCutAmt?: number; cancelLine?: string; outstandingAmount?: number } = {};
+            const patch: { deliveryDate?: string; driverName?: string; paymentMode?: string; partyName?: string; billNetAmt?: number; lineCutAmt?: number } = {};
 
             // Multi-tiered bill matching (handles both '49552' and 'GST49552')
             const bnLower = rawBn.toLowerCase().trim();

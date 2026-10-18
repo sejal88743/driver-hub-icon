@@ -361,58 +361,54 @@ export default function LoginPage() {
       <div className="absolute bottom-[-60px] left-[-60px] w-52 h-52 rounded-full opacity-10"
         style={{ background: 'radial-gradient(circle, #818cf8, transparent)' }} />
 
-      {/* Top-left owner button (desktop only) */}
-      {!isMobile && (
+      {/* Top-left owner button */}
+      <button
+        onClick={() => openModal('owner')}
+        title="Owner Login"
+        className="absolute top-4 left-4 z-20 flex items-center gap-1.5 px-3 py-1.5 rounded-xl font-black uppercase text-[9px] tracking-widest transition-all active:scale-95 shadow-md"
+        style={{
+          background: 'linear-gradient(135deg, #6366f1 0%, #4f46e5 100%)',
+          boxShadow: '0 2px 10px rgba(99,102,241,0.4)',
+          color: '#fff',
+        }}
+      >
+        <Shield className="w-3.5 h-3.5" />
+        <span>Owner</span>
+        <Lock className="w-2.5 h-2.5 opacity-70" />
+      </button>
+
+      {/* Top-right tool buttons */}
+      <div className="absolute top-4 right-4 flex gap-2 z-20">
         <button
-          onClick={() => openModal('owner')}
-          title="Owner Login"
-          className="hidden md:flex absolute top-4 left-4 z-20 items-center gap-1.5 px-3 py-1.5 rounded-xl font-black uppercase text-[9px] tracking-widest transition-all active:scale-95 shadow-md"
+          onClick={() => openModal('xlsx')}
+          title="XLSX Tool"
+          className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl font-black uppercase text-[9px] tracking-widest transition-all active:scale-95 shadow-md"
           style={{
-            background: 'linear-gradient(135deg, #6366f1 0%, #4f46e5 100%)',
-            boxShadow: '0 2px 10px rgba(99,102,241,0.4)',
+            background: 'linear-gradient(135deg, #059669 0%, #047857 100%)',
+            boxShadow: '0 2px 10px rgba(5,150,105,0.4)',
             color: '#fff',
           }}
         >
-          <Shield className="w-3.5 h-3.5" />
-          <span>Owner</span>
+          <FileSpreadsheet className="w-3.5 h-3.5" />
+          <span>XLSX</span>
           <Lock className="w-2.5 h-2.5 opacity-70" />
         </button>
-      )}
 
-      {/* Top-right tool buttons (desktop only) */}
-      {!isMobile && (
-        <div className="hidden md:flex absolute top-4 right-4 gap-2 z-20">
-          <button
-            onClick={() => openModal('xlsx')}
-            title="XLSX Tool"
-            className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl font-black uppercase text-[9px] tracking-widest transition-all active:scale-95 shadow-md"
-            style={{
-              background: 'linear-gradient(135deg, #059669 0%, #047857 100%)',
-              boxShadow: '0 2px 10px rgba(5,150,105,0.4)',
-              color: '#fff',
-            }}
-          >
-            <FileSpreadsheet className="w-3.5 h-3.5" />
-            <span>XLSX</span>
-            <Lock className="w-2.5 h-2.5 opacity-70" />
-          </button>
-
-          <button
-            onClick={() => openModal('bankslip')}
-            title="Bank Slip Tool"
-            className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl font-black uppercase text-[9px] tracking-widest transition-all active:scale-95 shadow-md"
-            style={{
-              background: 'linear-gradient(135deg, #d97706 0%, #b45309 100%)',
-              boxShadow: '0 2px 10px rgba(217,119,6,0.4)',
-              color: '#fff',
-            }}
-          >
-            <Receipt className="w-3.5 h-3.5" />
-            <span>Slip</span>
-            <Lock className="w-2.5 h-2.5 opacity-70" />
-          </button>
-        </div>
-      )}
+        <button
+          onClick={() => openModal('bankslip')}
+          title="Bank Slip Tool"
+          className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl font-black uppercase text-[9px] tracking-widest transition-all active:scale-95 shadow-md"
+          style={{
+            background: 'linear-gradient(135deg, #d97706 0%, #b45309 100%)',
+            boxShadow: '0 2px 10px rgba(217,119,6,0.4)',
+            color: '#fff',
+          }}
+        >
+          <Receipt className="w-3.5 h-3.5" />
+          <span>Slip</span>
+          <Lock className="w-2.5 h-2.5 opacity-70" />
+        </button>
+      </div>
 
       {/* Main content */}
       <div className="relative z-10 w-full max-w-sm px-4">
@@ -443,7 +439,7 @@ export default function LoginPage() {
 
         {/* ── User name chips (desktop only) ── */}
         {!isMobile && staffNames.length > 0 && (
-          <div className="hidden md:flex flex-wrap gap-2 justify-center mb-5">
+          <div className="flex flex-wrap gap-2 justify-center mb-5">
             {staffNames.map(name => (
               <button
                 key={name}

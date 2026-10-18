@@ -604,7 +604,8 @@ export default function DriverDayTable({ bills, selectedDriver, displayDate, onS
         const isCredit = !isSnap && _bm === 'credit';
         const isDelPend= isSnap || _bm === 'del pending';
         const isPaid   = !isSnap && !isFBR && !isDelPend && !isCredit && (collected > 0 || !!b.paymentDate);
-        const status   = isFBR ? 'FBR' : isDelPend ? 'DEL PND' : isCredit ? 'CREDIT' : isPaid ? 'PAID' : 'UNPAID';
+        const isAssigned = !isSnap && !isFBR && !isDelPend && !isCredit && !isPaid && (!!b.driverName || _bm === 'assigned');
+        const status   = isFBR ? 'FBR' : isDelPend ? 'DEL PND' : isCredit ? 'CREDIT' : isPaid ? 'PAID' : isAssigned ? 'ASSIGNED' : 'UNPAID';
         const lineCut  = !isSnap && collected > 0 && b.billNetAmt > collected ? b.billNetAmt - collected : 0;
 
         const isMatched = String(b.discrepancyReason || (b as any).discrepancy_reason || (b as any).discrepancy || '').toUpperCase().includes('MATCHED');
@@ -1290,10 +1291,13 @@ export default function DriverDayTable({ bills, selectedDriver, displayDate, onS
               // Today's delivery, driver assigned, no payment/FBR/credit/del-pending entry yet → ASSIGNED
               // (matches paymentMode = "Assigned" saved in Supabase; never shown/saved as Credit).
               const isAssignedToday = !isSnapshot && !isFBR && !isDelPend && !isCredit && !isPaid && !isPaidElsewhere
-                && !!b.driverName && normDateStr(b.deliveryDate) === normDateStr(displayDate);
+                && (
+                  _bm === 'assigned' ||
+                  (!!b.driverName && (normDateStr(b.deliveryDate) === normDateStr(displayDate) || normDateStr(b.date) === normDateStr(displayDate) || !b.deliveryDate))
+                );
 
               const statusLabel = isFBR ? 'FBR' : isDelPend ? 'DEL PEND' : isCredit ? 'CREDIT' : isPaidElsewhere ? 'REC' : isPaid ? 'PAID' : isAssignedToday ? 'ASSIGNED' : 'UNPAID';
-              const statusCls = isFBR ? 'bg-red-500 text-white' : isDelPend ? 'bg-amber-400 text-black' : isCredit ? 'bg-green-500 text-white' : isPaidElsewhere ? 'bg-indigo-500 text-white' : isPaid ? 'bg-emerald-100 text-emerald-700' : isAssignedToday ? 'bg-blue-500 text-white' : 'bg-red-100 text-red-700';
+              const statusCls = isFBR ? 'bg-red-500 text-white' : isDelPend ? 'bg-amber-400 text-black' : isCredit ? 'bg-green-500 text-white' : isPaidElsewhere ? 'bg-indigo-500 text-white' : isPaid ? 'bg-emerald-100 text-emerald-700' : isAssignedToday ? 'bg-blue-600 text-white' : 'bg-red-100 text-red-700';
               const isMatchedRow = String(b.discrepancyReason || (b as any).discrepancy_reason || (b as any).discrepancy || '').toUpperCase().includes('MATCHED');
               return (
                 <tr 

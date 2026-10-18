@@ -3,11 +3,6 @@
 ## Dashboard receipt filtering
 - Use receipt date plus explicit entry-maker tags or the date-scoped saved-entry list for Owner table/counts; generic timestamps never prove Owner identity, preventing driver receipts from leaking into that view.
 
-## Page-loading performance
-- Keep the root sync subscription isolated and load heavy pages/export dialogs on demand so ledger notifications do not rerender the entire app or delay login.
-- Cache normalized History metadata by bill object and invalidate persisted statement state on storage events so table lookups never repeatedly parse the full reconciliation payload.
-- Build report groupings only for the selected view (including beat-filter exports) and keep dashboard bill indexing independent of date/driver selection to avoid redundant full-ledger sorts.
-
 ## 1. Locked Supabase Connection (CRITICAL - DO NOT CHANGE WITHOUT ADMIN PERMISSION)
 App me Supabase connection yahi use hoga or jabhi change hoga admin ke permission ke alava change nahi hoga:
 - **SUPABASE_URL**: `https://zybrzzouzleacqjvfiiu.supabase.co`

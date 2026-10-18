@@ -52,24 +52,8 @@ function rowTone(mode?: string) {
   return '';
 }
 
-const historyMetadata = new WeakMap<Bill, { source: Bill['editHistory']; history: BillEditEntry[]; sortKey: string }>();
-
-function metadataOf(b: Bill) {
-  const cached = historyMetadata.get(b);
-  if (cached && cached.source === b.editHistory) return cached;
-  const history = normalizeEditHistory(b.editHistory);
-  const last = history[history.length - 1];
-  const metadata = {
-    source: b.editHistory,
-    history,
-    sortKey: (last?.date || '').split('/').reverse().join('') + (last?.time || ''),
-  };
-  historyMetadata.set(b, metadata);
-  return metadata;
-}
-
 function histOf(b: Bill): BillEditEntry[] {
-  return metadataOf(b).history;
+  return normalizeEditHistory(b.editHistory);
 }
 
 function lastActor(b: Bill): string {
@@ -557,7 +541,13 @@ export default function HistoryPage() {
           if (cmp !== 0) return sort.dir === 'asc' ? cmp : -cmp;
         }
 
-        return metadataOf(b).sortKey.localeCompare(metadataOf(a).sortKey);
+        const ha = histOf(a);
+        const hb = histOf(b);
+        const ka = `${ha[ha.length - 1]?.date || ''} ${ha[ha.length - 1]?.time || ''}`;
+        const kb = `${hb[hb.length - 1]?.date || ''} ${hb[hb.length - 1]?.time || ''}`;
+        const pa = ka.split(' ')[0].split('/').reverse().join('') + (ka.split(' ')[1] || '');
+        const pb = kb.split(' ')[0].split('/').reverse().join('') + (kb.split(' ')[1] || '');
+        return pb.localeCompare(pa);
       })
       .slice(0, 1000);
   }, [bills, q, sort, filterMatchedOnly, isMatched]);

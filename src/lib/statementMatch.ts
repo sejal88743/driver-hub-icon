@@ -143,10 +143,8 @@ function saveToLocalStorage(
 }
 
 // Hydrate from localStorage synchronously on boot
-let localHydrated = false;
 function hydrate() {
-  if (typeof window === 'undefined' || localHydrated) return;
-  localHydrated = true;
+  if (typeof window === 'undefined') return;
   try {
     const rawIds = localStorage.getItem(LS_MATCHED_BILLS_KEY);
     if (rawIds) {
@@ -175,22 +173,6 @@ function hydrate() {
 }
 
 hydrate();
-
-// Other tabs can update the persisted match state; invalidate only on those writes.
-if (typeof window !== 'undefined') {
-  const matchStorageKeys = new Set([LS_MATCHED_BILLS_KEY, LS_MATCHED_NOS_KEY, LS_STATEMENT_STATS_KEY, LS_STATEMENT_ENTRIES_KEY, LS_STATEMENT_MANUAL_MATCHES_KEY]);
-  window.addEventListener('storage', event => {
-    if (event.key !== null && !matchStorageKeys.has(event.key)) return;
-    _matchedBillIds = new Set();
-    _matchedBillNos = new Set();
-    _cachedStats = null;
-    _cachedEntries = null;
-    _manualMatches = {};
-    localHydrated = false;
-    hydrate();
-    window.dispatchEvent(new CustomEvent('vt-statement-match-updated'));
-  });
-}
 
 /**
  * Permanently loads statement match state from IndexedDB and Supabase settings table.
