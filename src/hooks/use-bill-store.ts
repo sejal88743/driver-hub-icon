@@ -116,6 +116,9 @@ function scheduleReadLocal(force = false) {
 let lastFullSyncTime = 0;
 let deltaCursor: string | null = null;
 let deltaInFlight = false;
+let billChangeTimer: ReturnType<typeof setTimeout> | null = null;
+const FULL_CACHE_KEY = 'vitratrack_complete_cache_v3';
+let fullCacheVerified = false;
 
 function scheduleDebouncedFullSync(delayMs = 1500) {
   if (fullSyncDebounceTimer) clearTimeout(fullSyncDebounceTimer);
@@ -136,7 +139,7 @@ export async function doDeltaSync(force = false) {
     deltaCursor = new Date(now - 300_000).toISOString();
   }
 
-  if (deltaInFlight || (syncInFlight && !force)) return;
+  if (deltaInFlight || syncInFlight) return;
   if (!force && (isWriteInProgress() || (now - getLastWriteAt() < 2500))) return;
   deltaInFlight = true;
 
@@ -181,7 +184,8 @@ export async function doDeltaSync(force = false) {
   } catch (err) {
     console.warn('[useBillStore] delta sync failed:', err);
     // On transient failure, rewind cursor slightly so next poll retries recent modifications safely
-    deltaCursor = new Date(now - 600_000).toISOString();
+    // Keep the previous cursor: an outage must not skip an older unsynced interval.
+    window.dispatchEvent(new CustomEvent('sync-status', { detail: 'error' }));
   } finally {
     deltaInFlight = false;
   }
@@ -199,10 +203,7 @@ async function doFullSync(force = false) {
     return;
   }
   syncInFlight = true;
-  deltaCursor = new Date(Date.now() - 60_000).toISOString();
-  try {
-    if (typeof window !== 'undefined') localStorage.setItem('vitratrack_last_sync_ts', deltaCursor);
-  } catch {}
+  const fullSyncStartedAt = new Date(Date.now() - 60_000).toISOString();
   patch({ syncing: true });
   try {
 
@@ -296,6 +297,12 @@ async function doFullSync(force = false) {
       salespersonContacts: data?.salespersonContacts || currentLocalSales,
       settings: data?.settings,
     });
+    fullCacheVerified = true;
+    deltaCursor = fullSyncStartedAt;
+    try {
+      localStorage.setItem(FULL_CACHE_KEY, 'complete');
+      localStorage.setItem('vitratrack_last_sync_ts', deltaCursor);
+    } catch {}
     window.dispatchEvent(new CustomEvent('sync-status', { detail: 'ok' }));
     readLocal();
   } catch {
@@ -327,6 +334,7 @@ export function broadcastBillChange(bill: Bill) {
 
 export function broadcastBillsChange(bills: Bill[]) {
   if (!bills || bills.length === 0) return;
+  if (bills.length > 50) broadcastSyncTrigger();
   if (realtimeChannel) {
     try {
       realtimeChannel.send({
@@ -410,6 +418,24 @@ function initSupabaseRealtime(force = false) {
         { event: 'sync_trigger' },
         () => {
           void doDeltaSync(true);
+        }
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'bills' },
+        (payload) => {
+          if (payload.eventType === 'DELETE') {
+            const old = payload.old as { id?: string; bill_no?: string };
+            if (isDirtyPending(old.id, old.bill_no)) return;
+            applyRealtimeBillChange('DELETE', undefined, old.id, old.bill_no);
+            scheduleReadLocal();
+          } else if (!billChangeTimer) {
+            // Coalesce imports into one paginated read, not thousands of array copies.
+            billChangeTimer = setTimeout(() => {
+              billChangeTimer = null;
+              void doDeltaSync();
+            }, 300);
+          }
         }
       )
       // 2. Postgres change listeners for driver summaries, drivers, banks, contacts, settings
@@ -587,9 +613,10 @@ function initGlobalSync() {
       patch({ loading: false });
       const savedTs = typeof window !== 'undefined' ? localStorage.getItem('vitratrack_last_sync_ts') : null;
       deltaCursor = savedTs || new Date(Date.now() - 24 * 3600 * 1000).toISOString();
-      // Cache boot: ALWAYS delta sync — only changed rows since last visit are fetched.
-      // 40k+ bills are already in local IndexedDB and never re-downloaded on normal boot.
-      void doDeltaSync();
+      // Repair caches created by older estimate-limited or failed-page downloads once.
+      fullCacheVerified = localStorage.getItem(FULL_CACHE_KEY) === 'complete';
+      if (fullCacheVerified) void doDeltaSync();
+      else void doFullSync(true);
     } else {
       // Fresh device or empty local cache: do initial full sync
       void doFullSync(true);
@@ -604,7 +631,8 @@ function initGlobalSync() {
     const wait = isIdle ? POLL_IDLE_MS : (realtimeLive ? POLL_SAFETY_MS : POLL_FAST_MS);
     if (Date.now() - lastPollAt < wait) return;
     lastPollAt = Date.now();
-    void doDeltaSync();
+    if (fullCacheVerified) void doDeltaSync();
+    else void doFullSync();
   }, POLL_TICK_MS);
 
   // We intentionally do NOT run a 3-minute full sync timer here anymore!

@@ -1,4 +1,5 @@
 import { supabase } from './supabase';
+import { collectSyncPages } from './syncPagination';
 import { normalizeEditHistory, type Bill, type Driver, type Bank, type DriverDailySummary, type Contact, type WhatsAppTemplates } from './billStore';
 import { getRole } from './auth';
 import { normDateStr, displayToIso } from './dateUtils';
@@ -389,146 +390,22 @@ if (typeof window !== 'undefined') {
 // ── Fetch all bills from Supabase ──────────────────────────────────────────
 // Downloads all bills using explicit BILL_SELECT_COLUMNS and primary key index scanning.
 export async function fetchAllBills(options?: { fullHistory?: boolean }): Promise<Bill[]> {
-  if (!supabase) return [];
-  const CHUNK_SIZE = 1000;
-
-  try {
-    // Fast fetch using primary key index order ('id' ascending) with estimated count
-    const { data: firstPage, count, error: countErr } = await supabase
-      .from('bills')
-      .select(BILL_SELECT_COLUMNS, { count: 'estimated' })
-      .order('id', { ascending: true })
-      .range(0, CHUNK_SIZE - 1);
-
-    if (countErr) throw countErr;
-    if (!firstPage || firstPage.length === 0) return [];
-
-    const allRows: Record<string, unknown>[] = [...(firstPage as Record<string, unknown>[])];
-
-    // If all rows fit in page 0, return immediately with zero extra roundtrips
-    if (firstPage.length < CHUNK_SIZE) {
-      return dedupeBillsByBillNo(allRows.map(mapBillFromSupabase));
-    }
-
-    // Fetch remaining pages in controlled concurrent batches of 4 to avoid socket/DB starvation
-    const estimatedTotal = typeof count === 'number' && count > 0 ? count : 45000;
-    const totalPages = Math.ceil(estimatedTotal / CHUNK_SIZE);
-    const BATCH_CONCURRENCY = 4;
-    for (let batchStart = 1; batchStart < totalPages; batchStart += BATCH_CONCURRENCY) {
-      const batchPromises = [];
-      const batchEnd = Math.min(batchStart + BATCH_CONCURRENCY, totalPages);
-      for (let p = batchStart; p < batchEnd; p++) {
-        const start = p * CHUNK_SIZE;
-        batchPromises.push((async () => {
-          for (let attempt = 0; attempt < 3; attempt++) {
-            const res = await supabase!
-              .from('bills')
-              .select(BILL_SELECT_COLUMNS)
-              .order('id', { ascending: true })
-              .range(start, start + CHUNK_SIZE - 1);
-            if (!res.error) return res;
-            await new Promise(r => setTimeout(r, 200 * (attempt + 1)));
-          }
-          return { data: [] };
-        })());
-      }
-      const resList = await Promise.all(batchPromises);
-      let receivedAny = false;
-      for (const res of resList) {
-        if (res.data && res.data.length > 0) {
-          allRows.push(...(res.data as Record<string, unknown>[]));
-          receivedAny = true;
-        }
-      }
-      if (!receivedAny) break;
-    }
-    return dedupeBillsByBillNo(allRows.map(mapBillFromSupabase));
-  } catch (err) {
-    console.warn('[apiSync] Fast fetchAllBills failed, falling back to sequential:', err);
-  }
-
-  // Fallback sequential loop
-  const all: Bill[] = [];
-  let offset = 0;
-  while (true) {
-    try {
-      const { data, error } = await supabase
-        .from('bills')
-        .select(BILL_SELECT_COLUMNS)
-        .order('id')
-        .range(offset, offset + CHUNK_SIZE - 1);
-      if (error || !data || data.length === 0) break;
-      all.push(...(data as Record<string, unknown>[]).map(mapBillFromSupabase));
-      if (data.length < CHUNK_SIZE) break;
-      offset += data.length;
-    } catch (err) {
-      console.warn('[apiSync] fetchAllBills exception:', err);
-      break;
-    }
-  }
-  return dedupeBillsByBillNo(all);
+  const rows = await collectSyncPages<Record<string, unknown>>(async (from, to) => {
+    const { data, error } = await supabase.from('bills')
+      .select(BILL_SELECT_COLUMNS).order('id', { ascending: true }).range(from, to);
+    return { data: data as Record<string, unknown>[] | null, error };
+  });
+  return dedupeBillsByBillNo(rows.map(mapBillFromSupabase));
 }
 
-// Ultra-fast table fetch: directly fetches small/medium tables in 1 single request
+// All mirrors use bounded pages, respecting the backend's actual response cap.
 async function fetchAllRows(table: string, orderCol = 'id', selectCols = '*'): Promise<any[]> {
-  if (!supabase) return [];
-  const LIMIT = 2000;
-
-  try {
+  return collectSyncPages<any>(async (from, to) => {
     let query = supabase.from(table).select(selectCols);
-    if (orderCol) query = query.order(orderCol);
-    const { data, error } = await query.limit(LIMIT);
-
-    if (!error && Array.isArray(data)) {
-      if (data.length < LIMIT) {
-        // Table fits in 1 single quick request (99.9% of drivers, banks, settings, summaries)
-        return data;
-      }
-      // If table has more than 2000 rows, paginate remaining in batches
-      const allRows = [...data];
-      let offset = LIMIT;
-      while (true) {
-        let pQuery = supabase.from(table).select(selectCols);
-        if (orderCol) pQuery = pQuery.order(orderCol);
-        const { data: pageData, error: pageErr } = await pQuery.range(offset, offset + LIMIT - 1);
-        if (pageErr || !pageData || pageData.length === 0) break;
-        allRows.push(...pageData);
-        if (pageData.length < LIMIT) break;
-        offset += pageData.length;
-      }
-      return allRows;
-    }
-  } catch (err) {
-    console.warn(`[apiSync] fetchAllRows fast path error for '${table}':`, err);
-  }
-
-  // Fallback sequential loop
-  const all: any[] = [];
-  let offset = 0;
-  let useNoOrder = false;
-  while (true) {
-    try {
-      let query = supabase.from(table).select(selectCols);
-      if (orderCol && !useNoOrder) query = query.order(orderCol);
-      const { data, error } = await query.range(offset, offset + 999);
-      if (error) {
-        if (orderCol && !useNoOrder) {
-          useNoOrder = true;
-          continue;
-        }
-        console.warn(`[apiSync] fetchAllRows warning for '${table}':`, error.message || error);
-        break;
-      }
-      if (!data || data.length === 0) break;
-      all.push(...data);
-      if (data.length < 1000) break;
-      offset += data.length;
-    } catch (err) {
-      console.warn(`[apiSync] fetchAllRows exception for '${table}':`, err);
-      break;
-    }
-  }
-  return all;
+    if (orderCol) query = query.order(orderCol, { ascending: true });
+    const { data, error } = await query.range(from, to);
+    return { data, error };
+  });
 }
 
 function dedupeBillsByBillNo(bills: Bill[]): Bill[] {
@@ -1888,71 +1765,30 @@ export async function rpcDashboardCounts(targetDate: string, driver: string): Pr
 // Instead of re-downloading every bill on each poll (very slow + janky UI with
 // 15k+ rows), fetch only rows whose `updated_at` changed since the last sync.
 export async function apiFetchBillsSince(sinceIso: string): Promise<Bill[]> {
-  if (!supabase) return [];
   const now = Date.now();
-  let validSince = sinceIso;
   const sinceMs = new Date(sinceIso).getTime();
-  // Guard against invalid or future client device timestamps
-  if (isNaN(sinceMs) || sinceMs > now) {
-    validSince = new Date(now - 300_000).toISOString();
-  }
-
+  const validSince = !Number.isFinite(sinceMs) || sinceMs > now
+    ? new Date(now - 300_000).toISOString() : sinceIso;
+  // A fixed upper boundary and stable ordering prevent new writes shifting the pages.
+  const untilIso = new Date(now).toISOString();
   let activeCols = BILL_SELECT_COLUMNS;
-  for (let attempt = 0; attempt < 2; attempt++) {
+  for (let attempt = 0; attempt < 3; attempt++) {
     try {
-      const { data, error } = await supabase
-        .from('bills')
-        .select(activeCols)
-        .gt('updated_at', validSince)
-        .order('updated_at', { ascending: false })
-        .limit(250);
-
-      if (error) {
-        const missing = extractMissingColumnFromError(error);
-        if (missing && activeCols.includes(missing)) {
-          activeCols = activeCols
-            .split(',')
-            .filter(c => c.trim().toLowerCase() !== missing.toLowerCase())
-            .join(',');
-          continue;
-        }
-        console.warn('[apiSync] apiFetchBillsSince query error:', error);
-        break;
-      }
-
-      if (Array.isArray(data)) {
-        return (data as unknown as Record<string, unknown>[]).map(mapBillFromSupabase);
-      }
-      break;
-    } catch (err) {
-      console.warn('[apiSync] apiFetchBillsSince exception:', err);
-      break;
+      const rows = await collectSyncPages<Record<string, unknown>>(async (from, to) => {
+        const { data, error } = await supabase.from('bills').select(activeCols)
+          .gte('updated_at', validSince).lte('updated_at', untilIso)
+          .order('updated_at', { ascending: true }).order('id', { ascending: true })
+          .range(from, to);
+        return { data: data as Record<string, unknown>[] | null, error };
+      });
+      return rows.map(mapBillFromSupabase);
+    } catch (error) {
+      const missing = extractMissingColumnFromError(error);
+      if (!missing || !activeCols.split(',').some(col => col.trim() === missing)) throw error;
+      activeCols = activeCols.split(',').filter(col => col.trim() !== missing).join(',');
     }
   }
-
-  // Resilient fallback: fetch the top 100 most recently modified bills using descending index
-  try {
-    const fallback = await supabase
-      .from('bills')
-      .select(activeCols)
-      .order('updated_at', { ascending: false })
-      .limit(100);
-
-    if (!fallback.error && Array.isArray(fallback.data)) {
-      const sinceTime = new Date(validSince).getTime();
-      return (fallback.data as unknown as Record<string, unknown>[])
-        .map(mapBillFromSupabase)
-        .filter(b => {
-          if (!b.updatedAt) return true;
-          const t = new Date(b.updatedAt).getTime();
-          return isNaN(t) || t >= (sinceTime - 60_000);
-        });
-    }
-  } catch (fbErr) {
-    console.warn('[apiSync] apiFetchBillsSince fallback failed:', fbErr);
-  }
-
-  return [];
+  throw new Error('Unable to complete changed-bill sync');
 }
 
 /**
