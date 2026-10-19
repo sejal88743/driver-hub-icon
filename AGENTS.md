@@ -7,7 +7,6 @@
 App me Supabase connection yahi use hoga or jabhi change hoga admin ke permission ke alava change nahi hoga:
 - **SUPABASE_URL**: `https://zybrzzouzleacqjvfiiu.supabase.co`
 - **SUPABASE_PUBLISHABLE_KEY**: `sb_publishable_gkwGkK0YvU8q_GjkkcRNOg_XsE3AcGV`
-- **SUPABASE_SECRET_KEY**: `sb_secret_CB00c8sgEOlaKcf5I2h35Q_TOAg9W7S`
 - **SUPABASE_JWKS_URL**: `https://zybrzzouzleacqjvfiiu.supabase.co/auth/v1/.well-known/jwks.json`
 
 Strict Rules:
@@ -55,9 +54,9 @@ Strict Rules:
   jaisi bill-number text ALAG messages me aate hain. `server/whatsappBot.ts`
   dono sides 30 min tak stash karta hai (`pendingPayment` / `pendingBillNos`)
   aur dono milne par ek combined event emit karta hai.
-- **Incremental sync**: `src/hooks/use-bill-store.ts` boot par full sync NAHI
-  karta jab local cache hai — sirf `doDeltaSync` (updated_at cursor se changed
-  rows). Full sync sirf fresh device ya admin manual action par. Poll 15s.
+- Drain bounded, stably ordered pages for full and incremental sync; never terminate using estimates or accept failed pages as empty, because doing so silently loses bills.
+- Repair legacy incomplete caches once, and mark completion only after every remote page is applied; subsequent boots use cached data and incremental sync to avoid repeated full downloads.
+- Never advance the incremental cursor on failure; bulk broadcasts and database changes complement polling so missed live notifications remain recoverable.
 
 ### Verify it works
 - `curl localhost:3000/api/health` → `{"ok":true}`
