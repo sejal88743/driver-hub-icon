@@ -116,6 +116,7 @@ function scheduleReadLocal(force = false) {
 let lastFullSyncTime = 0;
 let deltaCursor: string | null = null;
 let deltaInFlight = false;
+let billChangeTimer: ReturnType<typeof setTimeout> | null = null;
 const FULL_CACHE_KEY = 'vitratrack_complete_cache_v3';
 let fullCacheVerified = false;
 
@@ -423,10 +424,17 @@ function initSupabaseRealtime(force = false) {
         'postgres_changes',
         { event: '*', schema: 'public', table: 'bills' },
         (payload) => {
-          const incoming = payload.new as { id?: string; bill_no?: string };
-          if (!isDirtyPending(incoming.id, incoming.bill_no)) {
-            applyRealtimeBillChange(payload.eventType as any, payload.new, payload.old);
+          if (payload.eventType === 'DELETE') {
+            const old = payload.old as { id?: string; bill_no?: string };
+            if (isDirtyPending(old.id, old.bill_no)) return;
+            applyRealtimeBillChange('DELETE', undefined, old.id, old.bill_no);
             scheduleReadLocal();
+          } else if (!billChangeTimer) {
+            // Coalesce imports into one paginated read, not thousands of array copies.
+            billChangeTimer = setTimeout(() => {
+              billChangeTimer = null;
+              void doDeltaSync();
+            }, 300);
           }
         }
       )
