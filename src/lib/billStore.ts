@@ -2941,7 +2941,7 @@ export async function savePayment(
   const isMocBn = normBillNo.startsWith('MOC') || normBillNo.includes('MOC') || (billId && billId.startsWith('moc_'));
   const targetKey = getBillDedupeKey({ billNo, id: billId || undefined });
 
-  let index = findBillIndexFast(billNo, billId);
+  let index = findBillIndexFast(billNo, billId ?? undefined);
   if (index === -1 && targetKey) {
     index = _billIndexByKey.get(targetKey) ?? -1;
   }
