@@ -1272,11 +1272,6 @@ export async function apiRecalcAllBillStatus(
         const cheque = Number(bill.chequeAmount) || 0;
         const breakdownSum = cash + upi + cheque;
 
-        // Lock: cash/GPay/cheque payment was owner-entered — skip payment mode changes.
-        // applyPaymentRules already enforces this, but skipping here avoids unnecessary
-        // Supabase writes for the majority of paid bills.
-        if (cash > 0 || upi > 0 || cheque > 0) continue;
-
         // Use breakdown sum only when at least one part is non-zero (avoids wiping
         // genuine collectedAmount on bills with no breakdown recorded yet).
         const correctedCollected = breakdownSum > 0 ? breakdownSum : Number(bill.collectedAmount) || 0;
@@ -1293,7 +1288,7 @@ export async function apiRecalcAllBillStatus(
 
         if (!collectedChanged && !outstandingChanged && !modeChanged && !methodChanged) continue;
 
-        const patch: Record<string, unknown> = { id: bill.id };
+        const patch: Record<string, unknown> = { id: bill.id, bill_no: bill.billNo };
         if (collectedChanged)  patch.collected_amount  = correctedCollected;
         if (outstandingChanged) patch.outstanding_amount = ruled.outstandingAmount;
         if (modeChanged)       patch.payment_mode      = ruled.paymentMode ?? null;
@@ -1344,15 +1339,13 @@ export async function apiFixBills(): Promise<{ ok: boolean; fixed: number; spAdd
       const updates: Array<Record<string, unknown>> = [];
 
       for (const bill of chunk) {
-        // Lock: skip bills where cash/GPay/cheque was owner-entered — paymentMode must
-        // not change via any automated fix. applyPaymentRules enforces this too, but
-        // skipping here avoids rewriting outstanding_amount on already-correct bills.
-        if (Number(bill.cashAmount) > 0 || Number(bill.upiAmount) > 0 || Number(bill.chequeAmount) > 0) continue;
+        // Skip bills already correctly marked as Paid
+        if ((Number(bill.cashAmount) > 0 || Number(bill.upiAmount) > 0 || Number(bill.chequeAmount) > 0) && (bill.paymentMode || '').toLowerCase() === 'paid') continue;
 
         const chequeNo = String(bill.chequeNo || '').trim();
         const ruled = applyPaymentRules(bill);
 
-        const patch: Record<string, unknown> = { id: bill.id, outstanding_amount: ruled.outstandingAmount };
+        const patch: Record<string, unknown> = { id: bill.id, bill_no: bill.billNo, outstanding_amount: ruled.outstandingAmount };
 
         const modeChanged = ruled.paymentMode !== bill.paymentMode;
         if (modeChanged) {

@@ -249,16 +249,23 @@ export default function ReportsPage() {
         }
       }
       if (statusFilter !== 'ALL') {
-        const col = b.collectedAmount || 0;
-        // PAID: collected amount > 0
-        const isPaid = col > 0;
+        const ca = Number(b.cashAmount) || 0;
+        const up = Number(b.upiAmount)  || 0;
+        const ch = Number(b.chequeAmount) || 0;
+        const col = Number(b.collectedAmount) || 0;
+        const recAmt = (ca + up + ch) > 0 ? (ca + up + ch) : col;
         const lc = (b.lineCutAmt || 0) || Number(b.cancelLine) || 0;
+        const diff = b.billNetAmt - lc - recAmt;
+        const mode = (b.paymentMode || '').toLowerCase();
+
         const netAfterLC = b.billNetAmt - lc;
-        const isAutoFbr = !b.paymentDate && Math.abs(netAfterLC) <= 1 && col === 0 && b.paymentMode !== 'Credit' && b.paymentMode !== 'Del Pending' && b.paymentMode !== 'Pending';
-        const isFBR = col === 0 && (b.paymentMode === 'Cancel' || b.paymentMode === 'FBR' || isAutoFbr);
-        const isCredit = col === 0 && b.paymentMode === 'Credit' && !!b.driverName;
-        const isDelPending = col === 0 && b.paymentMode === 'Del Pending';
-        const isUnpaid = !isPaid && !isFBR && !isDelPending && !b.deliveryDate && col === 0;
+        const isAutoFbr = !b.paymentDate && Math.abs(netAfterLC) <= 1 && recAmt === 0 && mode !== 'credit' && mode !== 'del pending' && mode !== 'pending';
+        const isFBR = (mode === 'cancel' || mode === 'fbr' || isAutoFbr) && recAmt === 0;
+        const isPaid = (Math.abs(diff) <= 1 || (recAmt > 0 && diff <= 1) || mode === 'paid' || mode === 'cash' || mode === 'upi' || mode === 'cheque' || mode === 'split') && !isFBR;
+        const isCredit = !isPaid && mode === 'credit' && recAmt === 0;
+        const isDelPending = !isPaid && (mode === 'del pending' || mode === 'pending') && recAmt === 0;
+        const isUnpaid = !isPaid && !isFBR && !isCredit && !isDelPending && !b.deliveryDate && recAmt === 0;
+
         if (statusFilter === 'PAID'        && !isPaid)      return false;
         if (statusFilter === 'FBR'         && !isFBR)       return false;
         if (statusFilter === 'CREDIT'      && !isCredit)    return false;
@@ -275,8 +282,15 @@ export default function ReportsPage() {
     result.sort((a, b) => {
       let va: any, vb: any;
       if (sort.key === 'diff') {
-        va = a.billNetAmt - (a.collectedAmount || 0);
-        vb = b.billNetAmt - (b.collectedAmount || 0);
+        const effA = getEffAmt(a);
+        const recA = (effA.cash + effA.upi + effA.chq) > 0 ? (effA.cash + effA.upi + effA.chq) : (a.collectedAmount || 0);
+        const lcA = (a.lineCutAmt || 0) || Number(a.cancelLine) || 0;
+        va = a.billNetAmt - lcA - recA;
+
+        const effB = getEffAmt(b);
+        const recB = (effB.cash + effB.upi + effB.chq) > 0 ? (effB.cash + effB.upi + effB.chq) : (b.collectedAmount || 0);
+        const lcB = (b.lineCutAmt || 0) || Number(b.cancelLine) || 0;
+        vb = b.billNetAmt - lcB - recB;
       } else {
         va = a[sort.key as keyof Bill] || '';
         vb = b[sort.key as keyof Bill] || '';
@@ -529,17 +543,20 @@ export default function ReportsPage() {
         'Chq/DD Date', 'Chq/DD No', 'Amount', 'Status',
       ];
       const computeStatus = (b: Bill) => {
-        const col = b.collectedAmount || 0;
-        // collected amount > 0 → always PAID (line cut does not count as collected)
-        if (col > 0) return 'PAID';
-        const isFBR    = b.paymentMode === 'FBR' || b.paymentMode === 'Cancel';
-        const isCredit  = b.paymentMode === 'Credit';
-        const isDelPend = b.paymentMode === 'Del Pending';
-        const isPending = b.paymentMode === 'Pending';
-        if (isFBR)    return 'FBR';
-        if (isCredit)  return 'CREDIT';
-        if (isDelPend) return 'DEL PENDING';
-        if (isPending) return 'PENDING';
+        const ca = Number(b.cashAmount) || 0;
+        const up = Number(b.upiAmount)  || 0;
+        const ch = Number(b.chequeAmount) || 0;
+        const col = Number(b.collectedAmount) || 0;
+        const recAmt = (ca + up + ch) > 0 ? (ca + up + ch) : col;
+        const lc = (b.lineCutAmt || 0) || Number(b.cancelLine) || 0;
+        const diff = b.billNetAmt - lc - recAmt;
+        const mode = (b.paymentMode || '').toLowerCase();
+        const isFBR = mode === 'fbr' || mode === 'cancel' || (!b.paymentDate && recAmt === 0 && Math.abs(b.billNetAmt - lc) <= 1);
+        if (isFBR) return 'FBR';
+        if (recAmt > 0 || Math.abs(diff) <= 1 || (b.billNetAmt > 0 && diff <= 1) || mode === 'paid') return 'PAID';
+        if (b.paymentMode === 'Credit')  return 'CREDIT';
+        if (b.paymentMode === 'Del Pending') return 'DEL PENDING';
+        if (b.paymentMode === 'Pending') return 'PENDING';
         return 'UNPAID';
       };
       const xlsMode = (b: Bill): string => {
@@ -2044,17 +2061,18 @@ export default function ReportsPage() {
                       {/* Bill rows */}
                       {grpBills.map((b, i) => {
                         const eff = getEffAmt(b);
-                        const collected = b.collectedAmount || 0;
+                        const recAmt = (eff.cash + eff.upi + eff.chq) > 0 ? (eff.cash + eff.upi + eff.chq) : (b.collectedAmount || 0);
                         const lc = (b.lineCutAmt || 0) || Number(b.cancelLine) || 0;
-                        const diff = b.billNetAmt - lc - collected;
-                        const isFBR     = b.paymentMode === 'FBR' || b.paymentMode === 'Cancel';
-                        const isCredit  = b.paymentMode === 'Credit' && collected === 0;
-                        const isDelPend = b.paymentMode === 'Del Pending' && collected === 0;
-                        const isPaid    = collected > 0 && Math.abs(diff) <= 1 && !isFBR;
+                        const diff = b.billNetAmt - lc - recAmt;
+                        const m         = (b.paymentMode || '').toLowerCase();
+                        const isFBR     = (m === 'fbr' || m === 'cancel') && recAmt === 0;
+                        const isPaid    = (Math.abs(diff) <= 1 || (recAmt > 0 && diff <= 1) || m === 'paid') && !isFBR;
+                        const isCredit  = !isPaid && m === 'credit' && recAmt === 0;
+                        const isDelPend = !isPaid && (m === 'del pending' || m === 'pending') && recAmt === 0;
                         const isAsgnd   = !isPaid && !isFBR && !isCredit && !isDelPend && !!b.driverName && b.deliveryDate === todayDisplay;
                         const label = isFBR ? 'FBR' : isCredit ? 'CREDIT' : isDelPend ? 'DEL PEND' : isPaid ? 'PAID' : isAsgnd ? 'ASGND' : 'UNPAID';
                         const labelCls = isFBR ? 'bg-red-500 text-white' : isCredit ? 'bg-green-500 text-white' : isDelPend ? 'bg-yellow-400 text-black' : isPaid ? 'bg-emerald-500 text-white' : isAsgnd ? 'bg-red-100 text-red-700' : 'bg-muted text-muted-foreground';
-                        const rowCls = isFBR ? 'bg-red-50' : isCredit ? 'bg-green-100' : isDelPend ? 'bg-yellow-50' : i % 2 === 0 ? 'bg-white' : 'bg-slate-50/60';
+                        const rowCls = isFBR ? 'bg-red-50' : isCredit ? 'bg-green-100' : isDelPend ? 'bg-yellow-50' : isPaid ? 'bg-white hover:bg-emerald-50/50' : i % 2 === 0 ? 'bg-white' : 'bg-slate-50/60';
                         return (
                           <tr key={`${b.billNo}_${i}`} onClick={() => setEditBill(b)} className={cn("border-b border-border/20 hover:bg-indigo-50/40 cursor-pointer transition-colors", rowCls)}>
                             <td className="px-1.5 py-0.5 text-center text-muted-foreground">{i + 1}</td>
@@ -2327,15 +2345,18 @@ export default function ReportsPage() {
                     const cash     = _eff.cash;
                     const gpay     = _eff.upi;
                     const chq      = _eff.chq;
-                    const collected = b.collectedAmount || 0;
+                    const directRec = cash + gpay + chq;
+                    const collected = Number(b.collectedAmount) || 0;
+                    const recAmt    = directRec > 0 ? directRec : collected;
                     const lineCutAmt = (b.lineCutAmt || 0) || Number(b.cancelLine) || 0;
-                    // DIFF = NET AMOUNT - LINE CUT AMOUNT - REC AMOUNT
-                    const effectiveDiff = b.billNetAmt - lineCutAmt - collected;
-                    const isFBR       = b.paymentMode === 'FBR' || b.paymentMode === 'Cancel';
-                    const isCredit    = b.paymentMode === 'Credit' && collected === 0;
-                    const isDelPend   = b.paymentMode === 'Del Pending' && collected === 0;
+                    // DIFF AMOUNT = BILL AMOUNT - LINE CUT AMOUNT - REC AMOUNT (CASH, GPAY, CHEQ)
+                    const effectiveDiff = b.billNetAmt - lineCutAmt - recAmt;
+                    const m           = (b.paymentMode || '').toLowerCase();
+                    const isFBR       = (m === 'fbr' || m === 'cancel') && recAmt === 0;
+                    const isPaid      = (Math.abs(effectiveDiff) <= 1 || (recAmt > 0 && effectiveDiff <= 1) || m === 'paid') && !isFBR;
+                    const isCredit    = !isPaid && m === 'credit' && recAmt === 0;
+                    const isDelPend   = !isPaid && (m === 'del pending' || m === 'pending') && recAmt === 0;
                     const isPending   = isDelPend;
-                    const isPaid      = collected > 0 && Math.abs(effectiveDiff) <= 1 && !isFBR;
                     const isAsgnd     = !isPaid && !isFBR && !isCredit && !isPending && !!b.driverName && b.deliveryDate === todayDisplay;
                     const isMatchedRow = String(b.discrepancyReason || (b as any).discrepancy_reason || (b as any).discrepancy || '').toUpperCase().includes('MATCHED');
                     return (
@@ -2343,6 +2364,7 @@ export default function ReportsPage() {
                         isFBR     ? "bg-red-200 hover:bg-red-300/60" :
                         isCredit  ? "bg-green-200 hover:bg-green-300/60" :
                         isPending ? "bg-yellow-100 hover:bg-yellow-200/60" :
+                        isPaid    ? "bg-white hover:bg-emerald-50/50" :
                         "bg-white hover:bg-primary/5",
                         isAsgnd && "text-red-600"
                       )}>
@@ -2360,7 +2382,7 @@ export default function ReportsPage() {
                         <TableCell className="text-[12px] px-1 py-0.5 h-auto truncate text-primary/70">{b.salespersonName || '—'}</TableCell>
                         <TableCell className="text-[12px] px-1 py-0.5 h-auto truncate">{b.driverName || '-'}</TableCell>
                         <TableCell className="text-[12px] px-1 py-0.5 h-auto text-right truncate">₹{b.billNetAmt.toLocaleString('en-IN')}</TableCell>
-                        <TableCell className={cn("text-[12px] px-1 py-0.5 h-auto truncate font-black", isAsgnd ? "text-red-600" : "text-orange-600")}>{collected > 0 && b.paymentDate ? b.paymentDate : '-'}</TableCell>
+                        <TableCell className={cn("text-[12px] px-1 py-0.5 h-auto truncate font-black", isAsgnd ? "text-red-600" : "text-orange-600")}>{(recAmt > 0 || isPaid) && b.paymentDate ? b.paymentDate : '-'}</TableCell>
                         <TableCell className="text-[12px] px-1 py-0.5 h-auto truncate text-center text-indigo-600 font-black">{b.deliveryDate || '-'}</TableCell>
                         <TableCell className={cn("text-[12px] px-1 py-0.5 h-auto text-right", isAsgnd ? "text-red-600" : "text-emerald-600")}>{isCredit ? '—' : `₹${cash.toLocaleString('en-IN')}`}</TableCell>
                         <TableCell className={cn("text-[12px] px-1 py-0.5 h-auto text-right", isAsgnd ? "text-red-600" : "text-blue-600")}>

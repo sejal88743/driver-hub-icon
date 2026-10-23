@@ -121,7 +121,7 @@ function parseRegister(data: ArrayBuffer, XLSX: any): {
   const salespersonKey = findKey(keys, /salesperson/i, /sales\s*person/i, /salesman/i, /salesman\s*name/i, /executive/i, /sp\s*name/i);
   const billDateKey = findKey(keys, /billdate/i, /bill\s*date/i, /sales\s*return\s*date/i, /^date$/i, /invoice\s*date/i, /doc\s*date/i, /document\s*date/i);
   const cashDiscKey = findKey(keys, /^cash\s*disc/i, /^cash\s*discount/i, /^cashdisc/i, /^cash_disc/i, /^cd$/i, /cash\s*disc/i, /cash\s*discount/i, /^cash\s*disc\s*amt/i);
-  const adjustmentsKey = findKey(keys, /^adjustment/i, /^adjustments/i, /^adjust/i, /^adj$/i, /^adj\s*amt/i, /adjustment/i, /adjustments/i, /^adj\s*amount/i);
+  const adjustmentsKey = findKey(keys, /^adjustment/i, /^adjustments/i, /^adjust/i, /^adj$/i, /^adj\s*amt/i, /adjustment/i, /adjustments/i, /^adj\s*amount/i, /total\s*adj/i);
 
   if (!billNoKey || !billValueKey) {
     throw new Error(`Required columns not found (BillRefNo, BillValue). Found: ${keys.slice(0, 14).join(', ')}`);
@@ -275,12 +275,11 @@ function buildUpdates(groups: Map<string, BillGroup>, existingBills: Bill[]): {
       patch.billNetAmt = group.positiveBillValue;
     }
 
-    // 4. Negative Bill Value (- amount in bill value -> ADD to lineCutAmt)
-    // Rule: "xls me bill velue me agar - amt he to vah line cut amt me add hota tha pahle same vesa hi hona chashiye"
+    // 4. Negative Bill Value (- amount in duplicate rows -> Line Cut Amt)
+    // Rule: "Duplicate Bill No me (-) negative value Line Cut Amt me aur (+) positive value Bill Net Amt me update hona chahiye"
     if (group.negativeBillValue > 0) {
-      const prevLc = Number(existing.lineCutAmt) || 0;
-      patch.lineCutAmt = prevLc + group.negativeBillValue;
-      patch.cancelLine = String(patch.lineCutAmt);
+      patch.lineCutAmt = group.negativeBillValue;
+      patch.cancelLine = String(group.negativeBillValue);
     }
 
     // 5. Calculate effective net bill amount & effective line cut amount
@@ -295,27 +294,45 @@ function buildUpdates(groups: Map<string, BillGroup>, existingBills: Bill[]): {
     const cash = Number(existing.cashAmount) || 0;
     const upi = Number(existing.upiAmount) || 0;
     const cheque = Number(existing.chequeAmount) || 0;
-    const recAmt = (Number(existing.collectedAmount) || 0) + cash + upi + cheque;
+    const splitRec = cash + upi + cheque;
+    const recAmt = splitRec > 0 ? splitRec : (Number(existing.collectedAmount) || 0);
 
+    // diff amount = bill amount - line cut amount - rec amount ( cash, gpay, cheq )
+    const diff = effectiveBillAmt - effectiveLineCutAmt - recAmt;
     const curMode = (existing.paymentMode || '').toLowerCase();
-    const isLockedPayment = cash > 0 || upi > 0 || cheque > 0 || (recAmt > 0 && curMode === 'paid');
 
-    if (recAmt === 0 && !isLockedPayment) {
-      // If rec amount is 0 and line cut amt >= bill amount (net balance <= 1), auto set FBR
-      if (effectiveBillAmt > 0 && (effectiveBillAmt - effectiveLineCutAmt <= 0 || Math.abs(effectiveBillAmt - effectiveLineCutAmt) <= 1)) {
+    if (effectiveBillAmt > 0 && Math.abs(diff) <= 1) {
+      // Diff is 0 (within 1 rupee tolerance)
+      if (recAmt === 0 && effectiveLineCutAmt >= effectiveBillAmt - 1) {
+        // Zero received, fully covered by line cut -> FBR
         patch.paymentMode = 'FBR';
         patch.paymentMethod = 'FBR';
         patch.outstandingAmount = 0;
       } else {
-        if (curMode === 'fbr' || curMode === 'cancel') {
-          patch.paymentMode = 'Unpaid';
-          patch.paymentMethod = undefined;
+        // Bill is PAID
+        patch.paymentMode = 'Paid';
+        patch.outstandingAmount = 0;
+        if (!existing.paymentDate) {
+          patch.paymentDate = existing.deliveryDate || existing.date || patch.date || '';
         }
-        patch.outstandingAmount = Math.max(0, effectiveBillAmt - effectiveLineCutAmt);
+        if (splitRec > 0 && (Number(existing.collectedAmount) || 0) === 0) {
+          patch.collectedAmount = splitRec;
+        }
+      }
+    } else if (diff <= 1 && effectiveBillAmt > 0 && recAmt > 0) {
+      // Overpaid / fully settled with collection -> Paid
+      patch.paymentMode = 'Paid';
+      patch.outstandingAmount = 0;
+      if (!existing.paymentDate) {
+        patch.paymentDate = existing.deliveryDate || existing.date || patch.date || '';
       }
     } else {
-      // Money has been received on this bill
-      patch.outstandingAmount = Math.max(0, effectiveBillAmt - effectiveLineCutAmt - recAmt);
+      // Diff > 1
+      patch.outstandingAmount = Math.max(0, diff);
+      if (curMode === 'fbr' || curMode === 'cancel') {
+        patch.paymentMode = 'Unpaid';
+        patch.paymentMethod = undefined;
+      }
     }
 
     // Calculate ageing from new or existing date
@@ -357,7 +374,7 @@ function buildNewBills(missing: Map<string, BillGroup>, spNames: string[]): Bill
   for (const [billNo, g] of missing) {
     const billAmt = g.positiveBillValue > 0 ? g.positiveBillValue : (g.negativeBillValue > 0 ? g.negativeBillValue : 0);
     const lineCutAmt = g.negativeBillValue;
-    const isFBR = (g.positiveBillValue === 0 && g.negativeBillValue > 0) || (billAmt > 0 && (billAmt - lineCutAmt <= 0 || Math.abs(billAmt - lineCutAmt) <= 1));
+    const isFBR = (g.positiveBillValue === 0 && g.negativeBillValue > 0) || (billAmt > 0 && (billAmt - lineCutAmt <= 1));
 
     let parsedTs = today.getTime();
     if (g.billDate) {
@@ -388,7 +405,7 @@ function buildNewBills(missing: Map<string, BillGroup>, spNames: string[]): Bill
       billAgeing: ageing,
       lineCutAmt: lineCutAmt || 0,
       cancelLine: lineCutAmt > 0 ? String(lineCutAmt) : '',
-      ...(isFBR ? { paymentMode: 'FBR' } : {}),
+      ...(isFBR ? { paymentMode: 'FBR', paymentMethod: 'FBR' } : { paymentMode: 'Unpaid' }),
     } as Bill);
   }
 
