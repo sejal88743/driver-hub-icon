@@ -65,6 +65,7 @@ const PROBE_COLUMNS = [
   'upi_amount',
   'cheque_amount',
   'next_bill_no',
+  'ushop_amount',
 ] as const;
 
 let probedSchema = false;
@@ -175,6 +176,7 @@ export function mapBillFromSupabase(row: Record<string, unknown>): Bill {
     updatedAt:          o(row.updated_at ?? row.updatedAt),
     user:               o(row.user),
     owner:              o(row.owner),
+    ushopAmount:        n(row.ushopAmount ?? row.ushop_amount) || undefined,
   };
 }
 
@@ -219,6 +221,7 @@ function billToSupabase(b: Partial<Bill>): Record<string, unknown> {
   if ('editDate'          in b) out.edit_date           = b.editDate ?? null;
   if ('user'              in b) out.user                = b.user ?? null;
   if ('owner'             in b) out.owner               = b.owner ?? null;
+  if ('ushopAmount'       in b) out.ushop_amount        = (b.ushopAmount != null && !isNaN(Number(b.ushopAmount))) ? Number(b.ushopAmount) : null;
 
   // Always stamp updated_at so all devices detect real-time incremental changes instantly
   if ('updatedAt' in b && b.updatedAt) out.updated_at = b.updatedAt;

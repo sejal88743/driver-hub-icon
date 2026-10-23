@@ -262,6 +262,7 @@ export type Bill = {
   owner?: string;
   partPayments?: Array<{ date: string; cash: number; upi: number; cheque: number; amount: number; chequeNo?: string; bankName?: string; mode?: string; enteredBy?: string }>;
   deliveryStatus?: string;
+  ushopAmount?: number;
 };
 
 export type Driver = {

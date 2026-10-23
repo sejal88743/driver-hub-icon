@@ -615,7 +615,7 @@ export default function DriverDayTable({ bills, selectedDriver, displayDate, onS
 
         return [
           i + 1,
-          getDisplayBillNo(b).replace(/^GST[-/]?/i, ''),
+          ((Number(b.ushopAmount) || 0) > 0 ? '*' : '') + getDisplayBillNo(b).replace(/^GST[-/]?/i, ''),
           (b.partyName || '-').substring(0, 24),
           b.billNetAmt > 0 ? b.billNetAmt.toLocaleString('en-IN') : '-',
           !isSnap && cash > 0 ? cash.toLocaleString('en-IN') : '',
@@ -793,7 +793,7 @@ export default function DriverDayTable({ bills, selectedDriver, displayDate, onS
           const chqCell  = chq > 0 ? chq.toLocaleString('en-IN') : '-';
 
           return [
-            getDisplayBillNo(b).replace(/^GST[-/]?/i, ''),
+            ((Number(b.ushopAmount) || 0) > 0 ? '*' : '') + getDisplayBillNo(b).replace(/^GST[-/]?/i, ''),
             (b.partyName || '-').substring(0, 24),
             b.billNetAmt > 0 ? b.billNetAmt.toLocaleString('en-IN') : '-',
             cash > 0 ? cash.toLocaleString('en-IN') : '-',
@@ -1327,7 +1327,9 @@ export default function DriverDayTable({ bills, selectedDriver, displayDate, onS
                     </div>
                   </td>
                   <td className="px-0.5 py-0 font-black">
-                    {getDisplayBillNo(b)}
+                    <span className={cn((Number(b.ushopAmount) || 0) > 0 && "text-purple-700 dark:text-purple-400")} title={(Number(b.ushopAmount) || 0) > 0 ? `Ushop Redemption: ₹${b.ushopAmount}` : undefined}>
+                      {((Number(b.ushopAmount) || 0) > 0 ? '*' : '') + getDisplayBillNo(b)}
+                    </span>
                   </td>
                   <td className="px-0.5 py-0 font-black truncate max-w-[110px]" title={b.partyName || ''}>
                     <span className={cn(

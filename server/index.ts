@@ -99,6 +99,7 @@ function mapDbBill(r: Record<string, unknown>) {
     upiAmount: r.upi_amount != null ? Number(r.upi_amount) : undefined,
     chequeAmount: r.cheque_amount != null ? Number(r.cheque_amount) : undefined,
     lineCutAmt: r.line_cut_amt != null ? Number(r.line_cut_amt) : undefined,
+    ushopAmount: r.ushop_amount != null ? Number(r.ushop_amount) : undefined,
   };
 }
 
@@ -135,6 +136,8 @@ function billToDb(b: Record<string, unknown>): Record<string, unknown> {
   if ('chequeAmount' in b) out.cheque_amount = b.chequeAmount != null ? Number(b.chequeAmount) : null;
   if (b.lineCutAmt != null) out.line_cut_amt = Number(b.lineCutAmt);
   else if ('lineCutAmt' in b) out.line_cut_amt = null;
+  if (b.ushopAmount != null) out.ushop_amount = Number(b.ushopAmount);
+  else if ('ushopAmount' in b) out.ushop_amount = null;
   out.updated_at = new Date().toISOString();
   return out;
 }

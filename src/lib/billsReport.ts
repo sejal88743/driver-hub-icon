@@ -39,6 +39,8 @@ type BillGroup = {
   adjustments: number;
   hasCashDisc: boolean;
   hasAdjustments: boolean;
+  ushopAmount: number;
+  hasUshop: boolean;
 };
 
 type BillReportUpdate = {
@@ -122,6 +124,7 @@ function parseRegister(data: ArrayBuffer, XLSX: any): {
   const billDateKey = findKey(keys, /billdate/i, /bill\s*date/i, /sales\s*return\s*date/i, /^date$/i, /invoice\s*date/i, /doc\s*date/i, /document\s*date/i);
   const cashDiscKey = findKey(keys, /^cash\s*disc/i, /^cash\s*discount/i, /^cashdisc/i, /^cash_disc/i, /^cd$/i, /cash\s*disc/i, /cash\s*discount/i, /^cash\s*disc\s*amt/i);
   const adjustmentsKey = findKey(keys, /^adjustment/i, /^adjustments/i, /^adjust/i, /^adj$/i, /^adj\s*amt/i, /adjustment/i, /adjustments/i, /^adj\s*amount/i, /total\s*adj/i);
+  const ushopKey = findKey(keys, /^ushop\s*redemption/i, /ushop\s*redemption/i, /u\s*shop\s*redemption/i, /u-shop\s*redemption/i, /^ushop/i, /ushop\s*amt/i, /ushop\s*amount/i, /^u\s*shop$/i);
 
   if (!billNoKey || !billValueKey) {
     throw new Error(`Required columns not found (BillRefNo, BillValue). Found: ${keys.slice(0, 14).join(', ')}`);
@@ -140,6 +143,7 @@ function parseRegister(data: ArrayBuffer, XLSX: any): {
     const billValue = amount(row[billValueKey]);
     const rowCashDisc = cashDiscKey ? amount(row[cashDiscKey]) : 0;
     const rowAdjustments = adjustmentsKey ? amount(row[adjustmentsKey]) : 0;
+    const rowUshop = ushopKey ? amount(row[ushopKey]) : 0;
 
     let group = groups.get(billNo);
     if (!group) {
@@ -156,6 +160,8 @@ function parseRegister(data: ArrayBuffer, XLSX: any): {
         adjustments: 0,
         hasCashDisc: false,
         hasAdjustments: false,
+        ushopAmount: 0,
+        hasUshop: false,
       };
       groups.set(billNo, group);
     }
@@ -167,6 +173,10 @@ function parseRegister(data: ArrayBuffer, XLSX: any): {
     if (adjustmentsKey) {
       group.hasAdjustments = true;
       group.adjustments += rowAdjustments;
+    }
+    if (ushopKey) {
+      group.hasUshop = true;
+      group.ushopAmount += rowUshop;
     }
 
     if (billValue < 0) {
@@ -353,6 +363,11 @@ function buildUpdates(groups: Map<string, BillGroup>, existingBills: Bill[]): {
       patch.collectionCode = String(group.adjustments);
     }
 
+    // 7. Ushop Redemption amount
+    if (group.hasUshop && group.ushopAmount > 0) {
+      patch.ushopAmount = group.ushopAmount;
+    }
+
     if (Object.keys(patch).length > 0) {
       updates.push({
         billNo: existing.billNo,
@@ -405,6 +420,7 @@ function buildNewBills(missing: Map<string, BillGroup>, spNames: string[]): Bill
       billAgeing: ageing,
       lineCutAmt: lineCutAmt || 0,
       cancelLine: lineCutAmt > 0 ? String(lineCutAmt) : '',
+      ushopAmount: (g.hasUshop && g.ushopAmount > 0) ? g.ushopAmount : undefined,
       ...(isFBR ? { paymentMode: 'FBR', paymentMethod: 'FBR' } : { paymentMode: 'Unpaid' }),
     } as Bill);
   }
@@ -557,9 +573,12 @@ export async function processBillsReportBuffer(
     const lineCutUpdates = updates.filter(u => u.negativeRow).length;
     const fbrUpdatedCount = updates.filter(u => u.patch.paymentMode === 'FBR').length;
     const fbrNewCount = newBills.filter(b => b.paymentMode === 'FBR').length;
+    const ushopUpdatedCount = updates.filter(u => u.patch.ushopAmount !== undefined && (u.patch.ushopAmount || 0) > 0).length;
+    const ushopNewCount = newBills.filter(b => (b.ushopAmount || 0) > 0).length;
     const details: string[] = [
       `Identity updated (beat/party/salesperson): ${identityUpdates}`,
       `Line cut updated: ${lineCutUpdates}`,
+      ...(ushopUpdatedCount > 0 || ushopNewCount > 0 ? [`Ushop Redemption: ${ushopUpdatedCount} updated · ${ushopNewCount} new`] : []),
       ...(fbrUpdatedCount > 0 ? [`Auto FBR updated (Line cut = Bill Amt): ${fbrUpdatedCount}`] : []),
       `Register rows: ${parsed.rowCount} · positive: ${parsed.positiveRows} · negative: ${parsed.negativeRows}`,
     ];

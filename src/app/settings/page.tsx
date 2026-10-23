@@ -508,6 +508,7 @@ export default function SettingsPage() {
             const upiAmount = num(getField(r, usedKeys, 'upiAmount', 'upi_amount', 'UPI Amount', 'UPI', 'Online', 'GPay', 'PhonePe', 'Paytm'), 0);
             const chequeAmount = num(getField(r, usedKeys, 'chequeAmount', 'cheque_amount', 'Cheque Amount', 'Cheque Amt', 'Cheque'), 0);
             const lineCutAmt = num(getField(r, usedKeys, 'lineCutAmt', 'line_cut_amt', 'Line Cut Amt', 'Line Cut Amount', 'Shortage'), 0);
+            const ushopAmount = num(getField(r, usedKeys, 'ushopAmount', 'ushop_amount', 'Ushop Redemption', 'USHOP REDEMPTION', 'Ushop', 'U Shop Redemption', 'ushop', 'ushop amt', 'ushop amount'), 0);
             const billAgeing = num(getField(r, usedKeys, 'billAgeing', 'bill_ageing', 'Bill Ageing', 'Ageing', 'Aging', 'Days'), 0);
 
             const rawDate = getField(r, usedKeys, 'date', 'Date', 'Bill Date', 'Invoice Date', 'Doc Date');
@@ -546,6 +547,7 @@ export default function SettingsPage() {
               nextBillNo: getField(r, usedKeys, 'nextBillNo', 'next_bill_no', 'Next Bill No', 'Next Bill') || undefined,
               cancelLine: getField(r, usedKeys, 'cancelLine', 'cancel_line', 'Cancel Line', 'Cancel Reason') || undefined,
               lineCutAmt: lineCutAmt || undefined,
+              ushopAmount: ushopAmount || undefined,
               delPendingHistory: parseJsonField(getField(r, usedKeys, 'delPendingHistory', 'del_pending_history', 'Del Pending History')),
               editHistory: parseJsonField(getField(r, usedKeys, 'editHistory', 'edit_history', 'Edit History'), []),
               partPayments: parseJsonField(getField(r, usedKeys, 'partPayments', 'part_payments', 'Part Payments')),
@@ -1596,6 +1598,9 @@ export default function SettingsPage() {
                 if (!KNOWN_COLS.has(k)) extraCols[k] = v;
               }
 
+              const rawUshop = row['Ushop Redemption'] ?? row['USHOP REDEMPTION'] ?? row['ushop redemption'] ?? row['Ushop'] ?? row['USHOP'] ?? row['ushop'] ?? row['U Shop Redemption'] ?? row['ushopAmount'] ?? row['ushop_amount'];
+              const ushopVal = rawUshop != null ? parseFloat(String(rawUshop).replace(/,/g, '').replace(/[^0-9.-]/g, '')) : 0;
+
               const xlsBillData = {
                 ...extraCols,
                 srNo: String(row['Sr No'] || row['SR NO'] || ''),
@@ -1616,12 +1621,17 @@ export default function SettingsPage() {
                 collectedAmount: Number(row['Collected Amount']) || 0,
                 outstandingAmount: Number(row['Outstanding Amount']) || 0,
                 billAgeing: Number(row['Bill Ageing (In Days)'] ?? row['Bill Ageing'] ?? row['Bill Ageing(In Days)']) || 0,
+                ushopAmount: (!isNaN(ushopVal) && ushopVal > 0) ? ushopVal : undefined,
               };
 
               const existingBill = currentBillMap.get(bn);
               const onServer = currentBillNosFromServer.has(bn);
 
               if (existingBill || onServer) {
+                if (existingBill && !existingBill.ushopAmount && ushopVal > 0) {
+                  existingBill.ushopAmount = ushopVal;
+                  import('@/lib/apiSync').then(m => m.apiPatchBill(existingBill.id, { ushopAmount: ushopVal }, bn));
+                }
                 // Bill already exists — skip completely, no update
                 skipped.push(bn);
                 continue;

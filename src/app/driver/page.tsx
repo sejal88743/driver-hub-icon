@@ -248,6 +248,10 @@ export default function DriverPage() {
             'bill value', 'billvalue', 'grand total', 'net_amt', 'bill_amt',
             'invoice amt', 'invoice amount', 'amount', 'val', 'value'
           ];
+          const USHOP_KEYWORDS = [
+            'ushop redemption', 'ushop_redemption', 'u shop redemption', 'u-shop redemption',
+            'ushop', 'ushop amt', 'ushop amount', 'u shop'
+          ];
 
           // Auto-detect header row by column match score — avoids false matching on title/metadata rows like 'BillWise Sales Register'
           let bestHeaderRow = -1;
@@ -268,6 +272,7 @@ export default function DriverPage() {
               if (DATE_KEYWORDS.some(kw => val === kw || (val.length <= 25 && val.includes(kw)))) score += 2;
               if (HHT_VAN_KEYWORDS.some(kw => val.includes(kw)) || DRIVER_FALLBACK_KEYWORDS.some(kw => val.includes(kw))) score += 2;
               if (LINECUT_KEYWORDS.some(kw => val.includes(kw))) score += 2;
+              if (USHOP_KEYWORDS.some(kw => val.includes(kw))) score += 2;
             }
             if (cellCount >= 2 && score > bestScore) {
               bestScore = score;
@@ -298,9 +303,11 @@ export default function DriverPage() {
 
           let COL_BILL_NO = findCol(BILL_KEYWORDS);
           let COL_LINECUT = findCol(LINECUT_KEYWORDS);
+          let COL_USHOP = findCol(USHOP_KEYWORDS);
           // Amount column must NOT match the line cut column or line cut keywords
           let COL_AMT = findCol(AMT_KEYWORDS, ['line', 'cut', 'short', 'diff', 'deduct', 'discount', 'adj', 'damage', 'return', 'less', 'claim']);
           if (COL_AMT === COL_LINECUT) COL_AMT = -1;
+          if (COL_AMT === COL_USHOP) COL_AMT = -1;
 
           // Driver: check HHT VAN first, fallback to standard Driver column
           let COL_DRIVER = findCol(HHT_VAN_KEYWORDS);
@@ -348,6 +355,7 @@ export default function DriverPage() {
             const partyCell = COL_PARTY !== -1 ? ws[XLSX.utils.encode_cell({ r, c: COL_PARTY })] as { v?: unknown } | undefined : undefined;
             const amtCell = COL_AMT !== -1 ? ws[XLSX.utils.encode_cell({ r, c: COL_AMT })] as { v?: unknown } | undefined : undefined;
             const lcCell = COL_LINECUT !== -1 ? ws[XLSX.utils.encode_cell({ r, c: COL_LINECUT })] as { v?: unknown } | undefined : undefined;
+            const ushopCell = COL_USHOP !== -1 ? ws[XLSX.utils.encode_cell({ r, c: COL_USHOP })] as { v?: unknown } | undefined : undefined;
 
             let rawBn = String(bnCell?.v || '').trim();
             if (typeof bnCell?.v === 'number') rawBn = String(bnCell.v).replace(/\.0+$/, '');
@@ -367,6 +375,7 @@ export default function DriverPage() {
             const partyVal = String(partyCell?.v || '').trim();
             let netAmtVal = 0;
             let lineCutVal = 0;
+            let ushopVal = 0;
             if (amtCell?.v != null) {
               const parsedAmt = parseFloat(String(amtCell.v).replace(/,/g, '').replace(/[^0-9.-]/g, ''));
               if (!isNaN(parsedAmt)) {
@@ -382,12 +391,16 @@ export default function DriverPage() {
               const parsedLc = parseFloat(String(lcCell.v).replace(/,/g, '').replace(/[^0-9.-]/g, ''));
               if (!isNaN(parsedLc)) lineCutVal += Math.abs(parsedLc);
             }
+            if (ushopCell?.v != null) {
+              const parsedUshop = parseFloat(String(ushopCell.v).replace(/,/g, '').replace(/[^0-9.-]/g, ''));
+              if (!isNaN(parsedUshop) && parsedUshop > 0) ushopVal = parsedUshop;
+            }
 
             const parsedRawDate = dtCell?.v != null ? excelSerialToDate(dtCell.v) : '';
             const tripDate = parsedRawDate ? toDDMMYYYY(parsedRawDate) : todayFmt;
             if (parsedRawDate) dateCounts.set(tripDate, (dateCounts.get(tripDate) || 0) + 1);
 
-            const patch: { deliveryDate?: string; driverName?: string; paymentMode?: string; partyName?: string; billNetAmt?: number; lineCutAmt?: number; cancelLine?: string; outstandingAmount?: number } = {};
+            const patch: { deliveryDate?: string; driverName?: string; paymentMode?: string; partyName?: string; billNetAmt?: number; lineCutAmt?: number; cancelLine?: string; outstandingAmount?: number; ushopAmount?: number } = {};
 
             // Multi-tiered bill matching (handles both '49552' and 'GST49552')
             const bnLower = rawBn.toLowerCase().trim();
@@ -451,6 +464,9 @@ export default function DriverPage() {
                 }
                 patch.outstandingAmount = isFullCut ? 0 : Math.max(0, effBillAmt - totalLc - (Number(curBill.collectedAmount) || 0));
               }
+              if (ushopVal > 0) {
+                patch.ushopAmount = ushopVal;
+              }
               if (Object.keys(patch).length > 0) {
                 currentBills[idx] = { ...currentBills[idx], ...patch };
                 xlsPatches.push({ billNo: currentBills[idx].billNo, patch });
@@ -480,6 +496,7 @@ export default function DriverPage() {
                 chequeAmount: 0,
                 lineCutAmt: lineCutVal || 0,
                 cancelLine: lineCutVal > 0 ? String(lineCutVal) : '',
+                ushopAmount: ushopVal > 0 ? ushopVal : undefined,
                 paymentMode: newIsFullCut ? 'FBR' : (canonicalDr ? 'Assigned' : 'Unpaid'),
                 driverName: canonicalDr,
                 delPendingHistory: [],
@@ -980,7 +997,7 @@ export default function DriverPage() {
         const chqCell  = chq > 0 ? chq.toLocaleString('en-IN') : '-';
 
         return [
-          b.billNo.replace(/^GST[-/]?/i, ''),
+          ((Number(b.ushopAmount) || 0) > 0 ? '*' : '') + b.billNo.replace(/^GST[-/]?/i, ''),
           (b.partyName || '-').substring(0, 20),
           b.billNetAmt > 0 ? b.billNetAmt.toLocaleString('en-IN') : '-',
           lc   > 0 ? lc.toLocaleString('en-IN')              : '-',
@@ -1105,7 +1122,7 @@ export default function DriverPage() {
           const chqCell  = chq > 0 ? chq.toLocaleString('en-IN') : '-';
 
           return [
-            b.billNo.replace(/^GST[-/]?/i, ''),
+            ((Number(b.ushopAmount) || 0) > 0 ? '*' : '') + b.billNo.replace(/^GST[-/]?/i, ''),
             (b.partyName || '-').substring(0, 24),
             b.billNetAmt > 0 ? b.billNetAmt.toLocaleString('en-IN') : '-',
             cash > 0 ? cash.toLocaleString('en-IN') : '-',
@@ -1952,7 +1969,7 @@ export default function DriverPage() {
                               </div>
                               <div className="space-y-0.5 pl-1">
                                 {dBills.map(b => {
-                                  const bn = b.billNo.replace(/^GST/i, '');
+                                  const bn = ((Number(b.ushopAmount) || 0) > 0 ? '*' : '') + b.billNo.replace(/^GST/i, '');
                                   const paid = !!b.paymentDate;
                                   const isFBRBill = b.paymentMode === 'FBR' || b.paymentMode === 'Cancel';
                                   const isCreditBill = b.paymentMode === 'Credit';
@@ -2106,7 +2123,7 @@ export default function DriverPage() {
                               onClick={e => e.stopPropagation()}
                             />
                           </td>
-                          <td className="px-3 py-2 text-foreground font-black">{b.billNo.replace(/^GST/i, '')}</td>
+                          <td className="px-3 py-2 text-foreground font-black">{((Number(b.ushopAmount) || 0) > 0 ? '*' : '') + b.billNo.replace(/^GST/i, '')}</td>
                           <td className="px-3 py-2 text-muted-foreground">{b.deliveryDate || b.date || '—'}</td>
                           <td className="px-3 py-2 text-foreground truncate max-w-[90px]">{b.driverName || '—'}</td>
                           <td className="px-3 py-2" onClick={e => e.stopPropagation()}>

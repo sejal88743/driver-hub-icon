@@ -36,10 +36,12 @@ async function migrate() {
         upi_amount real,
         cheque_amount real,
         line_cut_amt real,
+        ushop_amount real,
         updated_at timestamptz DEFAULT now()
       );
     `);
     await client.query(`ALTER TABLE bills ADD COLUMN IF NOT EXISTS line_cut_amt real;`);
+    await client.query(`ALTER TABLE bills ADD COLUMN IF NOT EXISTS ushop_amount real;`);
     await client.query(`ALTER TABLE bills ADD COLUMN IF NOT EXISTS payment_method text;`);
     await client.query(`ALTER TABLE bills ADD COLUMN IF NOT EXISTS del_pending_history jsonb DEFAULT '[]'::jsonb;`);
     await client.query(`CREATE INDEX IF NOT EXISTS bills_bill_no_idx ON bills (bill_no);`);
