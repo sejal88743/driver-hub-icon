@@ -1299,8 +1299,12 @@ export default function Dashboard() {
       setPaymentMode('');
     }
 
-    setConfirmInput('');
-    setLcInputVal(bill.lineCutAmt != null && bill.lineCutAmt > 0 ? String(bill.lineCutAmt) : '');
+    const isFbrBill = effMode === 'fbr' || effMode === 'cancel';
+    const effectiveBillLc = isFbrBill
+      ? (bill.billNetAmt || 0)
+      : Math.max(0, Number(bill.lineCutAmt) || Number(bill.cancelLine) || 0);
+    setConfirmInput(bill.cancelLine || '');
+    setLcInputVal(effectiveBillLc > 0 ? String(effectiveBillLc) : '');
     setBillNote(bill.discrepancyReason || '');
     if (bill.paymentDate && bill.paymentDate.trim() !== '' && bill.paymentDate !== '—') {
       const savedIso = displayToIso(bill.paymentDate);
@@ -1331,9 +1335,6 @@ export default function Dashboard() {
       setChequeDate(_cd);
       setChqDateDD(_cd ? _cd.split('/').slice(0, 2).join('/') : '');
       setPaymentMode(bill.paymentMode || '');
-      setConfirmInput(bill.cancelLine || '');
-      const _bLC = (bill.lineCutAmt || 0) || Number(bill.cancelLine) || 0;
-      setLcInputVal(_bLC > 0 ? String(_bLC) : '');
     } else {
       setCashAmt('');
       setUpiAmt('');
@@ -1341,9 +1342,6 @@ export default function Dashboard() {
       setBankName('');
       setChequeNo('');
       setPaymentMode(bill.paymentMode || '');
-      setConfirmInput(bill.cancelLine || '');
-      const _bLC = (bill.lineCutAmt || 0) || Number(bill.cancelLine) || 0;
-      setLcInputVal(_bLC > 0 ? String(_bLC) : '');
     }
 
     setTimeout(() => cashInputRef.current?.focus(), 120);
@@ -2143,11 +2141,15 @@ export default function Dashboard() {
     if (isMoc) {
       lineCutToSave = 0;
     } else if (finalMode === 'Credit') {
-      lineCutToSave = (lcOverride !== undefined && lcOverride !== null) ? Math.min(lcOverride, maxAllowedLc) : 0;
+      lineCutToSave = (lcOverride !== undefined && lcOverride !== null) 
+        ? Math.min(lcOverride, maxAllowedLc) 
+        : (lcInputVal !== '' ? Math.min(parseAmountExpression(lcInputVal), maxAllowedLc) : 0);
     } else if (finalMode === 'FBR') {
       lineCutToSave = selectedBill ? selectedBill.billNetAmt : null;
     } else if (lcOverride !== undefined && lcOverride !== null) {
       lineCutToSave = Math.min(lcOverride, maxAllowedLc);
+    } else if (lcInputVal !== '') {
+      lineCutToSave = Math.min(parseAmountExpression(lcInputVal), maxAllowedLc);
     } else if (totalCollected > 0 && selectedBill) {
       lineCutToSave = Math.max(0, selectedBill.billNetAmt - totalCollected);
     } else {
@@ -3732,9 +3734,14 @@ export default function Dashboard() {
             || (!isFBR2 && !isCredit2 && !isDelPend2 && !isUnpaid2 && !!selectedBill.paymentDate && (selectedBill.collectedAmount || 0) > 0)
             || (!isFBR2 && !isCredit2 && !isDelPend2 && !isUnpaid2 && _liveTotal > 0);
           const savedLineCut2 = (selectedBill.lineCutAmt || 0) || Number(selectedBill.cancelLine) || 0;
-          // USER DIRECTIVE: line cut amt jab bill entry horaha he to change live nahi hoga vah save karne par hi change hoga
-          const lineCut2 = isMoc2 ? 0 : (isFBR2 ? selectedBill.billNetAmt : savedLineCut2);
-          const net2 = isMoc2 ? (selectedBill.billNetAmt || _liveTotal || 0) : (selectedBill.billNetAmt - lineCut2);
+          // Live line cut amount: reflects lcInputVal immediately whether new or old bill is selected
+          const liveLcParsed = lcInputVal !== '' ? parseAmountExpression(lcInputVal) : null;
+          const lineCut2 = isMoc2 
+            ? 0 
+            : (isFBR2 
+                ? selectedBill.billNetAmt 
+                : (liveLcParsed !== null ? liveLcParsed : savedLineCut2));
+          const net2 = isMoc2 ? (selectedBill.billNetAmt || _liveTotal || 0) : Math.max(0, selectedBill.billNetAmt - lineCut2);
           const collected2 = _liveTotal > 0 ? _liveTotal : (selectedBill.collectedAmount || 0);
           const isFullyPaid2 = isMoc2 || (isPaidMode2 && collected2 > 0 && Math.abs(net2 - collected2) <= 1);
           const isAssigned2 = !isMoc2 && !isFBR2 && !isCredit2 && !isDelPend2 && !isPaidMode2 && !isUnpaid2 && (!!selectedBill.driverName || _m2 === 'assigned');
@@ -3878,7 +3885,18 @@ export default function Dashboard() {
                     </span>
                   </div>
                   <div className="w-px bg-border" />
-                  <div className={cn("flex-1 flex flex-col items-center justify-center py-2 px-1 bg-red-50 dark:bg-red-950/30", isDriverMode && "py-1")}>
+                  <div 
+                    onClick={() => {
+                      if (!isBillCurrentlyLocked && !userCannotEditReceivedBill) {
+                        openCreditLineCutPopup();
+                      }
+                    }}
+                    title="Click to edit Line Cut amount"
+                    className={cn(
+                      "flex-1 flex flex-col items-center justify-center py-2 px-1 bg-red-50 dark:bg-red-950/30 cursor-pointer hover:bg-red-100 dark:hover:bg-red-900/40 transition-colors", 
+                      isDriverMode && "py-1"
+                    )}
+                  >
                     <span className="text-[8px] sm:text-[9px] font-black text-red-500 uppercase tracking-wide leading-none mb-0.5">Line Cut</span>
                     <span className={cn("text-[16px] sm:text-[17px] font-black text-red-600 leading-none", isDriverMode && "text-[13px] sm:text-[14px]")}>₹{lineCut2.toLocaleString('en-IN')}</span>
                   </div>
@@ -4548,10 +4566,12 @@ export default function Dashboard() {
         }}
         onSaveNormal={(enteredLineCut, discrepancyReason) => {
           setShowLineCutPopup(false);
+          setLcInputVal(String(enteredLineCut));
           doSave(enteredLineCut, null, discrepancyReason);
         }}
         onSaveAsOutstanding={(enteredLineCut, discrepancyReason) => {
           setShowLineCutPopup(false);
+          setLcInputVal(String(enteredLineCut));
           doSaveAsOutstanding(enteredLineCut, discrepancyReason);
         }}
         initialLcAsOutstanding={lcAsOutstanding}

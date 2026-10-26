@@ -389,14 +389,18 @@ function initSupabaseRealtime(force = false) {
 
   try {
     realtimeChannel = supabase
-      .channel('vitratrack_realtime_all')
+      .channel('vitratrack_realtime_all', {
+        config: {
+          broadcast: { self: false, ack: false },
+        },
+      })
       // 1. Instant cross-device broadcast for manual bill entries & payments
       .on(
         'broadcast',
         { event: 'bill_updated' },
         (payload: any) => {
           const incomingBill = payload?.payload?.bill;
-          if (incomingBill) {
+          if (incomingBill && !isDirtyPending(incomingBill.id, incomingBill.billNo)) {
             applyBillsDelta([incomingBill]);
             readLocal(true);
           }
@@ -408,8 +412,11 @@ function initSupabaseRealtime(force = false) {
         (payload: any) => {
           const incomingBills = payload?.payload?.bills;
           if (Array.isArray(incomingBills) && incomingBills.length > 0) {
-            applyBillsDelta(incomingBills);
-            readLocal(true);
+            const safe = incomingBills.filter((b: any) => !isDirtyPending(b.id, b.billNo));
+            if (safe.length > 0) {
+              applyBillsDelta(safe);
+              readLocal(true);
+            }
           }
         }
       )
@@ -428,8 +435,16 @@ function initSupabaseRealtime(force = false) {
             const old = payload.old as { id?: string; bill_no?: string };
             if (isDirtyPending(old.id, old.bill_no)) return;
             applyRealtimeBillChange('DELETE', undefined, old.id, old.bill_no);
-            scheduleReadLocal();
-          } else if (!billChangeTimer) {
+            scheduleReadLocal(true);
+          } else if (payload.new && (payload.new as any).id) {
+            const newRow = payload.new as Record<string, unknown>;
+            if (!isDirtyPending(newRow.id as string, newRow.bill_no as string)) {
+              const mapped = mapBillFromSupabase(newRow);
+              applyBillsDelta([mapped]);
+              scheduleReadLocal(true);
+            }
+          }
+          if (!billChangeTimer) {
             // Coalesce imports into one paginated read, not thousands of array copies.
             billChangeTimer = setTimeout(() => {
               billChangeTimer = null;
