@@ -304,6 +304,16 @@ export default function DriverPage() {
           let COL_BILL_NO = findCol(BILL_KEYWORDS);
           let COL_LINECUT = findCol(LINECUT_KEYWORDS);
           let COL_USHOP = findCol(USHOP_KEYWORDS);
+          if (COL_USHOP === -1) {
+            for (let c = range.s.c; c <= range.e.c; c++) {
+              const cell = ws[XLSX.utils.encode_cell({ r: headerRow, c })] as { v?: unknown } | undefined;
+              const val = String(cell?.v || '').toLowerCase().trim();
+              if (val.includes('ushop') || val.includes('redemption')) {
+                COL_USHOP = c;
+                break;
+              }
+            }
+          }
           // Amount column must NOT match the line cut column or line cut keywords
           let COL_AMT = findCol(AMT_KEYWORDS, ['line', 'cut', 'short', 'diff', 'deduct', 'discount', 'adj', 'damage', 'return', 'less', 'claim']);
           if (COL_AMT === COL_LINECUT) COL_AMT = -1;

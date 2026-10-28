@@ -3912,6 +3912,18 @@ export default function Dashboard() {
                   </div>
                 </div>
 
+                {/* ── Ushop Redemption Banner (if present) ── */}
+                {(Number(selectedBill.ushopAmount) || 0) > 0 && (
+                  <div className="flex items-center justify-between gap-2 bg-emerald-100 dark:bg-emerald-950/60 border border-emerald-400 dark:border-emerald-700 text-emerald-950 dark:text-emerald-100 px-3 py-1.5 rounded-xl shadow-xs text-xs font-black mt-1.5">
+                    <span className="text-[10px] font-black uppercase text-emerald-800 dark:text-emerald-300 flex items-center gap-1 shrink-0">
+                      🏷️ USHOP REDEMPTION:
+                    </span>
+                    <span className="font-black text-emerald-800 dark:text-emerald-200">
+                      ₹{Number(selectedBill.ushopAmount).toLocaleString('en-IN')}
+                    </span>
+                  </div>
+                )}
+
                 {/* ── Bill Note Banner (if present) ── */}
                 {(selectedBill.discrepancyReason || billNote) && (
                   <div className="flex items-center gap-2 bg-amber-50 dark:bg-amber-950/40 border border-amber-300/80 dark:border-amber-700/60 text-amber-900 dark:text-amber-200 px-3 py-1.5 rounded-xl shadow-xs text-xs font-bold mt-1.5">

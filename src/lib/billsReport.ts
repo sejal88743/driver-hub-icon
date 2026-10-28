@@ -124,7 +124,7 @@ function parseRegister(data: ArrayBuffer, XLSX: any): {
   const billDateKey = findKey(keys, /billdate/i, /bill\s*date/i, /sales\s*return\s*date/i, /^date$/i, /invoice\s*date/i, /doc\s*date/i, /document\s*date/i);
   const cashDiscKey = findKey(keys, /^cash\s*disc/i, /^cash\s*discount/i, /^cashdisc/i, /^cash_disc/i, /^cd$/i, /cash\s*disc/i, /cash\s*discount/i, /^cash\s*disc\s*amt/i);
   const adjustmentsKey = findKey(keys, /^adjustment/i, /^adjustments/i, /^adjust/i, /^adj$/i, /^adj\s*amt/i, /adjustment/i, /adjustments/i, /^adj\s*amount/i, /total\s*adj/i);
-  const ushopKey = findKey(keys, /^ushop\s*redemption/i, /ushop\s*redemption/i, /u\s*shop\s*redemption/i, /u-shop\s*redemption/i, /^ushop/i, /ushop\s*amt/i, /ushop\s*amount/i, /^u\s*shop$/i);
+  const ushopKey = findKey(keys, /^ushop\s*redemption/i, /ushop\s*redemption/i, /u\s*shop\s*redemption/i, /u-shop\s*redemption/i, /^ushop/i, /ushop\s*amt/i, /ushop\s*amount/i, /^u\s*shop$/i) || keys.find(k => /ushop/i.test(k) || /redemption/i.test(k));
 
   if (!billNoKey || !billValueKey) {
     throw new Error(`Required columns not found (BillRefNo, BillValue). Found: ${keys.slice(0, 14).join(', ')}`);
@@ -176,7 +176,9 @@ function parseRegister(data: ArrayBuffer, XLSX: any): {
     }
     if (ushopKey) {
       group.hasUshop = true;
-      group.ushopAmount += rowUshop;
+      if (rowUshop > 0) {
+        group.ushopAmount = Math.max(group.ushopAmount, rowUshop);
+      }
     }
 
     if (billValue < 0) {

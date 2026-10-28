@@ -1296,6 +1296,7 @@ export default function DriverDayTable({ bills, selectedDriver, displayDate, onS
                   (!!b.driverName && (normDateStr(b.deliveryDate) === normDateStr(displayDate) || normDateStr(b.date) === normDateStr(displayDate) || !b.deliveryDate))
                 );
 
+              const isUshopBill = (Number(b.ushopAmount) || 0) > 0;
               const statusLabel = isFBR ? 'FBR' : isDelPend ? 'DEL PEND' : isCredit ? 'CREDIT' : isPaidElsewhere ? 'REC' : isPaid ? 'PAID' : isAssignedToday ? 'ASSIGNED' : 'UNPAID';
               const statusCls = isFBR ? 'bg-red-500 text-white' : isDelPend ? 'bg-amber-400 text-black' : isCredit ? 'bg-green-500 text-white' : isPaidElsewhere ? 'bg-indigo-500 text-white' : isPaid ? 'bg-emerald-100 text-emerald-700' : isAssignedToday ? 'bg-blue-600 text-white' : 'bg-red-100 text-red-700';
               const isMatchedRow = String(b.discrepancyReason || (b as any).discrepancy_reason || (b as any).discrepancy || '').toUpperCase().includes('MATCHED');
@@ -1306,6 +1307,7 @@ export default function DriverDayTable({ bills, selectedDriver, displayDate, onS
                   className={cn(
                     "transition-colors cursor-pointer",
                     isChecked ? "bg-blue-100" :
+                    isUshopBill ? "bg-emerald-100 hover:bg-emerald-200 dark:bg-emerald-950/40 dark:hover:bg-emerald-900/50 text-emerald-950 dark:text-emerald-100 font-black border-l-4 border-l-emerald-600" :
                     isFBR ? "bg-red-200 hover:bg-red-300" :
                     isDelPend ? "bg-yellow-100 hover:bg-yellow-200" :
                     isCredit ? "bg-green-100 hover:bg-green-200" :
@@ -1326,15 +1328,23 @@ export default function DriverDayTable({ bills, selectedDriver, displayDate, onS
                         : <Square className="w-2.5 h-2.5 text-primary/40" />}
                     </div>
                   </td>
-                  <td className="px-0.5 py-0 font-black">
-                    <span className={cn((Number(b.ushopAmount) || 0) > 0 && "text-purple-700 dark:text-purple-400")} title={(Number(b.ushopAmount) || 0) > 0 ? `Ushop Redemption: ₹${b.ushopAmount}` : undefined}>
-                      {((Number(b.ushopAmount) || 0) > 0 ? '*' : '') + getDisplayBillNo(b)}
+                  <td className={cn("px-0.5 py-0 font-black", isUshopBill && "text-emerald-950 dark:text-emerald-200")}>
+                    <span 
+                      className={cn("inline-flex items-center gap-1 font-black", isUshopBill ? "text-emerald-900 dark:text-emerald-200 font-black" : "")} 
+                      title={isUshopBill ? `Ushop Redemption: ₹${b.ushopAmount}` : undefined}
+                    >
+                      {getDisplayBillNo(b)}
+                      {isUshopBill && (
+                        <span className="text-[7px] font-black bg-emerald-600 text-white px-1 py-0.2 rounded uppercase">
+                          Ushop ₹{Number(b.ushopAmount).toLocaleString('en-IN')}
+                        </span>
+                      )}
                     </span>
                   </td>
-                  <td className="px-0.5 py-0 font-black truncate max-w-[110px]" title={b.partyName || ''}>
+                  <td className={cn("px-0.5 py-0 font-black truncate max-w-[110px]", isUshopBill && "text-emerald-950 dark:text-emerald-200 font-black")} title={b.partyName || ''}>
                     <span className={cn(
                       "truncate inline-block max-w-full px-1 py-0.5 rounded font-black",
-                      isGreenParty(b.partyCode, b.partyName) ? "bg-emerald-300 text-emerald-950 dark:bg-emerald-800 dark:text-emerald-100 border border-emerald-500 shadow-sm" : ""
+                      isGreenParty(b.partyCode, b.partyName) ? "bg-emerald-300 text-emerald-950 dark:bg-emerald-800 dark:text-emerald-100 border border-emerald-500 shadow-sm" : (isUshopBill ? "text-emerald-950 dark:text-emerald-200 font-black" : "")
                     )}>
                       {(b.partyName || '—').slice(0, 14)}
                     </span>
@@ -1344,8 +1354,8 @@ export default function DriverDayTable({ bills, selectedDriver, displayDate, onS
                       </div>
                     )}
                   </td>
-                  <td className="px-0.5 py-0 text-right font-black">₹{b.billNetAmt.toLocaleString('en-IN')}</td>
-                  <td className="px-0.5 py-0 text-center font-black text-muted-foreground">{b.deliveryDate || '—'}</td>
+                  <td className={cn("px-0.5 py-0 text-right font-black", isUshopBill ? "text-emerald-950 dark:text-emerald-200 font-black" : "")}>₹{b.billNetAmt.toLocaleString('en-IN')}</td>
+                  <td className={cn("px-0.5 py-0 text-center font-black", isUshopBill ? "text-emerald-900 dark:text-emerald-300" : "text-muted-foreground")}>{b.deliveryDate || '—'}</td>
                   <td className="px-0.5 py-0 text-right font-black text-emerald-600">{!isSnapshot && eff.cash > 0 ? `₹${eff.cash.toLocaleString('en-IN')}` : '—'}</td>
                   <td className={cn("px-0.5 py-0 text-right font-black text-blue-600", !isSnapshot && isBillStatementMatched(b) && eff.upi > 0 && "bg-yellow-300 dark:bg-yellow-900 text-yellow-950 dark:text-yellow-100 border border-yellow-500 rounded-sm font-black px-1")}>{!isSnapshot && eff.upi > 0 ? `₹${eff.upi.toLocaleString('en-IN')}` : '—'}</td>
                   <td className={cn("px-0.5 py-0 text-right font-black text-violet-600", !isSnapshot && isBillStatementMatched(b) && eff.chq > 0 && "bg-yellow-300 dark:bg-yellow-900 text-yellow-950 dark:text-yellow-100 border border-yellow-500 rounded-sm font-black px-1")}>{!isSnapshot && eff.chq > 0 ? `₹${eff.chq.toLocaleString('en-IN')}${b.chequeNo ? ` #${b.chequeNo}` : ''}` : '—'}</td>
@@ -1362,6 +1372,11 @@ export default function DriverDayTable({ bills, selectedDriver, displayDate, onS
                       <span className={cn("px-1.5 py-px rounded text-[7px] font-black", statusCls)}>
                         {statusLabel}
                       </span>
+                      {isUshopBill && (
+                        <span className="px-1 py-px rounded text-[6.5px] font-black bg-emerald-700 text-white shadow-xs">
+                          USHOP
+                        </span>
+                      )}
                       {selectedDriver === 'OWNER' && b.driverName && (
                         <span className="text-[6.5px] font-black text-muted-foreground leading-none truncate max-w-[64px] uppercase">
                           {b.driverName}

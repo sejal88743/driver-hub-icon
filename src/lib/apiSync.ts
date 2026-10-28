@@ -176,7 +176,28 @@ export function mapBillFromSupabase(row: Record<string, unknown>): Bill {
     updatedAt:          o(row.updated_at ?? row.updatedAt),
     user:               o(row.user),
     owner:              o(row.owner),
-    ushopAmount:        n(row.ushopAmount ?? row.ushop_amount) || undefined,
+    ushopAmount:        (() => {
+      const direct = n(row.ushopAmount ?? row.ushop_amount);
+      if (direct > 0) return direct;
+      const rawHist = (row.editHistory ?? row.edit_history);
+      if (Array.isArray(rawHist)) {
+        for (let i = rawHist.length - 1; i >= 0; i--) {
+          const entry = rawHist[i] as any;
+          if (!entry) continue;
+          if (entry.ushopAmount != null && !isNaN(Number(entry.ushopAmount)) && Number(entry.ushopAmount) > 0) {
+            return Number(entry.ushopAmount);
+          }
+          if (entry.action === 'ushop' && entry.amount != null && !isNaN(Number(entry.amount)) && Number(entry.amount) > 0) {
+            return Number(entry.amount);
+          }
+          if (typeof entry.changes === 'string' && entry.changes.includes('ushopAmount')) {
+            const m = entry.changes.match(/ushopAmount[:=]\s*(\d+(\.\d+)?)/i);
+            if (m && !isNaN(Number(m[1]))) return Number(m[1]);
+          }
+        }
+      }
+      return undefined;
+    })(),
   };
 }
 
@@ -221,7 +242,31 @@ function billToSupabase(b: Partial<Bill>): Record<string, unknown> {
   if ('editDate'          in b) out.edit_date           = b.editDate ?? null;
   if ('user'              in b) out.user                = b.user ?? null;
   if ('owner'             in b) out.owner               = b.owner ?? null;
-  if ('ushopAmount'       in b) out.ushop_amount        = (b.ushopAmount != null && !isNaN(Number(b.ushopAmount))) ? Number(b.ushopAmount) : null;
+  if ('ushopAmount' in b || (b.ushopAmount != null && !isNaN(Number(b.ushopAmount)))) {
+    const val = (b.ushopAmount != null && !isNaN(Number(b.ushopAmount))) ? Number(b.ushopAmount) : 0;
+    out.ushop_amount = val > 0 ? val : null;
+    if (val > 0) {
+      const eh = Array.isArray(out.edit_history) ? [...out.edit_history] : (Array.isArray(b.editHistory) ? [...b.editHistory] : []);
+      const existingIdx = eh.findIndex((e: any) => e.action === 'ushop' || (typeof e.changes === 'string' && e.changes.includes('ushopAmount')));
+      const entry = {
+        seq: eh.length + 1,
+        date: new Date().toLocaleDateString('en-GB'),
+        time: new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }),
+        by: 'SYSTEM',
+        role: 'system',
+        action: 'ushop',
+        amount: val,
+        ushopAmount: val,
+        changes: `ushopAmount: ${val}`,
+      };
+      if (existingIdx >= 0) {
+        eh[existingIdx] = { ...eh[existingIdx], amount: val, ushopAmount: val, changes: `ushopAmount: ${val}` };
+      } else {
+        eh.push(entry);
+      }
+      out.edit_history = eh;
+    }
+  }
 
   // Always stamp updated_at so all devices detect real-time incremental changes instantly
   if ('updatedAt' in b && b.updatedAt) out.updated_at = b.updatedAt;
