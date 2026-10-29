@@ -2134,30 +2134,54 @@ export default function Dashboard() {
 
     console.log(`[doSave] Saving ${selectedBillNo} | mode=${finalMode} | amount=${totalCollected} | isMoc=${isMoc} | bills in memory=${getBills().length} | bill in memory=${!!getBills().find(b=>b.billNo===selectedBillNo)}`);
 
-    // If lcOverride provided (from line cut popup), use it; else calculate Line Cut = Bill Amt - Rec Amt
+    // USER RULE:
+    // ENTRY ME AGAR LINE CUT HE TO DIFF =0 HOGA
+    // PAR FAST TIME PAYMENT ADD HO RAHA HE OR REC DATE NAHI TO VAH LINE CUT AMT VAH BILL ME ADD HONA CHAHIYE
+    // RE ENTRY ME UPDATE NAHI HOGA
+    const hasExistingRecDate = !!selectedBill?.paymentDate && selectedBill.paymentDate.trim() !== '' && selectedBill.paymentDate !== '—';
+    const isFirstTimePayment = !hasExistingRecDate;
+
     const existingBillLc = (selectedBill?.lineCutAmt || 0) || Number(selectedBill?.cancelLine) || 0;
-    const maxAllowedLc = selectedBill ? Math.max(0, selectedBill.billNetAmt - totalCollected) : 0;
     let lineCutToSave: number | null = null;
     if (isMoc) {
       lineCutToSave = 0;
-    } else if (finalMode === 'Credit') {
-      lineCutToSave = (lcOverride !== undefined && lcOverride !== null) 
-        ? Math.min(lcOverride, maxAllowedLc) 
-        : (lcInputVal !== '' ? Math.min(parseAmountExpression(lcInputVal), maxAllowedLc) : 0);
     } else if (finalMode === 'FBR') {
       lineCutToSave = selectedBill ? selectedBill.billNetAmt : null;
+    } else if (finalMode === 'Credit') {
+      lineCutToSave = (lcOverride !== undefined && lcOverride !== null) 
+        ? lcOverride 
+        : (lcInputVal !== '' ? parseAmountExpression(lcInputVal) : (existingBillLc > 0 ? existingBillLc : 0));
     } else if (lcOverride !== undefined && lcOverride !== null) {
-      lineCutToSave = Math.min(lcOverride, maxAllowedLc);
+      lineCutToSave = lcOverride;
     } else if (lcInputVal !== '') {
-      lineCutToSave = Math.min(parseAmountExpression(lcInputVal), maxAllowedLc);
-    } else if (totalCollected > 0 && selectedBill) {
+      lineCutToSave = parseAmountExpression(lcInputVal);
+    } else if (isFirstTimePayment && totalCollected > 0 && selectedBill && totalCollected < selectedBill.billNetAmt) {
+      // FAST TIME PAYMENT: shortfall bill me line cut ban kar add hoga!
       lineCutToSave = Math.max(0, selectedBill.billNetAmt - totalCollected);
     } else {
+      // RE-ENTRY: existing line cut update nahi hoga!
       lineCutToSave = existingBillLc > 0 ? existingBillLc : null;
     }
 
     // recDateParam takes priority (avoids stale-closure issue when called from confirmRecDateAndSave)
     const isZeroColMode = finalMode === 'Credit' || finalMode === 'Unpaid' || finalMode === 'FBR' || finalMode === 'Del Pending' || totalCollected === 0;
+
+    // Strict Diff Guard: Net Payable (billNetAmt - lineCut) must equal totalCollected.
+    // If there is ANY difference, Dashboard entry MUST NOT save!
+    if (!isMoc && !isZeroColMode && selectedBill && totalCollected > 0) {
+      const netPayable = Math.max(0, (selectedBill.billNetAmt || 0) - (lineCutToSave || 0));
+      const diffVal = Math.round((netPayable - totalCollected) * 100) / 100;
+      if (Math.abs(diffVal) > 0.01) {
+        setSaving(false);
+        setSaveError(`Diff ₹${Math.abs(diffVal)} hai! Net Payable aur Received barabar hone chahiye. Entry save nahi hogi.`);
+        toast({
+          title: 'Entry Save Nahi Hogi',
+          description: `Diff ₹${Math.abs(diffVal)} hai! Net Payable (₹${netPayable.toLocaleString('en-IN')}) aur Received (₹${totalCollected.toLocaleString('en-IN')}) match hona zaroori hai.`,
+          variant: 'destructive',
+        });
+        return;
+      }
+    }
     const effectiveRecDate = isDriverRole
       ? getTodayISO()
       : isZeroColMode
@@ -2570,33 +2594,30 @@ export default function Dashboard() {
 
     // Existing line cut on this bill (if any)
     const existingLc = Math.max(0, (selectedBill?.lineCutAmt || 0) || Number(selectedBill?.cancelLine) || 0);
+    const hasExistingRecDate = !!selectedBill?.paymentDate && selectedBill.paymentDate.trim() !== '' && selectedBill.paymentDate !== '—';
+    const isFirstTimePayment = !hasExistingRecDate;
 
-    // USER RULE:
-    // line cut amt jab bill entry horaha he to change live nahi hoga vah save karne par hi change hoga
-    // or agar ex: pahlese line cut amt 100 he or entry me rec amount add kar ne par 100 ke alava or koi amount line cut ka ho raha he to comfomation pop ke bad save hoga.
-    if (!isSpecial && netAmt != null && totalCollected > 0 && totalCollected <= netAmt) {
-      const calculatedNewLc = Math.max(0, netAmt - totalCollected);
-      if (existingLc > 0 && calculatedNewLc !== existingLc) {
-        setLcChangeDetails({
-          existingLc,
-          newLc: calculatedNewLc,
-          totalCollected,
-          billNetAmt: netAmt,
-          recDateParam: recDate,
-        });
-        setShowLcChangeConfirm(true);
-        return;
-      }
+    let activeLc = lcInputVal !== '' ? parseAmountExpression(lcInputVal) : existingLc;
+    if (isFirstTimePayment && lcInputVal === '' && netAmt != null && totalCollected > 0 && totalCollected < netAmt) {
+      // First time payment without rec date: shortfall becomes the line cut
+      activeLc = Math.max(0, netAmt - totalCollected);
+    }
+
+    const netPayable = Math.max(0, (netAmt ?? 0) - activeLc);
+    const diffVal = Math.round((netPayable - totalCollected) * 100) / 100;
+
+    // USER RULE: DIFF HOGA TO DASHBOARD KA ENTRY SAVE NAHI HOGA
+    if (!isSpecial && !isMoc && selectedBill && totalCollected > 0 && Math.abs(diffVal) > 0.01) {
+      setSaveError(`Diff ₹${Math.abs(diffVal)} hai! Diff hone par entry save nahi hogi.`);
+      toast({
+        title: 'Entry Save Nahi Hogi (Diff Hai)',
+        description: `Diff ₹${Math.abs(diffVal)} hai! Net Payable (₹${netPayable.toLocaleString('en-IN')}) aur Received (₹${totalCollected.toLocaleString('en-IN')}) match hona zaroori hai.`,
+        variant: 'destructive',
+      });
+      return;
     }
 
     if (isSpecial) doSave(null, recDate);
-    else if (netAmt != null && totalCollected < netAmt && totalCollected > 0) {
-      // Partial payment (no previous line cut) → Line Cut automatically calculated as: Bill Net Amt - Received Amt
-      const calculatedLc = Math.max(0, netAmt - totalCollected);
-      setLcInputVal(String(calculatedLc));
-      setLcAsOutstanding(false);
-      setShowLineCutPopup(true);
-    }
     else doSave(null, recDate);
   }
 
@@ -2640,6 +2661,29 @@ export default function Dashboard() {
     if (!hasAnyAmount && !isMoc && !isSpecial && !isChqMetaOnlyEdit) {
       toast({ title: 'Amount Darj Karein', description: 'Cash / GPay / Cheque amount darj karein ya FBR / Credit / Del Pending chunein', variant: 'destructive' });
       cashInputRef.current?.focus();
+      return;
+    }
+
+    // USER RULE: DIFF HOGA TO DASHBOARD KA ENTRY SAVE NAHI HOGA
+    const existingBillLcClick = (selectedBill?.lineCutAmt || 0) || Number(selectedBill?.cancelLine) || 0;
+    const hasExistingRecDateClick = !!selectedBill?.paymentDate && selectedBill.paymentDate.trim() !== '' && selectedBill.paymentDate !== '—';
+    const isFirstTimePaymentClick = !hasExistingRecDateClick;
+
+    let activeLcClick = lcInputVal !== '' ? parseAmountExpression(lcInputVal) : existingBillLcClick;
+    if (isFirstTimePaymentClick && lcInputVal === '' && (selectedBill?.billNetAmt || 0) > 0 && totalCollected > 0 && totalCollected < (selectedBill?.billNetAmt || 0)) {
+      activeLcClick = Math.max(0, (selectedBill?.billNetAmt || 0) - totalCollected);
+    }
+
+    const netPayableClick = Math.max(0, (selectedBill?.billNetAmt || 0) - activeLcClick);
+    const diffClick = Math.round((netPayableClick - totalCollected) * 100) / 100;
+
+    if (!isMoc && !isSpecial && !isChqMetaOnlyEdit && !isEditLockedChqMeta && selectedBill && totalCollected > 0 && Math.abs(diffClick) > 0.01) {
+      toast({
+        title: 'Entry Save Nahi Hogi (Diff Hai)',
+        description: `Diff ₹${Math.abs(diffClick)} hai! Net Payable (₹${netPayableClick.toLocaleString('en-IN')}) aur Received (₹${totalCollected.toLocaleString('en-IN')}) barabar hona zaroori hai.`,
+        variant: 'destructive',
+      });
+      setSaveError(`Diff ₹${Math.abs(diffClick)} hai! Diff hone par entry save nahi hogi.`);
       return;
     }
 
@@ -3086,7 +3130,21 @@ export default function Dashboard() {
   const isDateMatched = isMocCurrent || !selectedBill || isOwnerOrUserSelected ||
     normDateStr(selectedBill.deliveryDate || selectedBill.date) === normDateStr(displayDate);
 
-  const canSave = !saving && !userCannotEditReceivedBill && (
+  const existingBillLcVal = (selectedBill?.lineCutAmt || 0) || Number(selectedBill?.cancelLine) || 0;
+  const hasExistingRecDateVal = !!selectedBill?.paymentDate && selectedBill.paymentDate.trim() !== '' && selectedBill.paymentDate !== '—';
+  const isFirstTimePaymentVal = !hasExistingRecDateVal;
+
+  let currentLcVal = lcInputVal !== '' ? parseAmountExpression(lcInputVal) : existingBillLcVal;
+  if (isFirstTimePaymentVal && lcInputVal === '' && (selectedBill?.billNetAmt || 0) > 0 && totalCollected > 0 && totalCollected < (selectedBill?.billNetAmt || 0)) {
+    currentLcVal = Math.max(0, (selectedBill?.billNetAmt || 0) - totalCollected);
+  }
+
+  const currentNetPayableVal = Math.max(0, (selectedBill?.billNetAmt || 0) - currentLcVal);
+  const currentDiffVal = Math.round((currentNetPayableVal - totalCollected) * 100) / 100;
+  const isSpecialPaymentMode = paymentMode === 'FBR' || paymentMode === 'Credit' || paymentMode === 'Del Pending' || paymentMode === 'Unpaid';
+  const hasDiff = !isMocCurrent && !isSpecialPaymentMode && !isChqMetaOnlyEdit && !isEditLockedChqMeta && !!selectedBill && totalCollected > 0 && Math.abs(currentDiffVal) > 0.01;
+
+  const canSave = !saving && !userCannotEditReceivedBill && !hasDiff && (
     (selectedBillNo && hasDriverSelection && chqValid &&
      (totalCollected > 0 || isMocCurrent || paymentMode === 'FBR' || paymentMode === 'Credit' || paymentMode === 'Del Pending' || paymentMode === 'Unpaid') &&
      !isLockedForSave &&
@@ -3695,25 +3753,27 @@ export default function Dashboard() {
               </div>
             )}
             </div>
-            {/* Multi Bill Entry Button */}
-            <button
-              onClick={() => {
-                if (!selectedDriver) {
-                  toast({
-                    title: 'Driver Select Karein',
-                    description: 'Multi bill entry ke liye pehle driver select karein.',
-                    variant: 'destructive',
-                  });
-                  return;
-                }
-                setShowMultiBillModal(true);
-              }}
-              title="Multi Bill Entry"
-              className="shrink-0 h-9 px-2.5 flex items-center gap-1 bg-primary/10 hover:bg-primary/20 text-primary rounded-xl border border-primary/20 transition-colors shadow-sm"
-            >
-              <ListPlus className="w-4 h-4" />
-              <span className="text-[9px] font-black uppercase tracking-widest">Multi</span>
-            </button>
+            {/* Multi Bill Entry Button - OWNER ONLY */}
+            {getRole() === 'owner' && (
+              <button
+                onClick={() => {
+                  if (!selectedDriver) {
+                    toast({
+                      title: 'Driver Select Karein',
+                      description: 'Multi bill entry ke liye pehle driver select karein.',
+                      variant: 'destructive',
+                    });
+                    return;
+                  }
+                  setShowMultiBillModal(true);
+                }}
+                title="Multi Bill Entry"
+                className="shrink-0 h-9 px-2.5 flex items-center gap-1 bg-primary/10 hover:bg-primary/20 text-primary rounded-xl border border-primary/20 transition-colors shadow-sm cursor-pointer"
+              >
+                <ListPlus className="w-4 h-4" />
+                <span className="text-[9px] font-black uppercase tracking-widest">Multi</span>
+              </button>
+            )}
           </div>
         </div>
 
@@ -3734,13 +3794,19 @@ export default function Dashboard() {
             || (!isFBR2 && !isCredit2 && !isDelPend2 && !isUnpaid2 && !!selectedBill.paymentDate && (selectedBill.collectedAmount || 0) > 0)
             || (!isFBR2 && !isCredit2 && !isDelPend2 && !isUnpaid2 && _liveTotal > 0);
           const savedLineCut2 = (selectedBill.lineCutAmt || 0) || Number(selectedBill.cancelLine) || 0;
+          const hasExistingRecDate2 = !!selectedBill.paymentDate && selectedBill.paymentDate.trim() !== '' && selectedBill.paymentDate !== '—';
+          const isBillFirstTime2 = !hasExistingRecDate2;
           // Live line cut amount: reflects lcInputVal immediately whether new or old bill is selected
           const liveLcParsed = lcInputVal !== '' ? parseAmountExpression(lcInputVal) : null;
+          const firstTimeAutoLc2 = (isBillFirstTime2 && liveLcParsed === null && _liveTotal > 0 && (selectedBill.billNetAmt || 0) > 0 && _liveTotal < selectedBill.billNetAmt)
+            ? Math.max(0, selectedBill.billNetAmt - _liveTotal)
+            : 0;
+
           const lineCut2 = isMoc2 
             ? 0 
             : (isFBR2 
                 ? selectedBill.billNetAmt 
-                : (liveLcParsed !== null ? liveLcParsed : savedLineCut2));
+                : (liveLcParsed !== null ? liveLcParsed : (firstTimeAutoLc2 > 0 ? firstTimeAutoLc2 : savedLineCut2)));
           const net2 = isMoc2 ? (selectedBill.billNetAmt || _liveTotal || 0) : Math.max(0, selectedBill.billNetAmt - lineCut2);
           const collected2 = _liveTotal > 0 ? _liveTotal : (selectedBill.collectedAmount || 0);
           const isFullyPaid2 = isMoc2 || (isPaidMode2 && collected2 > 0 && Math.abs(net2 - collected2) <= 1);
@@ -4283,6 +4349,18 @@ export default function Dashboard() {
                   )}
                 </div>
 
+                {hasDiff && (
+                  <div className="flex items-center justify-between gap-2 bg-red-500/10 border-2 border-red-500/60 text-red-600 dark:text-red-400 px-3 py-2 rounded-xl text-xs font-black animate-pulse">
+                    <div className="flex items-center gap-1.5 min-w-0">
+                      <AlertTriangle className="w-4 h-4 shrink-0 text-red-600 dark:text-red-400" />
+                      <span className="truncate">DIFF HAI: ₹{Math.abs(currentDiffVal).toLocaleString('en-IN')} (Entry Save Nahi Hogi)</span>
+                    </div>
+                    <span className="text-[10px] font-bold text-red-500/90 uppercase tracking-wide shrink-0">
+                      Net: ₹{currentNetPayableVal.toLocaleString('en-IN')} ≠ Rec: ₹{totalCollected.toLocaleString('en-IN')}
+                    </span>
+                  </div>
+                )}
+
                 <div className="flex gap-2">
                   {!isDriverMode && (
                     <Button
@@ -4337,15 +4415,22 @@ export default function Dashboard() {
                     disabled={saving}
                     className={cn(
                       "font-black uppercase shadow-lg transition-all",
-                      canSave
-                        ? "bg-primary hover:bg-primary/90 text-primary-foreground shadow-primary/25 cursor-pointer ring-1 ring-primary/40"
-                        : "bg-primary/60 text-primary-foreground/90 hover:bg-primary/70 cursor-pointer",
+                      hasDiff
+                        ? "bg-red-600 hover:bg-red-700 text-white cursor-pointer shadow-red-500/25 ring-1 ring-red-400"
+                        : canSave
+                          ? "bg-primary hover:bg-primary/90 text-primary-foreground shadow-primary/25 cursor-pointer ring-1 ring-primary/40"
+                          : "bg-primary/60 text-primary-foreground/90 hover:bg-primary/70 cursor-pointer",
                       isDriverMode ? "w-full h-9 rounded-xl text-[12px] p-0" : "flex-[1.5] h-10 rounded-xl text-[11px] p-0"
                     )}
-                    title={canSave ? "Save Entry (Enter / Ctrl+S)" : "Click karke dekhein entry me kya baaki hai"}
+                    title={hasDiff ? `Diff ₹${Math.abs(currentDiffVal)} hai! Entry save nahi hogi.` : (canSave ? "Save Entry (Enter / Ctrl+S)" : "Click karke dekhein entry me kya baaki hai")}
                   >
                     {saving ? (
                       <Loader2 className="w-4 h-4 animate-spin" />
+                    ) : hasDiff ? (
+                      <>
+                        <AlertTriangle className="w-4 h-4 mr-1.5 shrink-0" />
+                        Diff ₹{Math.abs(currentDiffVal).toLocaleString('en-IN')} (Cannot Save)
+                      </>
                     ) : (
                       <>
                         <Check className="w-4 h-4 mr-1.5" />
@@ -4555,7 +4640,7 @@ export default function Dashboard() {
         initialDate={pendingDate}
       />
 
-      {showMultiBillModal && (
+      {showMultiBillModal && getRole() === 'owner' && (
         <MultiBillEntryModal
           bills={bills}
           banks={banks}
