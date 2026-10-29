@@ -15,6 +15,15 @@ import {
 import { setGeminiApiKey, setWaBotEnabled } from './waBotConfig.js';
 import { isEventDismissed, markEventDismissed } from './waDedupe.js';
 import { MASTER_SALESPERSON_DIRECTORY, findServerMasterSalesperson } from './salespersonDirectory.js';
+import {
+  handleUrgentMessageSse,
+  createUrgentMessage,
+  dismissUrgentMessage,
+  cancelUrgentMessage,
+  getActiveUrgentMessages,
+  getAllUrgentMessages,
+  initUrgentMessagesTable,
+} from './urgentMessages.js';
 
 const __dirname = process.cwd();
 
@@ -1507,6 +1516,65 @@ app.post('/api/admin/bulk-update-dates', async (req, res) => {
   }
 });
 
+// ─── Urgent Broadcast Messages ─────────────────────────────────────────────
+app.get('/api/urgent-messages/stream', (req, res) => {
+  handleUrgentMessageSse(req, res);
+});
+
+app.get('/api/urgent-messages/active', (req, res) => {
+  const userName = typeof req.query.userName === 'string' ? req.query.userName : undefined;
+  const messages = getActiveUrgentMessages(userName);
+  res.json({ ok: true, messages });
+});
+
+app.get('/api/urgent-messages/all', (_req, res) => {
+  const messages = getAllUrgentMessages();
+  res.json({ ok: true, messages });
+});
+
+app.post('/api/urgent-messages/send', async (req, res) => {
+  try {
+    const { senderName, senderRole, targetUser, text } = req.body || {};
+    if (!text || !String(text).trim()) {
+      return res.status(400).json({ ok: false, error: 'Message text is required' });
+    }
+    const message = await createUrgentMessage({
+      senderName: String(senderName || 'Admin'),
+      senderRole: String(senderRole || 'owner'),
+      targetUser: String(targetUser || 'ALL'),
+      text: String(text).trim(),
+    });
+    res.json({ ok: true, message });
+  } catch (err: any) {
+    console.error('[POST /api/urgent-messages/send]', err);
+    res.status(500).json({ ok: false, error: err?.message || 'Failed to send message' });
+  }
+});
+
+app.post('/api/urgent-messages/dismiss', async (req, res) => {
+  try {
+    const { id, userName } = req.body || {};
+    if (!id) return res.status(400).json({ ok: false, error: 'Message ID is required' });
+    const success = await dismissUrgentMessage(String(id), String(userName || 'User'));
+    res.json({ ok: success });
+  } catch (err: any) {
+    console.error('[POST /api/urgent-messages/dismiss]', err);
+    res.status(500).json({ ok: false, error: err?.message || 'Failed to dismiss message' });
+  }
+});
+
+app.post('/api/urgent-messages/cancel', async (req, res) => {
+  try {
+    const { id } = req.body || {};
+    if (!id) return res.status(400).json({ ok: false, error: 'Message ID is required' });
+    const success = await cancelUrgentMessage(String(id));
+    res.json({ ok: success });
+  } catch (err: any) {
+    console.error('[POST /api/urgent-messages/cancel]', err);
+    res.status(500).json({ ok: false, error: err?.message || 'Failed to cancel message' });
+  }
+});
+
 // ─── Vite Middleware & Static File Serving ─────────────────────────────────
 async function setupViteOrStatic() {
   if (process.env.NODE_ENV !== 'production') {
@@ -1571,6 +1639,7 @@ async function seedMasterSalespersonContacts() {
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`[API] Server running on http://0.0.0.0:${PORT}`);
     seedMasterSalespersonContacts();
+    initUrgentMessagesTable();
     initBotOnBoot();
     startWatchdog();
   });

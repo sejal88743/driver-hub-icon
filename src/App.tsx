@@ -8,6 +8,7 @@ import Dashboard from '@/app/page';
 import LoginPage from '@/app/login/page';
 import { getRole, Role } from '@/lib/auth';
 import { useBillStore } from '@/hooks/use-bill-store';
+import { UrgentMessagePopup } from '@/components/UrgentMessagePopup';
 import F1CalculatorModal from '@/components/F1CalculatorModal';
 import { Calculator } from 'lucide-react';
 
@@ -142,6 +143,7 @@ export default function App() {
       <OfflineGate>
         <ConnectionStatus />
         <Toaster />
+        <UrgentMessagePopup />
         {role && <WhatsAppPaymentPopup />}
         
         {/* Floating calculator button in bottom-left corner for mobile/touch screens */}

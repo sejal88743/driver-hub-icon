@@ -1,8 +1,10 @@
 import { Link, useLocation, useNavigate } from 'react-router-dom';
-import { LayoutDashboard, FileText, TrendingUp, Settings, BarChart2, Truck, LogOut, RotateCcw, History } from 'lucide-react';
+import { LayoutDashboard, FileText, TrendingUp, Settings, BarChart2, Truck, LogOut, RotateCcw, History, Megaphone } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useState, useEffect } from 'react';
 import { getRole, clearRole } from '@/lib/auth';
+import { SendUrgentMessageModal } from '@/components/SendUrgentMessageModal';
+import { subscribeUrgentMessages, getActiveMessages } from '@/lib/urgentMessageStore';
 
 const ownerTabs = [
   { path: '/',            label: 'Dash',    icon: LayoutDashboard },
@@ -54,6 +56,17 @@ export default function TopNav() {
   const { pathname } = useLocation();
   const navigate = useNavigate();
   const role = getRole();
+  const [showMsgModal, setShowMsgModal] = useState(false);
+  const [activeMsgCount, setActiveMsgCount] = useState(0);
+
+  useEffect(() => {
+    setActiveMsgCount(getActiveMessages().length);
+    const unsub = subscribeUrgentMessages(() => {
+      setActiveMsgCount(getActiveMessages().length);
+    });
+    return () => unsub();
+  }, []);
+
   const tabs = role === 'driver'
     ? driverTabs
     : role === 'owner' ? ownerTabs : ownerTabs.filter(t => t.path !== '/history' && t.path !== '/settings');
@@ -64,53 +77,81 @@ export default function TopNav() {
   }
 
   return (
-    <nav className="fixed top-0 left-0 right-0 z-50 bg-card/95 border-b border-border backdrop-blur-lg safe-area-top">
-      <div className="flex items-center h-10 max-w-full mx-auto px-0">
-        <Link to="/" className="flex items-center gap-1 pl-2 pr-1 shrink-0">
-          <img
-            src="/icon-192.png"
-            alt="Confiance"
-            className="w-5 h-5 rounded-md object-cover"
-            onError={e => { (e.target as HTMLImageElement).style.display = 'none'; }}
-          />
-          <span className="text-[8px] font-black uppercase tracking-tighter text-primary leading-none hidden sm:block">Confiance</span>
-        </Link>
-        <div className="flex flex-1 items-center justify-around gap-0.5 px-0.5">
-          {tabs.map(({ path, label, icon: Icon }) => {
-            const active = pathname === path;
-            return (
-              <Link
-                key={path}
-                to={path}
-                className={cn(
-                  "flex flex-col items-center justify-center gap-0.5 px-1 py-1 transition-all duration-200 flex-1 rounded-lg",
-                  active
-                    ? "text-primary font-black bg-primary/10 shadow-xs"
-                    : "text-muted-foreground/80 hover:text-foreground hover:bg-muted/40 font-extrabold"
-                )}
-              >
-                <Icon className={cn("w-4 h-4 shrink-0 transition-transform", active ? "scale-110" : "")} strokeWidth={active ? 2.8 : 2.2} />
-                <span className={cn(
-                  "text-[9px] sm:text-[10px] uppercase leading-none text-center whitespace-nowrap",
-                  active ? "font-black text-primary tracking-tight" : "font-black tracking-tighter"
-                )}>
-                  {label}
+    <>
+      <nav className="fixed top-0 left-0 right-0 z-50 bg-card/95 border-b border-border backdrop-blur-lg safe-area-top">
+        <div className="flex items-center h-10 max-w-full mx-auto px-0">
+          <Link to="/" className="flex items-center gap-1 pl-2 pr-1 shrink-0">
+            <img
+              src="/icon-192.png"
+              alt="Confiance"
+              className="w-5 h-5 rounded-md object-cover"
+              onError={e => { (e.target as HTMLImageElement).style.display = 'none'; }}
+            />
+            <span className="text-[8px] font-black uppercase tracking-tighter text-primary leading-none hidden sm:block">Confiance</span>
+          </Link>
+          <div className="flex flex-1 items-center justify-around gap-0.5 px-0.5">
+            {tabs.map(({ path, label, icon: Icon }) => {
+              const active = pathname === path;
+              return (
+                <Link
+                  key={path}
+                  to={path}
+                  className={cn(
+                    "flex flex-col items-center justify-center gap-0.5 px-1 py-1 transition-all duration-200 flex-1 rounded-lg",
+                    active
+                      ? "text-primary font-black bg-primary/10 shadow-xs"
+                      : "text-muted-foreground/80 hover:text-foreground hover:bg-muted/40 font-extrabold"
+                  )}
+                >
+                  <Icon className={cn("w-4 h-4 shrink-0 transition-transform", active ? "scale-110" : "")} strokeWidth={active ? 2.8 : 2.2} />
+                  <span className={cn(
+                    "text-[9px] sm:text-[10px] uppercase leading-none text-center whitespace-nowrap",
+                    active ? "font-black text-primary tracking-tight" : "font-black tracking-tighter"
+                  )}>
+                    {label}
+                  </span>
+                </Link>
+              );
+            })}
+          </div>
+          <div className="flex items-center gap-1 pr-1">
+            {/* Urgent Message Pop Broadcast button */}
+            <button
+              onClick={() => setShowMsgModal(true)}
+              title="Message Pop / Broadcast (Send 30px Red Bold Popup)"
+              className={cn(
+                "relative flex items-center justify-center w-7 h-7 rounded-lg transition-all cursor-pointer",
+                activeMsgCount > 0
+                  ? "bg-red-600/15 text-red-600 hover:bg-red-600/25 ring-1 ring-red-500/50"
+                  : "hover:bg-muted text-muted-foreground hover:text-foreground"
+              )}
+            >
+              <Megaphone className={cn("w-3.5 h-3.5", activeMsgCount > 0 ? "animate-bounce" : "")} />
+              {activeMsgCount > 0 && (
+                <span className="absolute -top-0.5 -right-0.5 flex h-2 w-2">
+                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75"></span>
+                  <span className="relative inline-flex rounded-full h-2 w-2 bg-red-600"></span>
                 </span>
-              </Link>
-            );
-          })}
+              )}
+            </button>
+
+            <SyncDot />
+            <button
+              onClick={handleLogout}
+              title="Logout"
+              className="flex items-center justify-center w-7 h-7 rounded-lg hover:bg-destructive/10 text-muted-foreground hover:text-destructive transition-colors cursor-pointer"
+            >
+              <LogOut className="w-3.5 h-3.5" />
+            </button>
+          </div>
         </div>
-        <div className="flex items-center gap-1 pr-1">
-          <SyncDot />
-          <button
-            onClick={handleLogout}
-            title="Logout"
-            className="flex items-center justify-center w-7 h-7 rounded-lg hover:bg-destructive/10 text-muted-foreground hover:text-destructive transition-colors"
-          >
-            <LogOut className="w-3.5 h-3.5" />
-          </button>
-        </div>
-      </div>
-    </nav>
+      </nav>
+
+      {/* Broadcast Message Modal */}
+      <SendUrgentMessageModal
+        isOpen={showMsgModal}
+        onClose={() => setShowMsgModal(false)}
+      />
+    </>
   );
 }
