@@ -93,10 +93,10 @@ function readLocal(force = false) {
     return;
   }
   currentSnapshot = {
-    bills: [...b],
-    drivers: [...d],
-    banks: [...bk],
-    summaries: [...s],
+    bills: b,
+    drivers: d,
+    banks: bk,
+    summaries: s,
     loading: false,
     syncing: currentSnapshot.syncing,
   };

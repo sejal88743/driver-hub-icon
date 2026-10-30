@@ -136,9 +136,26 @@ export function WhatsAppPaymentPopup() {
     let reconnectTimer: any = null;
     let unmounted = false;
 
-    function connectSSE() {
+    async function connectSSE() {
       if (unmounted) return;
       try {
+        // Probe endpoint to ensure text/event-stream is available before calling new EventSource
+        try {
+          const probe = await fetch('/api/admin/whatsapp-bot/events', {
+            method: 'GET',
+            headers: { Accept: 'text/event-stream' },
+            signal: typeof AbortSignal.timeout === 'function' ? AbortSignal.timeout(1500) : undefined,
+          });
+          const cType = probe.headers.get('content-type') || '';
+          if (!probe.ok || !cType.includes('text/event-stream')) {
+            // WhatsApp bot SSE is inactive on this origin (e.g. Vite SPA fallback text/html). Do not open EventSource.
+            return;
+          }
+        } catch {
+          return;
+        }
+
+        if (unmounted) return;
         es = new EventSource('/api/admin/whatsapp-bot/events');
 
         es.onmessage = (ev) => {
@@ -228,19 +245,9 @@ export function WhatsAppPaymentPopup() {
         es.onerror = () => {
           try { es?.close(); } catch {}
           es = null;
-          sseErrors++;
-          if (!unmounted) {
-            clearTimeout(reconnectTimer);
-            // If failed repeatedly, back off to 30s to avoid console spam
-            const delay = sseErrors > 2 ? 30000 : 5000;
-            reconnectTimer = setTimeout(connectSSE, delay);
-          }
         };
       } catch {
-        if (!unmounted) {
-          clearTimeout(reconnectTimer);
-          reconnectTimer = setTimeout(connectSSE, 30000);
-        }
+        // Suppress
       }
     }
 

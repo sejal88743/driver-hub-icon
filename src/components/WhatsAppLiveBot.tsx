@@ -47,26 +47,41 @@ export function WhatsAppLiveBot() {
   // Instant real-time SSE listener for QR code generation and connection changes
   useEffect(() => {
     let es: EventSource | null = null;
-    try {
-      es = new EventSource('/api/admin/whatsapp-bot/events');
-      es.onmessage = (ev) => {
-        try {
-          const data = JSON.parse(ev.data);
-          if (data?.type === 'status' && data.status) {
-            setStatus(data.status);
-            if (data.status.selectedGroup) {
-              try {
-                localStorage.setItem('wa_bot_saved_group', JSON.stringify(data.status.selectedGroup));
-              } catch {}
+    let cancelled = false;
+    async function initSSE() {
+      try {
+        const probe = await fetch('/api/admin/whatsapp-bot/events', {
+          method: 'GET',
+          headers: { Accept: 'text/event-stream' },
+          signal: typeof AbortSignal.timeout === 'function' ? AbortSignal.timeout(1500) : undefined,
+        });
+        const cType = probe.headers.get('content-type') || '';
+        if (!probe.ok || !cType.includes('text/event-stream') || cancelled) {
+          return;
+        }
+        es = new EventSource('/api/admin/whatsapp-bot/events');
+        es.onmessage = (ev) => {
+          try {
+            const data = JSON.parse(ev.data);
+            if (data?.type === 'status' && data.status) {
+              setStatus(data.status);
+              if (data.status.selectedGroup) {
+                try {
+                  localStorage.setItem('wa_bot_saved_group', JSON.stringify(data.status.selectedGroup));
+                } catch {}
+              }
             }
-          }
-        } catch {}
-      };
-      es.onerror = () => {
-        try { es?.close(); } catch {}
-      };
-    } catch {}
+          } catch {}
+        };
+        es.onerror = () => {
+          try { es?.close(); } catch {}
+          es = null;
+        };
+      } catch {}
+    }
+    initSSE();
     return () => {
+      cancelled = true;
       try { es?.close(); } catch {}
     };
   }, []);

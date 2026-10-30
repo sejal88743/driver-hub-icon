@@ -2,6 +2,7 @@ import React, { useState, useEffect, useMemo } from 'react';
 import {
   X, Send, Megaphone, AlertTriangle, Users, CheckCircle2,
   Trash2, Radio, User, Clock, BellOff, Volume2, Sparkles,
+  Search, Check,
 } from 'lucide-react';
 import {
   sendUrgentMessage,
@@ -26,73 +27,92 @@ interface SendUrgentMessageModalProps {
 export function SendUrgentMessageModal({ isOpen, onClose }: SendUrgentMessageModalProps) {
   const { toast } = useToast();
   const [activeTab, setActiveTab] = useState<'compose' | 'active'>('compose');
-  const [targetUser, setTargetUser] = useState<string>('ALL');
+  const [selectedTargets, setSelectedTargets] = useState<string[]>(['ALL']);
   const [customUser, setCustomUser] = useState<string>('');
+  const [searchQuery, setSearchQuery] = useState<string>('');
   const [messageText, setMessageText] = useState<string>('');
   const [isSending, setIsSending] = useState(false);
   const [activeMessages, setActiveMessages] = useState<UrgentMessage[]>([]);
   const [cancellingId, setCancellingId] = useState<string | null>(null);
 
-  // Available users/drivers list
-  const [userList, setUserList] = useState<string[]>([]);
+  // Staff users list (ONLY users who have login passwords - DRIVERS STRICTLY EXCLUDED)
+  const [staffList, setStaffList] = useState<string[]>([]);
 
   useEffect(() => {
-    // Gather ONLY internal staff user names (NEVER drivers)
-    const drivers = getDrivers();
-    const names = new Set<string>();
+    // 1. Primary Staff users who have login passwords
+    const staffNames = new Set<string>();
+    staffNames.add('KHUSHI');
+    staffNames.add('TARACHAND');
+    staffNames.add('VIPUL BHAI');
+    staffNames.add('PRATIXA');
 
-    // 1. Add staff users from drivers table where role is 'user' or id starts with 'usr_'
-    for (const d of drivers) {
-      if (d.name && (d.role === 'user' || (d.id && d.id.startsWith('usr_')))) {
-        names.add(d.name.trim());
-      }
-    }
-
-    // 2. Add cached staff names from login
-    try {
-      const staff = JSON.parse(localStorage.getItem('vt_staff_names') || '[]');
-      if (Array.isArray(staff)) {
-        for (const s of staff) if (s) names.add(String(s).trim());
-      }
-    } catch {}
-
-    // 3. Add users from user_passwords settings
+    // 2. Add any additional users from user_passwords settings
     try {
       const pwMap = JSON.parse(localStorage.getItem('vt_user_passwords') || '{}');
       if (pwMap && typeof pwMap === 'object') {
         for (const k of Object.keys(pwMap)) {
-          if (k && k.trim()) names.add(k.trim());
+          if (!k || !k.trim()) continue;
+          const uUpper = k.trim().toUpperCase();
+          if (uUpper.includes('VIPUL')) {
+            staffNames.add('VIPUL BHAI');
+          } else {
+            staffNames.add(uUpper);
+          }
         }
       }
     } catch {}
 
-    // 4. Pratixa (always ensure Pratixa is available)
-    names.add('Pratixa');
-
-    // 5. Exclude any driver names that might have accidentally leaked in
-    const knownDriverNames = new Set<string>();
-    for (const d of drivers) {
-      if (d.name && d.role !== 'user' && !d.id?.startsWith('usr_')) {
-        knownDriverNames.add(d.name.trim().toLowerCase());
-      }
-    }
+    // 3. Add staff users from drivers table where role is explicitly 'user' or id starts with 'usr_'
     try {
-      const dn = JSON.parse(localStorage.getItem('vt_driver_names') || '[]');
-      if (Array.isArray(dn)) {
-        for (const s of dn) if (s) knownDriverNames.add(String(s).trim().toLowerCase());
+      const rawDrivers = getDrivers();
+      for (const d of rawDrivers) {
+        if (!d.name) continue;
+        const tName = d.name.trim().toUpperCase();
+        if (d.role === 'user' || (d.id && d.id.startsWith('usr_'))) {
+          if (tName.includes('VIPUL')) {
+            staffNames.add('VIPUL BHAI');
+          } else {
+            staffNames.add(tName);
+          }
+        }
       }
     } catch {}
 
-    // Filter out driver names from staff list
-    const filteredStaff: string[] = [];
-    for (const n of names) {
-      if (!knownDriverNames.has(n.toLowerCase())) {
-        filteredStaff.push(n);
+    // Strict Driver Exclusion: gather all driver names to ensure ZERO drivers leak in
+    const knownDriverNames = new Set<string>();
+    try {
+      const rawDrivers = getDrivers();
+      for (const d of rawDrivers) {
+        if (d.name && d.role !== 'user' && !d.id?.startsWith('usr_') && d.role !== 'owner' && !d.id?.startsWith('own_')) {
+          knownDriverNames.add(d.name.trim().toUpperCase());
+        }
+      }
+      const dn = JSON.parse(localStorage.getItem('vt_driver_names') || '[]');
+      if (Array.isArray(dn)) {
+        for (const s of dn) if (s) knownDriverNames.add(String(s).trim().toUpperCase());
+      }
+    } catch {}
+
+    // Filter to ONLY staff who are not drivers
+    const cleanStaff: string[] = [];
+    for (const s of staffNames) {
+      if (s && !knownDriverNames.has(s.toUpperCase())) {
+        cleanStaff.push(s);
       }
     }
 
-    const sorted = filteredStaff.sort((a, b) => a.localeCompare(b));
-    setUserList(sorted);
+    // Sort with primary 4 first, then alphabetical
+    const primaryOrder = ['KHUSHI', 'TARACHAND', 'VIPUL BHAI', 'PRATIXA'];
+    cleanStaff.sort((a, b) => {
+      const idxA = primaryOrder.indexOf(a);
+      const idxB = primaryOrder.indexOf(b);
+      if (idxA !== -1 && idxB !== -1) return idxA - idxB;
+      if (idxA !== -1) return -1;
+      if (idxB !== -1) return 1;
+      return a.localeCompare(b);
+    });
+
+    setStaffList(cleanStaff);
   }, [isOpen]);
 
   // Keep active messages in sync
@@ -124,10 +144,46 @@ export function SendUrgentMessageModal({ isOpen, onClose }: SendUrgentMessageMod
     return res;
   }, [activeMessages]);
 
-  const role = getRole();
-  if (!isOpen || role !== 'owner') return null;
+  // Toggle user selection
+  function toggleUserSelection(name: string) {
+    setSelectedTargets((prev) => {
+      if (prev.includes('ALL')) {
+        return [name];
+      }
+      if (prev.includes(name)) {
+        const next = prev.filter((n) => n !== name);
+        return next;
+      } else {
+        return [...prev, name];
+      }
+    });
+  }
 
-  const effectiveTarget = targetUser === '__custom__' ? customUser.trim() : targetUser;
+  const isAllSelected = selectedTargets.includes('ALL');
+
+  // Compute final effective target string
+  const effectiveTargetsList = useMemo(() => {
+    if (isAllSelected) return ['ALL'];
+    const list = [...selectedTargets];
+    if (customUser.trim() && !list.includes(customUser.trim())) {
+      list.push(customUser.trim());
+    }
+    return list;
+  }, [isAllSelected, selectedTargets, customUser]);
+
+  const effectiveTargetString = effectiveTargetsList.join(', ');
+  const effectiveTargetLabel = isAllSelected
+    ? 'Sabhi Staff Users (ALL)'
+    : effectiveTargetsList.length > 0
+    ? effectiveTargetsList.join(', ')
+    : 'Koi user select nahi hai';
+
+  // Filter staff list based on search query
+  const qLower = searchQuery.trim().toLowerCase();
+  const filteredStaff = useMemo(() => {
+    if (!qLower) return staffList;
+    return staffList.filter((s) => s.toLowerCase().includes(qLower));
+  }, [staffList, qLower]);
 
   async function handleSend(e: React.FormEvent) {
     e.preventDefault();
@@ -141,10 +197,10 @@ export function SendUrgentMessageModal({ isOpen, onClose }: SendUrgentMessageMod
       return;
     }
 
-    if (targetUser === '__custom__' && !customUser.trim()) {
+    if (!isAllSelected && effectiveTargetsList.length === 0) {
       toast({
-        title: 'User Name Daalein',
-        description: 'Kripya target user ka naam likhein!',
+        title: 'User Name Select Karein',
+        description: 'Kripya kam se kam ek user select karein ya ALL choose karein!',
         variant: 'destructive',
       });
       return;
@@ -153,14 +209,14 @@ export function SendUrgentMessageModal({ isOpen, onClose }: SendUrgentMessageMod
     setIsSending(true);
     try {
       const res = await sendUrgentMessage({
-        targetUser: effectiveTarget || 'ALL',
+        targetUser: effectiveTargetString || 'ALL',
         text: trimmed,
       });
 
       if (res.ok) {
         toast({
           title: 'Message Sent / Popup Live!',
-          description: `Sandesh ${effectiveTarget === 'ALL' ? 'Sabhi Users' : effectiveTarget} ke device par popup ho gaya!`,
+          description: `Sandesh ${effectiveTargetLabel} ke device par popup ho gaya!`,
         });
         setMessageText('');
         setActiveTab('active');
@@ -190,6 +246,9 @@ export function SendUrgentMessageModal({ isOpen, onClose }: SendUrgentMessageMod
       setCancellingId(null);
     }
   }
+
+  const role = getRole();
+  if (!isOpen || role !== 'owner') return null;
 
   return (
     <div
@@ -260,42 +319,176 @@ export function SendUrgentMessageModal({ isOpen, onClose }: SendUrgentMessageMod
           {activeTab === 'compose' ? (
             <form onSubmit={handleSend} className="space-y-4">
               
-              {/* Target User Selector (Internal Users Only - Drivers Excluded) */}
-              <div className="space-y-1.5">
-                <label className="text-xs font-black uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
-                  <Users className="w-4 h-4 text-primary" />
-                  Kisko Bhejna Hai? (Select Internal Staff User)
-                </label>
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                  <select
-                    value={targetUser}
-                    onChange={(e) => setTargetUser(e.target.value)}
-                    className="w-full bg-background border border-border rounded-xl px-3 py-2.5 text-sm font-bold text-foreground focus:outline-none focus:ring-2 focus:ring-red-500"
-                  >
-                    <option value="ALL">🔴 SABHI INTERNAL USERS (Staff & Owner)</option>
-                    <option value="user">💼 All Staff Users Only</option>
-                    <option value="owner">👑 Owner Only</option>
-                    {userList.length > 0 && (
-                      <optgroup label="Single Internal Staff User">
-                        {userList.map((u, i) => (
-                          <option key={`${u}_${i}`} value={u}>
-                            👤 {u}
-                          </option>
-                        ))}
-                      </optgroup>
+              {/* Target Users Selector: Visibly Show All User & Driver Names */}
+              <div className="space-y-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <label className="text-xs font-black uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
+                    <Users className="w-4 h-4 text-primary" />
+                    Kisko Bhejna Hai? (User Name Select Karein)
+                  </label>
+                  <div className="flex flex-wrap items-center gap-1 text-[11px] font-bold">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSelectedTargets(['ALL']);
+                        setCustomUser('');
+                      }}
+                      className={cn(
+                        "px-2.5 py-1 rounded-lg border text-xs font-black transition-all cursor-pointer",
+                        isAllSelected
+                          ? "bg-red-600 text-white border-red-600 shadow-xs"
+                          : "bg-muted/60 hover:bg-muted text-muted-foreground border-border"
+                      )}
+                    >
+                      🔴 SABHI (ALL)
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSelectedTargets(staffList.length > 0 ? [...staffList] : ['staff']);
+                        setCustomUser('');
+                      }}
+                      className="px-2 py-1 rounded-lg bg-muted/60 hover:bg-muted text-muted-foreground hover:text-foreground border border-border text-[11px] font-bold transition-all cursor-pointer"
+                    >
+                      💼 Sabhi Staff
+                    </button>
+                    {selectedTargets.length > 0 && !isAllSelected && (
+                      <button
+                        type="button"
+                        onClick={() => setSelectedTargets([])}
+                        className="px-2 py-1 rounded-lg bg-muted/40 hover:bg-destructive/10 text-destructive border border-border text-[11px] font-bold transition-all cursor-pointer"
+                      >
+                        Clear
+                      </button>
                     )}
-                    <option value="__custom__">✏️ Custom Staff Name Type Karein...</option>
-                  </select>
+                  </div>
+                </div>
 
-                  {targetUser === '__custom__' && (
+                {/* Search filter for staff users */}
+                {staffList.length > 4 && (
+                  <div className="relative">
+                    <Search className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground pointer-events-none" />
                     <input
                       type="text"
-                      placeholder="Staff user ka naam..."
-                      value={customUser}
-                      onChange={(e) => setCustomUser(e.target.value)}
-                      className="w-full bg-background border border-border rounded-xl px-3 py-2 text-sm font-bold text-foreground focus:outline-none focus:ring-2 focus:ring-red-500"
-                      autoFocus
+                      placeholder="Staff user ka naam search karein..."
+                      value={searchQuery}
+                      onChange={(e) => setSearchQuery(e.target.value)}
+                      className="w-full bg-background/80 border border-border rounded-xl pl-8 pr-3 py-1.5 text-xs font-semibold text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-primary"
                     />
+                  </div>
+                )}
+
+                {/* Selected Targets Summary Banner */}
+                <div className="p-2.5 rounded-xl border border-border bg-muted/20 flex flex-wrap items-center gap-1.5 min-h-[38px]">
+                  <span className="text-[11px] font-black uppercase tracking-wider text-muted-foreground mr-1 flex items-center gap-1">
+                    <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500 shrink-0" />
+                    Selected ({isAllSelected ? 'SABHI STAFF' : effectiveTargetsList.length}):
+                  </span>
+                  {isAllSelected ? (
+                    <span className="px-2.5 py-0.5 rounded-md bg-red-600/15 text-red-600 border border-red-600/30 text-xs font-black">
+                      🔴 SABHI STAFF USERS (ALL DEVICES)
+                    </span>
+                  ) : effectiveTargetsList.length === 0 ? (
+                    <span className="text-xs text-amber-500 font-bold italic">
+                      Koi user select nahi hai (Niche staff chip par click karein ya ALL chunein)
+                    </span>
+                  ) : (
+                    <>
+                      {selectedTargets.map((name) => (
+                        <span
+                          key={name}
+                          className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-lg bg-primary/15 text-primary border border-primary/30 text-xs font-black"
+                        >
+                          {name}
+                          <button
+                            type="button"
+                            onClick={() => toggleUserSelection(name)}
+                            className="hover:text-destructive cursor-pointer ml-0.5"
+                          >
+                            <X className="w-3 h-3 stroke-[3]" />
+                          </button>
+                        </span>
+                      ))}
+                      {customUser.trim() && (
+                        <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-lg bg-purple-500/15 text-purple-600 border border-purple-500/30 text-xs font-black">
+                          ✏️ {customUser.trim()}
+                          <button
+                            type="button"
+                            onClick={() => setCustomUser('')}
+                            className="hover:text-destructive cursor-pointer ml-0.5"
+                          >
+                            <X className="w-3 h-3 stroke-[3]" />
+                          </button>
+                        </span>
+                      )}
+                    </>
+                  )}
+                </div>
+
+                {/* Visual User Chips: Staff Users with Login Passwords */}
+                <div className="space-y-1.5">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[11px] font-black uppercase tracking-wider text-foreground/80 flex items-center gap-1">
+                      <User className="w-3.5 h-3.5 text-blue-500" />
+                      Staff Login Users ({filteredStaff.length})
+                    </span>
+                  </div>
+                  <div className="flex flex-wrap gap-2 max-h-[160px] overflow-y-auto p-2 rounded-xl bg-background/50 border border-border/60">
+                    {filteredStaff.length === 0 ? (
+                      <span className="text-xs text-muted-foreground p-2">Koi staff match nahi hua</span>
+                    ) : (
+                      filteredStaff.map((staffName) => {
+                        const isSelected = selectedTargets.includes(staffName);
+                        return (
+                          <button
+                            key={staffName}
+                            type="button"
+                            onClick={() => toggleUserSelection(staffName)}
+                            className={cn(
+                              "flex items-center gap-2 px-3.5 py-2 rounded-xl border text-xs font-black transition-all cursor-pointer select-none",
+                              isSelected
+                                ? "bg-primary text-primary-foreground border-primary shadow-sm scale-102 ring-2 ring-primary/40"
+                                : "bg-card hover:bg-muted text-foreground border-border hover:border-primary/50"
+                            )}
+                          >
+                            <User className={cn("w-4 h-4", isSelected ? "text-primary-foreground" : "text-blue-500")} />
+                            <span className="tracking-wide">{staffName}</span>
+                            {isSelected && <CheckCircle2 className="w-3.5 h-3.5 ml-0.5 stroke-[3]" />}
+                          </button>
+                        );
+                      })
+                    )}
+                  </div>
+                </div>
+
+                {/* Custom Name / Other User Optional Input */}
+                <div className="flex items-center gap-2 pt-1">
+                  <input
+                    type="text"
+                    placeholder="✏️ Kisi aur user ka naam add karein..."
+                    value={customUser}
+                    onChange={(e) => {
+                      setCustomUser(e.target.value);
+                      if (selectedTargets.includes('ALL')) {
+                        setSelectedTargets([]);
+                      }
+                    }}
+                    className="flex-1 bg-background border border-border rounded-xl px-3 py-1.5 text-xs font-bold text-foreground focus:outline-none focus:ring-1 focus:ring-primary"
+                  />
+                  {customUser.trim() && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const trimmed = customUser.trim();
+                        if (trimmed && !selectedTargets.includes(trimmed)) {
+                          setSelectedTargets((prev) => [...prev.filter(t => t !== 'ALL'), trimmed]);
+                          setCustomUser('');
+                        }
+                      }}
+                      className="px-3 py-1.5 rounded-xl bg-primary hover:bg-primary/90 text-primary-foreground text-xs font-black cursor-pointer shadow-xs"
+                    >
+                      + Add
+                    </button>
                   )}
                 </div>
               </div>
@@ -307,7 +500,7 @@ export function SendUrgentMessageModal({ isOpen, onClose }: SendUrgentMessageMod
                   Message Text (Sandesh)
                 </label>
                 <textarea
-                  rows={4}
+                  rows={3}
                   value={messageText}
                   onChange={(e) => setMessageText(e.target.value)}
                   placeholder="Yahan message likhein... (e.g. Sabhi staff turant verification complete karein! / Naya collection update karein)"
@@ -317,7 +510,7 @@ export function SendUrgentMessageModal({ isOpen, onClose }: SendUrgentMessageMod
               </div>
 
               {/* Quick Template Chips */}
-              <div className="flex flex-wrap gap-1.5 pt-1">
+              <div className="flex flex-wrap gap-1.5 pt-0.5">
                 {[
                   'Sabhi staff turant bill check karein!',
                   'Day end collection verify karein.',
@@ -337,10 +530,10 @@ export function SendUrgentMessageModal({ isOpen, onClose }: SendUrgentMessageMod
 
               {/* Live Preview Box: 48px BOLD RED FONT */}
               {messageText.trim() && (
-                <div className="mt-4 p-4 rounded-2xl border-2 border-red-500/40 bg-red-500/5 space-y-2">
+                <div className="mt-3 p-4 rounded-2xl border-2 border-red-500/40 bg-red-500/5 space-y-2">
                   <div className="flex items-center justify-between text-[11px] font-black uppercase tracking-wider text-red-600">
                     <span>Live Preview (48px Bold Red Font)</span>
-                    <span>Target: {effectiveTarget === 'ALL' ? 'All Internal Users' : effectiveTarget}</span>
+                    <span className="truncate max-w-[50%]">Target: {effectiveTargetLabel}</span>
                   </div>
                   <div
                     style={{ fontSize: '48px', lineHeight: '1.15' }}
@@ -355,14 +548,14 @@ export function SendUrgentMessageModal({ isOpen, onClose }: SendUrgentMessageMod
               <div className="pt-2">
                 <button
                   type="submit"
-                  disabled={isSending || !messageText.trim()}
+                  disabled={isSending || !messageText.trim() || (!isAllSelected && selectedTargets.length === 0 && !customUser.trim())}
                   className="w-full py-3.5 px-6 rounded-2xl bg-red-600 hover:bg-red-700 active:scale-[0.99] text-white font-black text-base uppercase tracking-wider flex items-center justify-center gap-2 shadow-lg shadow-red-600/30 transition-all cursor-pointer disabled:opacity-50"
                 >
                   <Send className="w-5 h-5" />
                   <span>
                     {isSending
                       ? 'Bheja Jaa Raha Hai...'
-                      : `SEND POPUP TO ${effectiveTarget === 'ALL' ? 'ALL DEVICES' : effectiveTarget.toUpperCase()}`}
+                      : `SEND POPUP TO ${effectiveTargetLabel.toUpperCase()}`}
                   </span>
                 </button>
               </div>

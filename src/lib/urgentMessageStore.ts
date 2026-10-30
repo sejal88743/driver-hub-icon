@@ -124,31 +124,37 @@ export function isMessageForCurrentUser(msg: UrgentMessage): boolean {
   const myName = (getLoggedInName() || '').trim().toLowerCase();
   const myRole = (getRole() || '').trim().toLowerCase();
 
-  // Urgent messages are strictly for internal office users and owner - never for drivers
-  if (!myRole || myRole === 'driver') {
-    return false;
-  }
+  if (!myRole) return false;
 
   // If already dismissed by this user
   if (myName && Array.isArray(msg.dismissedBy) && msg.dismissedBy.some(u => u.trim().toLowerCase() === myName)) {
     return false;
   }
 
-  // ALL users target (delivers to all logged-in internal office users & owner)
-  const target = (msg.targetUser || '').trim().toLowerCase();
-  if (target === 'all' || target === 'all users' || target === 'sabhi' || target === '') {
+  const rawTarget = (msg.targetUser || '').trim().toLowerCase();
+  if (!rawTarget || rawTarget === 'all' || rawTarget === 'all users' || rawTarget === 'sabhi') {
     return true;
   }
 
-  // Role matching
-  if (target === 'user' && myRole === 'user') return true;
-  if (target === 'owner' && myRole === 'owner') return true;
+  // Split multiple targets (e.g. "PRATIXA, khushi" or "PRATIXA+khushi")
+  const targets = rawTarget.split(/[,+]/).map(t => t.trim()).filter(Boolean);
 
-  // Exact name match (case-insensitive)
-  if (myName && target === myName) return true;
+  // Check if role matches
+  if (targets.includes(myRole)) return true;
+  if (myRole === 'user' && (targets.includes('staff') || targets.includes('all staff'))) return true;
+  if (myRole === 'driver' && (targets.includes('driver') || targets.includes('all drivers'))) return true;
 
-  // Partial name match (e.g. "PRATIXA" vs "Pratixa")
-  if (myName && target && (myName.includes(target) || target.includes(myName))) return true;
+  // Check if current user name matches any selected target
+  if (myName) {
+    for (const t of targets) {
+      if (t === myName || myName === t || myName.includes(t) || t.includes(myName)) {
+        return true;
+      }
+      if (t.includes('vipul') && myName.includes('vipul')) {
+        return true;
+      }
+    }
+  }
 
   return false;
 }
@@ -280,9 +286,20 @@ export function initUrgentMessageClient() {
 
   // Optional local SSE connection (with automatic error suppression if running on static/proxy)
   let sseDisabled = false;
-  function connectSse() {
+  async function connectSse() {
     if (sseDisabled) return;
     try {
+      const probe = await fetch('/api/urgent-messages/stream', {
+        method: 'GET',
+        headers: { Accept: 'text/event-stream' },
+        signal: typeof AbortSignal.timeout === 'function' ? AbortSignal.timeout(1500) : undefined,
+      });
+      const cType = probe.headers.get('content-type') || '';
+      if (!probe.ok || !cType.includes('text/event-stream')) {
+        sseDisabled = true;
+        return;
+      }
+
       if (_eventSource) {
         _eventSource.close();
       }
@@ -329,7 +346,6 @@ export function initUrgentMessageClient() {
       _eventSource.onerror = () => {
         try { _eventSource?.close(); } catch {}
         _eventSource = null;
-        // If SSE fails (e.g. on static/preview host), do not retry continuously
         sseDisabled = true;
       };
     } catch {
@@ -339,7 +355,7 @@ export function initUrgentMessageClient() {
 
   // Only try SSE on full-stack dev origin
   if (typeof window !== 'undefined' && window.location.hostname === 'localhost') {
-    connectSse();
+    void connectSse();
   }
 }
 
