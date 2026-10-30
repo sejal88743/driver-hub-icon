@@ -58,13 +58,15 @@ function playUrgentAlertSound() {
 }
 
 function notifyListeners() {
-  for (const listener of listeners) {
-    try {
-      listener();
-    } catch (e) {
-      console.warn('[UrgentMessageStore] Listener error:', e);
+  setTimeout(() => {
+    for (const listener of Array.from(listeners)) {
+      try {
+        listener();
+      } catch (e) {
+        console.warn('[UrgentMessageStore] Listener error:', e);
+      }
     }
-  }
+  }, 0);
 }
 
 function dedupeMessages(list: UrgentMessage[]): UrgentMessage[] {

@@ -5,8 +5,8 @@ import { pool } from './db.js';
 
 const CONFIG_FILE = path.join(process.cwd(), '.wa-bot-config.json');
 
-const SUPABASE_URL = 'https://zybrzzouzleacqjvfiiu.supabase.co';
-const SUPABASE_PUBLISHABLE_KEY = 'sb_publishable_gkwGkK0YvU8q_GjkkcRNOg_XsE3AcGV';
+const SUPABASE_URL = 'https://qmnofkoxoijihgwgrefv.supabase.co';
+const SUPABASE_PUBLISHABLE_KEY = 'sb_publishable_nxq5s4XWrgD6QdNOr4sPSQ_0rPdFlvK';
 const supabase = createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY);
 
 export type WaBotConfig = {

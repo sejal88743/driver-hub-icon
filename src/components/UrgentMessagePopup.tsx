@@ -55,8 +55,13 @@ export function UrgentMessagePopup() {
     timerRef.current = setInterval(() => {
       setSecondsLeft((prev) => {
         if (prev <= 1) {
-          if (timerRef.current) clearInterval(timerRef.current);
-          handleClose();
+          if (timerRef.current) {
+            clearInterval(timerRef.current);
+            timerRef.current = null;
+          }
+          setTimeout(() => {
+            handleClose();
+          }, 0);
           return 0;
         }
         return prev - 1;

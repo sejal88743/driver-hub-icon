@@ -1,13 +1,13 @@
 import { createClient } from '@supabase/supabase-js';
 
-// LOCKED SUPABASE CREDENTIALS (Admin permission required to alter):
-// SUPABASE_URL: https://zybrzzouzleacqjvfiiu.supabase.co
-// SUPABASE_PUBLISHABLE_KEY: sb_publishable_gkwGkK0YvU8q_GjkkcRNOg_XsE3AcGV
-// SUPABASE_JWKS_URL: https://zybrzzouzleacqjvfiiu.supabase.co/auth/v1/.well-known/jwks.json
+// LOCKED SUPABASE CREDENTIALS (Updated with user/admin permission):
+// SUPABASE_URL: https://qmnofkoxoijihgwgrefv.supabase.co
+// SUPABASE_PUBLISHABLE_KEY: sb_publishable_nxq5s4XWrgD6QdNOr4sPSQ_0rPdFlvK
+// SUPABASE_JWKS_URL: https://qmnofkoxoijihgwgrefv.supabase.co/auth/v1/.well-known/jwks.json
 
-const LOCKED_SUPABASE_URL = 'https://zybrzzouzleacqjvfiiu.supabase.co';
-const LOCKED_SUPABASE_PUBLISHABLE_KEY = 'sb_publishable_gkwGkK0YvU8q_GjkkcRNOg_XsE3AcGV';
-const LOCKED_SUPABASE_JWKS_URL = 'https://zybrzzouzleacqjvfiiu.supabase.co/auth/v1/.well-known/jwks.json';
+const LOCKED_SUPABASE_URL = 'https://qmnofkoxoijihgwgrefv.supabase.co';
+const LOCKED_SUPABASE_PUBLISHABLE_KEY = 'sb_publishable_nxq5s4XWrgD6QdNOr4sPSQ_0rPdFlvK';
+const LOCKED_SUPABASE_JWKS_URL = 'https://qmnofkoxoijihgwgrefv.supabase.co/auth/v1/.well-known/jwks.json';
 
 const metaEnv = (typeof import.meta !== 'undefined' && (import.meta as any)?.env) || {};
 const procEnv = (typeof process !== 'undefined' && process?.env) || {};

@@ -199,8 +199,8 @@ async function pgUpsert(table: string, rows: Record<string, unknown>[], conflict
 }
 
 // ─── Transparent Supabase Proxy ──────────────────────────────────────────────
-const LOCKED_SUPABASE_URL = 'https://zybrzzouzleacqjvfiiu.supabase.co';
-const LOCKED_SUPABASE_PUBLISHABLE_KEY = 'sb_publishable_gkwGkK0YvU8q_GjkkcRNOg_XsE3AcGV';
+const LOCKED_SUPABASE_URL = 'https://qmnofkoxoijihgwgrefv.supabase.co';
+const LOCKED_SUPABASE_PUBLISHABLE_KEY = 'sb_publishable_nxq5s4XWrgD6QdNOr4sPSQ_0rPdFlvK';
 
 app.use('/api/supabase-proxy', async (req, res) => {
   const targetPath = req.originalUrl.replace(/^\/api\/supabase-proxy/, '');

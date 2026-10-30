@@ -569,7 +569,7 @@ export function AdminAiAgent() {
           `1. Command Analyzed: User ne XLS data se sabhi bills ke '${fieldKey}' ko Supabase database me update karne ka nirdesh diya hai.`,
           `2. Column Mapping: Bill No Column ('${currentMapping.billNo || 'Auto'}') aur Value Column ('${xlsColHeader || 'Detected'}') successfully match hue.`,
           `3. Database Verification: Total ${targetBillNos.length} me se ${matchedBills.length} bills database me verify hue. ${patches.length} bills me naya value update hone ke liye ready hai.`,
-          `4. Safe Execution Plan: Chunked batch upsert (800 records per batch) Supabase ke locked instance ('zybrzzouzleacqjvfiiu') par execute hoga bina browser freeze hue.`,
+          `4. Safe Execution Plan: Chunked batch upsert (800 records per batch) Supabase ke locked instance ('qmnofkoxoijihgwgrefv') par execute hoga bina browser freeze hue.`,
         ];
       }
     }
@@ -958,7 +958,7 @@ export function AdminAiAgent() {
       } catch {}
 
       setResultMessage(
-        `✅ ${res.updatedCount} bills successfully updated in Supabase ('zybrzzouzleacqjvfiiu') & App Memory!`
+        `✅ ${res.updatedCount} bills successfully updated in Supabase ('qmnofkoxoijihgwgrefv') & App Memory!`
       );
       setShowConfirm(false);
 
@@ -1439,7 +1439,7 @@ export function AdminAiAgent() {
           <div className="flex items-center justify-between text-xs font-black uppercase">
             <span className="flex items-center gap-2 text-primary">
               <RefreshCw className="w-4 h-4 animate-spin" />
-              Batch Updating Supabase ('zybrzzouzleacqjvfiiu') & App Memory...
+              Batch Updating Supabase ('qmnofkoxoijihgwgrefv') & App Memory...
             </span>
             <span className="font-mono text-foreground">
               {executionProgress.saved.toLocaleString('en-IN')} / {executionProgress.total.toLocaleString('en-IN')} (
@@ -1704,7 +1704,7 @@ export function AdminAiAgent() {
               <div>
                 <h3 className="text-base font-black uppercase text-foreground">Confirm Database Write Execution</h3>
                 <p className="text-xs text-muted-foreground font-semibold">
-                  Aap {response.patches.length.toLocaleString('en-IN')} bill records ko Supabase ('zybrzzouzleacqjvfiiu') & App Memory me update karne ja rahe hain.
+                  Aap {response.patches.length.toLocaleString('en-IN')} bill records ko Supabase ('qmnofkoxoijihgwgrefv') & App Memory me update karne ja rahe hain.
                 </p>
               </div>
             </div>

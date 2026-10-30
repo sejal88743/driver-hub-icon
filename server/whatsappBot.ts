@@ -837,8 +837,9 @@ async function connect() {
           running = true;
           status.running = true;
           clearTimeout(reconnectTimer);
-          // If code 440 (connectionReplaced) or 429 (rate-overlimit), wait 45s to avoid tight reconnect storms
-          const delay = (code === 440 || code === 429) ? 45000 : 5000;
+          // If code 440 (connectionReplaced) or 429 (rate-overlimit), wait 45s.
+          // If code 408 (QR scan timed out) without saved session, wait 30s to avoid tight reconnect storms.
+          const delay = (code === 440 || code === 429) ? 45000 : (code === 408 && !isSessionSaved()) ? 30000 : 5000;
           reconnectTimer = setTimeout(() => {
             reconnectTimer = null;
             if (running || isSessionSaved()) connect();
