@@ -55,9 +55,20 @@ export function ConnectionStatus() {
         show('live');
       } else {
         consecutiveErrors.current++;
-        // Only show offline if actually offline or if 3 consecutive failures occurred
-        if (!navigator.onLine || consecutiveErrors.current >= 3) {
+        if (!navigator.onLine) {
           show('offline');
+        } else if (consecutiveErrors.current >= 4) {
+          import('@/lib/apiSync').then(m => m.apiPingSupabase()).then(isReachable => {
+            if (isReachable) {
+              consecutiveErrors.current = 0;
+              setLastSync(new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', second: '2-digit' }));
+              show('live');
+            } else {
+              show('offline');
+            }
+          }).catch(() => {
+            show('offline');
+          });
         }
       }
       updatePending();
@@ -78,6 +89,12 @@ export function ConnectionStatus() {
     } else {
       setStatus('live');
       setLastSync(new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', second: '2-digit' }));
+      import('@/lib/apiSync').then(m => m.apiPingSupabase()).then(isReachable => {
+        if (isReachable) {
+          setStatus('live');
+          consecutiveErrors.current = 0;
+        }
+      }).catch(() => {});
     }
 
     // Periodic local check: Update pending count without spamming Supabase network

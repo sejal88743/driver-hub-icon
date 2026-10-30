@@ -83,20 +83,28 @@ export function isMessageForCurrentUser(msg: UrgentMessage): boolean {
   const myName = (getLoggedInName() || '').trim().toLowerCase();
   const myRole = (getRole() || '').trim().toLowerCase();
 
+  // Urgent messages are strictly for internal office users and owner - never for drivers
+  if (!myRole || myRole === 'driver') {
+    return false;
+  }
+
   // If already dismissed by this user
   if (myName && msg.dismissedBy.some(u => u.trim().toLowerCase() === myName)) {
     return false;
   }
 
-  // ALL users target
+  // ALL users target (delivers to all logged-in internal office users & owner)
   const target = (msg.targetUser || '').trim().toLowerCase();
   if (target === 'all' || target === 'all users' || target === 'sabhi' || target === '') {
     return true;
   }
 
-  // Exact name or role match
+  // Role matching
+  if (target === 'user' && myRole === 'user') return true;
+  if (target === 'owner' && myRole === 'owner') return true;
+
+  // Exact name match (case-insensitive)
   if (myName && target === myName) return true;
-  if (myRole && target === myRole) return true;
 
   return false;
 }

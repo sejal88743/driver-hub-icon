@@ -37,16 +37,18 @@ export function SendUrgentMessageModal({ isOpen, onClose }: SendUrgentMessageMod
   const [userList, setUserList] = useState<string[]>([]);
 
   useEffect(() => {
-    // Gather all known driver names and staff names
+    // Gather ONLY internal staff user names (NEVER drivers)
     const drivers = getDrivers();
     const names = new Set<string>();
 
-    // Add drivers
+    // 1. Add staff users from drivers table where role is 'user' or id starts with 'usr_'
     for (const d of drivers) {
-      if (d.name) names.add(d.name.trim());
+      if (d.name && (d.role === 'user' || (d.id && d.id.startsWith('usr_')))) {
+        names.add(d.name.trim());
+      }
     }
 
-    // Add cached staff names from login
+    // 2. Add cached staff names from login
     try {
       const staff = JSON.parse(localStorage.getItem('vt_staff_names') || '[]');
       if (Array.isArray(staff)) {
@@ -54,18 +56,42 @@ export function SendUrgentMessageModal({ isOpen, onClose }: SendUrgentMessageMod
       }
     } catch {}
 
-    // Add other known driver names
+    // 3. Add users from user_passwords settings
     try {
-      const dn = JSON.parse(localStorage.getItem('vt_driver_names') || '[]');
-      if (Array.isArray(dn)) {
-        for (const s of dn) if (s) names.add(String(s).trim());
+      const pwMap = JSON.parse(localStorage.getItem('vt_user_passwords') || '{}');
+      if (pwMap && typeof pwMap === 'object') {
+        for (const k of Object.keys(pwMap)) {
+          if (k && k.trim()) names.add(k.trim());
+        }
       }
     } catch {}
 
-    // Pratixa if not already present
+    // 4. Pratixa (always ensure Pratixa is available)
     names.add('Pratixa');
 
-    const sorted = Array.from(names).sort((a, b) => a.localeCompare(b));
+    // 5. Exclude any driver names that might have accidentally leaked in
+    const knownDriverNames = new Set<string>();
+    for (const d of drivers) {
+      if (d.name && d.role !== 'user' && !d.id?.startsWith('usr_')) {
+        knownDriverNames.add(d.name.trim().toLowerCase());
+      }
+    }
+    try {
+      const dn = JSON.parse(localStorage.getItem('vt_driver_names') || '[]');
+      if (Array.isArray(dn)) {
+        for (const s of dn) if (s) knownDriverNames.add(String(s).trim().toLowerCase());
+      }
+    } catch {}
+
+    // Filter out driver names from staff list
+    const filteredStaff: string[] = [];
+    for (const n of names) {
+      if (!knownDriverNames.has(n.toLowerCase())) {
+        filteredStaff.push(n);
+      }
+    }
+
+    const sorted = filteredStaff.sort((a, b) => a.localeCompare(b));
     setUserList(sorted);
   }, [isOpen]);
 
@@ -98,7 +124,8 @@ export function SendUrgentMessageModal({ isOpen, onClose }: SendUrgentMessageMod
     return res;
   }, [activeMessages]);
 
-  if (!isOpen) return null;
+  const role = getRole();
+  if (!isOpen || role !== 'owner') return null;
 
   const effectiveTarget = targetUser === '__custom__' ? customUser.trim() : targetUser;
 
@@ -183,7 +210,7 @@ export function SendUrgentMessageModal({ isOpen, onClose }: SendUrgentMessageMod
                 Emergency Message Pop / Broadcast
               </h2>
               <p className="text-[11px] text-muted-foreground font-medium">
-                Target user ke device par 30px Bold Red font me popup dikhega
+                Target internal user ke device par 48px Bold Red font me popup dikhega
               </p>
             </div>
           </div>
@@ -233,11 +260,11 @@ export function SendUrgentMessageModal({ isOpen, onClose }: SendUrgentMessageMod
           {activeTab === 'compose' ? (
             <form onSubmit={handleSend} className="space-y-4">
               
-              {/* Target User Selector */}
+              {/* Target User Selector (Internal Users Only - Drivers Excluded) */}
               <div className="space-y-1.5">
                 <label className="text-xs font-black uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
                   <Users className="w-4 h-4 text-primary" />
-                  Kisko Bhejna Hai? (Select User / Screen)
+                  Kisko Bhejna Hai? (Select Internal Staff User)
                 </label>
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                   <select
@@ -245,24 +272,25 @@ export function SendUrgentMessageModal({ isOpen, onClose }: SendUrgentMessageMod
                     onChange={(e) => setTargetUser(e.target.value)}
                     className="w-full bg-background border border-border rounded-xl px-3 py-2.5 text-sm font-bold text-foreground focus:outline-none focus:ring-2 focus:ring-red-500"
                   >
-                    <option value="ALL">🔴 SABHI USERS (All Devices & Screens)</option>
+                    <option value="ALL">🔴 SABHI INTERNAL USERS (Staff & Owner)</option>
+                    <option value="user">💼 All Staff Users Only</option>
                     <option value="owner">👑 Owner Only</option>
-                    <option value="user">💼 Staff Users Only</option>
-                    <option value="driver">🚚 All Drivers Only</option>
-                    <optgroup label="Single User / Driver">
-                      {userList.map((u, i) => (
-                        <option key={`${u}_${i}`} value={u}>
-                          👤 {u}
-                        </option>
-                      ))}
-                    </optgroup>
-                    <option value="__custom__">✏️ Custom Name Type Karein...</option>
+                    {userList.length > 0 && (
+                      <optgroup label="Single Internal Staff User">
+                        {userList.map((u, i) => (
+                          <option key={`${u}_${i}`} value={u}>
+                            👤 {u}
+                          </option>
+                        ))}
+                      </optgroup>
+                    )}
+                    <option value="__custom__">✏️ Custom Staff Name Type Karein...</option>
                   </select>
 
                   {targetUser === '__custom__' && (
                     <input
                       type="text"
-                      placeholder="User / Driver ka naam..."
+                      placeholder="Staff user ka naam..."
                       value={customUser}
                       onChange={(e) => setCustomUser(e.target.value)}
                       className="w-full bg-background border border-border rounded-xl px-3 py-2 text-sm font-bold text-foreground focus:outline-none focus:ring-2 focus:ring-red-500"
@@ -282,7 +310,7 @@ export function SendUrgentMessageModal({ isOpen, onClose }: SendUrgentMessageMod
                   rows={4}
                   value={messageText}
                   onChange={(e) => setMessageText(e.target.value)}
-                  placeholder="Yahan message likhein... (e.g. Sabhi drivers turant office aakar cash jama karwayein! / Bill verify karein)"
+                  placeholder="Yahan message likhein... (e.g. Sabhi staff turant verification complete karein! / Naya collection update karein)"
                   className="w-full bg-background border border-border rounded-2xl p-3 text-base font-bold text-foreground focus:outline-none focus:ring-2 focus:ring-red-500 resize-none shadow-inner"
                   required
                 />
@@ -291,10 +319,10 @@ export function SendUrgentMessageModal({ isOpen, onClose }: SendUrgentMessageMod
               {/* Quick Template Chips */}
               <div className="flex flex-wrap gap-1.5 pt-1">
                 {[
-                  'Sabhi Drivers collection cash turant jama karein!',
-                  'Gadi loading complete ho gayi hai!',
+                  'Sabhi staff turant bill check karein!',
+                  'Day end collection verify karein.',
                   'Naya bill check karein aur verify karein.',
-                  'Emergency notice: Office me contact karein.',
+                  'Emergency notice: Owner desk par contact karein.',
                 ].map((tpl) => (
                   <button
                     key={tpl}
@@ -307,16 +335,16 @@ export function SendUrgentMessageModal({ isOpen, onClose }: SendUrgentMessageMod
                 ))}
               </div>
 
-              {/* Live Preview Box: 30px BOLD RED FONT */}
+              {/* Live Preview Box: 48px BOLD RED FONT */}
               {messageText.trim() && (
                 <div className="mt-4 p-4 rounded-2xl border-2 border-red-500/40 bg-red-500/5 space-y-2">
                   <div className="flex items-center justify-between text-[11px] font-black uppercase tracking-wider text-red-600">
-                    <span>Live Preview (30px Bold Red Font)</span>
-                    <span>Target: {effectiveTarget === 'ALL' ? 'All Users' : effectiveTarget}</span>
+                    <span>Live Preview (48px Bold Red Font)</span>
+                    <span>Target: {effectiveTarget === 'ALL' ? 'All Internal Users' : effectiveTarget}</span>
                   </div>
                   <div
-                    style={{ fontSize: '30px', lineHeight: '1.25' }}
-                    className="text-[30px] font-black font-extrabold text-red-600 tracking-tight leading-tight text-center break-words select-none"
+                    style={{ fontSize: '48px', lineHeight: '1.15' }}
+                    className="text-[28px] sm:text-[48px] font-black font-extrabold text-red-600 tracking-tight leading-tight text-center break-words select-none py-2"
                   >
                     {messageText}
                   </div>

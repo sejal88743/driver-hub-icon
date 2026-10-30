@@ -1,0 +1,6 @@
+{
+  "summary":  "Implementation plan for refining the Urgent Pop-up Messaging system: restricting target selection to internal users only, rendering 48px bold red typography, targeting user-specific login devices, 30-second auto-close with manual dismiss, and restricting broadcast trigger permissions to Owner only.",
+  "updatedAt":  "2026-10-30T02:58:14.547741289Z",
+  "requestFeedback":  true,
+  "userFacing":  true
+}

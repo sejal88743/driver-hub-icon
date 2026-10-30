@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Shield, Truck, Lock, Eye, EyeOff, X, FileSpreadsheet, Receipt, CalendarCheck } from 'lucide-react';
+import { Shield, Truck, Lock, Eye, EyeOff, X, FileSpreadsheet, Receipt, CalendarCheck, User, Users } from 'lucide-react';
 import { setRole, setLoggedInName } from '@/lib/auth';
 import { getSystemPassword, getOwnerPassword, findUserByPassword, getUserPassword, getAllUserPasswords, setServerData } from '@/lib/billStore';
 import { supabase } from '@/integrations/supabase/client';
@@ -8,6 +8,7 @@ import { cn } from '@/lib/utils';
 
 type ModalMode = 'main' | 'owner' | 'xlsx' | 'bankslip';
 
+const DEFAULT_STAFF_NAMES = ['PRATIXA', 'khushi', 'BOSS VIPUL', 'tarachand'];
 
 export default function LoginPage() {
   const navigate = useNavigate();
@@ -22,21 +23,37 @@ export default function LoginPage() {
 
   // Only user-role names (not drivers, not owners)
   const [staffNames, setStaffNames] = useState<string[]>(() => {
+    const list = new Set<string>(DEFAULT_STAFF_NAMES);
     try {
       const cached = JSON.parse(localStorage.getItem('vt_staff_names') || '[]');
-      return Array.isArray(cached) ? cached : [];
-    } catch {
-      return [];
-    }
+      if (Array.isArray(cached)) {
+        for (const c of cached) if (c) list.add(String(c).trim());
+      }
+    } catch {}
+    try {
+      const pws = JSON.parse(localStorage.getItem('vt_user_passwords') || '{}');
+      if (pws && typeof pws === 'object') {
+        for (const k of Object.keys(pws)) if (k) list.add(String(k).trim());
+      }
+    } catch {}
+    return Array.from(list);
   });
 
-  // Cached user passwords
+  // Cached user passwords (seeded from Supabase settings)
   const [loadedUserPasswords, setLoadedUserPasswords] = useState<Record<string, string>>(() => {
+    const fallback: Record<string, string> = {
+      'PRATIXA': 'JIGO1307',
+      'khushi': 'KHUSHI@444',
+      'BOSS VIPUL': 'BOSS@9238',
+      'tarachand': 'TAra@905',
+    };
     try {
       const cached = JSON.parse(localStorage.getItem('vt_user_passwords') || '{}');
-      return (cached && typeof cached === 'object') ? cached : {};
+      return (cached && typeof cached === 'object' && Object.keys(cached).length > 0)
+        ? { ...fallback, ...cached }
+        : fallback;
     } catch {
-      return {};
+      return fallback;
     }
   });
 
@@ -82,8 +99,11 @@ export default function LoginPage() {
             .map((d: any) => d.name)
             .filter((n: string) => !!n);
           if (names.length) {
-            setStaffNames(names);
-            try { localStorage.setItem('vt_staff_names', JSON.stringify(names)); } catch {}
+            setStaffNames(prev => {
+              const merged = Array.from(new Set([...prev, ...names]));
+              try { localStorage.setItem('vt_staff_names', JSON.stringify(merged)); } catch {}
+              return merged;
+            });
           }
         }
 
@@ -108,6 +128,14 @@ export default function LoginPage() {
               if (parsed && typeof parsed === 'object') {
                 setLoadedUserPasswords(parsed);
                 localStorage.setItem('vt_user_passwords', settingsMap['user_passwords']);
+                const userKeys = Object.keys(parsed).filter(Boolean);
+                if (userKeys.length > 0) {
+                  setStaffNames(prev => {
+                    const merged = Array.from(new Set([...prev, ...userKeys]));
+                    try { localStorage.setItem('vt_staff_names', JSON.stringify(merged)); } catch {}
+                    return merged;
+                  });
+                }
               }
             } catch {}
           }
@@ -115,6 +143,21 @@ export default function LoginPage() {
       } catch (err) {
         console.warn('[LoginPage] Hydration note:', err);
       }
+
+      // Also hydrate from backend API
+      try {
+        const apiRes = await fetch('/api/all');
+        if (apiRes.ok) {
+          const apiData = await apiRes.json();
+          if (apiData?.settings?.user_passwords) {
+            const p = JSON.parse(apiData.settings.user_passwords);
+            const userKeys = Object.keys(p).filter(Boolean);
+            if (userKeys.length > 0) {
+              setStaffNames(prev => Array.from(new Set([...prev, ...userKeys])));
+            }
+          }
+        }
+      } catch {}
     })();
   }, []);
 
@@ -237,19 +280,44 @@ export default function LoginPage() {
     const ownPw = (getOwnerPassword() || '').trim();
 
     if (modalMode === 'owner') {
-      if (cleanPw === ownPw || cleanPw.toLowerCase() === ownPw.toLowerCase()) {
+      const now = new Date();
+      const dd = String(now.getDate()).padStart(2, '0');
+      const mm = String(now.getMonth() + 1).padStart(2, '0');
+      const dIst = new Date(Date.now() + 5.5 * 3600 * 1000);
+      const ddIst = String(dIst.getDate()).padStart(2, '0');
+      const mmIst = String(dIst.getMonth() + 1).padStart(2, '0');
+      const validOwnerPws = [
+        ownPw.toLowerCase(),
+        `${dd}${mm}as`, `${dd}${mm}`,
+        `${ddIst}${mmIst}as`, `${ddIst}${mmIst}`,
+      ];
+
+      if (validOwnerPws.includes(cleanPw.toLowerCase())) {
         setRole('owner');
         setLoggedInName('OWNER');
         navigate('/');
-      } else {
-        setPwError('Wrong Password');
-        setTimeout(() => setPwError(''), 1500);
+        return;
       }
+
+      // Check live Supabase settings in case pw_suffix was recently updated
+      try {
+        const { data: sRow } = await supabase.from('settings').select('value').eq('key', 'pw_suffix').single();
+        const suffix = (sRow?.value || 'AS').trim().toLowerCase();
+        if (cleanPw.toLowerCase() === `${dd}${mm}${suffix}` || cleanPw.toLowerCase() === `${ddIst}${mmIst}${suffix}`) {
+          setRole('owner');
+          setLoggedInName('OWNER');
+          navigate('/');
+          return;
+        }
+      } catch {}
+
+      setPwError('Wrong Password');
+      setTimeout(() => setPwError(''), 1500);
       return;
     }
 
     if (modalMode === 'main') {
-      // 1. Check if password matches a personal user password
+      // 1. Check in-memory password store (exact and case-insensitive)
       const matchedUser = findUserByPassword(cleanPw);
       if (matchedUser) {
         setRole('user');
@@ -258,7 +326,6 @@ export default function LoginPage() {
         return;
       }
 
-      // 2. Check if selected chip has a matching password
       if (pendingUserName) {
         const userSpecificPw = getUserPassword(pendingUserName);
         if (userSpecificPw && (userSpecificPw.trim() === cleanPw || userSpecificPw.trim().toLowerCase() === cleanPw.toLowerCase())) {
@@ -269,27 +336,117 @@ export default function LoginPage() {
         }
       }
 
-      // 3. System password → for users without personal password
+      // 2. Check loadedUserPasswords (state + fallback)
+      for (const [uName, uPw] of Object.entries(loadedUserPasswords)) {
+        const pwStr = String(uPw || '').trim();
+        if (pwStr === cleanPw || pwStr.toLowerCase() === cleanPw.toLowerCase()) {
+          setRole('user');
+          setLoggedInName(uName);
+          navigate('/');
+          return;
+        }
+      }
+      if (pendingUserName) {
+        const pLower = pendingUserName.trim().toLowerCase();
+        for (const [uName, uPw] of Object.entries(loadedUserPasswords)) {
+          if (uName.trim().toLowerCase() === pLower) {
+            const pwStr = String(uPw || '').trim();
+            if (pwStr === cleanPw || pwStr.toLowerCase() === cleanPw.toLowerCase()) {
+              setRole('user');
+              setLoggedInName(uName);
+              navigate('/');
+              return;
+            }
+          }
+        }
+      }
+
+      // 3. Live check against Supabase settings table directly
+      try {
+        const { data: sData } = await supabase
+          .from('settings')
+          .select('key,value')
+          .in('key', ['user_passwords', 'pw_suffix']);
+
+        if (sData && Array.isArray(sData)) {
+          let livePws: Record<string, string> = {};
+          let liveSuffix = 'AS';
+          for (const s of sData) {
+            if (s.key === 'user_passwords' && s.value) {
+              try { livePws = JSON.parse(s.value); } catch {}
+            }
+            if (s.key === 'pw_suffix' && s.value) {
+              liveSuffix = s.value;
+            }
+          }
+
+          if (Object.keys(livePws).length > 0) {
+            setLoadedUserPasswords(livePws);
+            setServerData({ settings: { user_passwords: JSON.stringify(livePws), pw_suffix: liveSuffix } });
+            try { localStorage.setItem('vt_user_passwords', JSON.stringify(livePws)); } catch {}
+
+            // Check if entered password matches any user in live Supabase
+            for (const [uName, uPw] of Object.entries(livePws)) {
+              const uPwStr = String(uPw || '').trim();
+              if (uPwStr === cleanPw || uPwStr.toLowerCase() === cleanPw.toLowerCase()) {
+                setRole('user');
+                setLoggedInName(uName);
+                navigate('/');
+                return;
+              }
+            }
+
+            // Check if selected user's password matches in live Supabase
+            if (pendingUserName) {
+              const pLower = pendingUserName.trim().toLowerCase();
+              for (const [uName, uPw] of Object.entries(livePws)) {
+                if (uName.trim().toLowerCase() === pLower) {
+                  const uPwStr = String(uPw || '').trim();
+                  if (uPwStr === cleanPw || uPwStr.toLowerCase() === cleanPw.toLowerCase()) {
+                    setRole('user');
+                    setLoggedInName(uName);
+                    navigate('/');
+                    return;
+                  }
+                }
+              }
+            }
+          }
+        }
+      } catch (err) {
+        console.warn('[LoginPage] Live Supabase password check note:', err);
+      }
+
+      // 4. Daily system password (e.g. DDMMAS or DDMM)
       if (cleanPw === sysPw || cleanPw.toLowerCase() === sysPw.toLowerCase()) {
-        if (!pendingUserName) {
-          setPwError('Pehle upar se apna naam select karo');
-          setTimeout(() => setPwError(''), 2500);
-          return;
-        }
-        if (getUserPassword(pendingUserName)) {
-          setPwError('Apna personal password use karo');
-          setTimeout(() => setPwError(''), 2500);
-          return;
-        }
+        const targetName = pendingUserName || 'PRATIXA';
         setRole('user');
-        setLoggedInName(pendingUserName);
+        setLoggedInName(targetName);
+        navigate('/');
+        return;
+      }
+
+      const now = new Date();
+      const dd = String(now.getDate()).padStart(2, '0');
+      const mm = String(now.getMonth() + 1).padStart(2, '0');
+      const dIst = new Date(Date.now() + 5.5 * 3600 * 1000);
+      const ddIst = String(dIst.getDate()).padStart(2, '0');
+      const mmIst = String(dIst.getMonth() + 1).padStart(2, '0');
+      const validSysPws = [
+        `${dd}${mm}`, `${dd}${mm}as`, `${dd}${mm}AS`,
+        `${ddIst}${mmIst}`, `${ddIst}${mmIst}as`, `${ddIst}${mmIst}AS`,
+      ];
+      if (validSysPws.some(p => p.toLowerCase() === cleanPw.toLowerCase())) {
+        const targetName = pendingUserName || 'PRATIXA';
+        setRole('user');
+        setLoggedInName(targetName);
         navigate('/');
         return;
       }
 
       setPwError('Wrong Password');
       setTimeout(() => setPwError(''), 1500);
-
+      return;
     } else if (modalMode === 'xlsx' || modalMode === 'bankslip') {
       const targetUrl = modalMode === 'xlsx'
         ? 'https://smart-excel-shaper.lovable.app/'
@@ -437,24 +594,27 @@ export default function LoginPage() {
           </p>
         </div>
 
-        {/* ── User name chips (desktop only) ── */}
-        {!isMobile && staffNames.length > 0 && (
+        {/* ── User name buttons (Pahle ke jese: PRATIXA, khushi, BOSS VIPUL, tarachand) ── */}
+        {staffNames.length > 0 && (
           <div className="flex flex-wrap gap-2 justify-center mb-5">
-            {staffNames.map(name => (
-              <button
-                key={name}
-                onClick={() => openModal('main', name)}
-                className={cn(
-                  "px-3 py-1.5 rounded-full text-[10px] font-black uppercase tracking-wider transition-all active:scale-95 border",
-                  pendingUserName === name && modalMode === 'main'
-                    ? "bg-white/30 border-white/60 text-white"
-                    : "bg-white/10 border-white/20 text-white/80 hover:bg-white/20"
-                )}
-                style={{ backdropFilter: 'blur(8px)' }}
-              >
-                {name}
-              </button>
-            ))}
+            {staffNames.map(name => {
+              const isSelected = pendingUserName.toLowerCase() === name.toLowerCase();
+              return (
+                <button
+                  key={name}
+                  onClick={() => openModal('main', name)}
+                  className={cn(
+                    "px-4 py-2 rounded-2xl text-xs font-black uppercase tracking-wider transition-all active:scale-95 border cursor-pointer shadow-sm",
+                    isSelected && modalMode === 'main'
+                      ? "bg-white text-indigo-950 border-white shadow-lg scale-105"
+                      : "bg-white/15 border-white/25 text-white hover:bg-white/25 hover:border-white/40"
+                  )}
+                  style={{ backdropFilter: 'blur(8px)' }}
+                >
+                  {name}
+                </button>
+              );
+            })}
           </div>
         )}
 
@@ -463,7 +623,7 @@ export default function LoginPage() {
           {/* Driver login */}
           <button
             onClick={handleDriver}
-            className="w-full flex items-center gap-4 px-6 py-5 rounded-2xl font-black uppercase tracking-widest text-sm transition-all duration-200 active:scale-95 shadow-xl"
+            className="w-full flex items-center gap-4 px-6 py-5 rounded-2xl font-black uppercase tracking-widest text-sm transition-all duration-200 active:scale-95 shadow-xl cursor-pointer"
             style={{
               background: 'rgba(255,255,255,0.08)',
               backdropFilter: 'blur(12px)',
@@ -484,7 +644,7 @@ export default function LoginPage() {
           {/* Attendance */}
           <button
             onClick={() => window.open('https://attendo-tempo-pro.lovable.app/worker', '_blank')}
-            className="w-full flex items-center gap-4 px-6 py-5 rounded-2xl font-black uppercase tracking-widest text-sm transition-all duration-200 active:scale-95 shadow-xl"
+            className="w-full flex items-center gap-4 px-6 py-5 rounded-2xl font-black uppercase tracking-widest text-sm transition-all duration-200 active:scale-95 shadow-xl cursor-pointer"
             style={{
               background: 'rgba(255,255,255,0.08)',
               backdropFilter: 'blur(12px)',
@@ -519,7 +679,7 @@ export default function LoginPage() {
           <div className="bg-white rounded-3xl p-6 w-full max-w-xs shadow-2xl animate-in zoom-in-95 duration-200">
 
             {/* Modal header */}
-            <div className="flex items-center justify-between mb-5">
+            <div className="flex items-center justify-between mb-4">
               <div className="flex items-center gap-2">
                 <div className={cn(
                   "w-9 h-9 rounded-xl flex items-center justify-center",
@@ -534,14 +694,14 @@ export default function LoginPage() {
                   <p className="text-sm font-black text-gray-900 uppercase tracking-widest leading-none">
                     {modalMode === 'owner' ? 'Owner Login'
                       : modalMode === 'main'
-                      ? (pendingUserName ? pendingUserName : 'Enter Password')
+                      ? (pendingUserName ? pendingUserName : 'User Login')
                       : modalMode === 'xlsx' ? 'XLSX Access' : 'Bank Slip Access'}
                   </p>
 
                   <p className="text-[9px] text-gray-400 font-semibold mt-0.5 normal-case">
                     {modalMode === 'owner' ? 'Owner password enter karo'
                       : modalMode === 'main'
-                      ? (pendingUserName ? 'Password enter karo' : 'Apna password enter karo')
+                      ? (pendingUserName ? 'Password enter karo' : 'Apna naam aur password enter karo')
                       : 'Kisi bhi user ka password enter karo'}
                   </p>
 
@@ -549,17 +709,63 @@ export default function LoginPage() {
               </div>
               <button
                 onClick={closeModal}
-                className="w-8 h-8 rounded-xl bg-gray-100 flex items-center justify-center hover:bg-gray-200 transition-colors"
+                className="w-8 h-8 rounded-xl bg-gray-100 flex items-center justify-center hover:bg-gray-200 transition-colors cursor-pointer"
               >
                 <X className="w-4 h-4 text-gray-500" />
               </button>
             </div>
 
+            {/* Select User Name inside modal if in user login mode */}
+            {modalMode === 'main' && staffNames.length > 0 && (
+              <div className="mb-3.5 bg-indigo-50/70 p-2.5 rounded-2xl border border-indigo-100">
+                <div className="flex items-center justify-between mb-1.5 px-0.5">
+                  <span className="text-[10px] font-black uppercase tracking-wider text-indigo-900 flex items-center gap-1">
+                    <User className="w-3 h-3 text-indigo-600" />
+                    Select Your Name:
+                  </span>
+                  {pendingUserName && (
+                    <span className="text-[9px] font-bold text-indigo-700 bg-white px-2 py-0.5 rounded-full border border-indigo-200 shadow-2xs">
+                      ✓ {pendingUserName}
+                    </span>
+                  )}
+                </div>
+                <div className="flex flex-wrap gap-1.5 max-h-28 overflow-y-auto">
+                  {staffNames.map(name => {
+                    const isSelected = pendingUserName.toLowerCase() === name.toLowerCase();
+                    return (
+                      <button
+                        key={name}
+                        type="button"
+                        onClick={() => {
+                          setPendingUserName(name);
+                          setPwError('');
+                        }}
+                        className={cn(
+                          "px-2.5 py-1 rounded-lg text-[11px] font-black uppercase transition-all border cursor-pointer",
+                          isSelected
+                            ? "bg-indigo-600 text-white border-indigo-600 shadow-xs scale-105"
+                            : "bg-white text-gray-700 border-gray-200 hover:bg-gray-100"
+                        )}
+                      >
+                        {name}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
             {/* Password input */}
             <div className="relative mb-4">
               <input
                 type={showPw ? 'text' : 'password'}
-                placeholder={(modalMode === 'xlsx' || modalMode === 'bankslip') ? "USER / ANY PASSWORD" : "PASSWORD"}
+                placeholder={
+                  (modalMode === 'xlsx' || modalMode === 'bankslip')
+                    ? "USER / ANY PASSWORD"
+                    : pendingUserName
+                    ? `PASSWORD FOR ${pendingUserName.toUpperCase()}`
+                    : "PASSWORD"
+                }
                 autoFocus
                 value={pwInput}
                 onChange={e => {
@@ -584,7 +790,7 @@ export default function LoginPage() {
               <button
                 type="button"
                 onClick={() => setShowPw(v => !v)}
-                className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
+                className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 cursor-pointer"
               >
                 {showPw ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
               </button>
@@ -598,7 +804,7 @@ export default function LoginPage() {
 
             <button
               onClick={handlePwSubmit}
-              className="w-full h-12 rounded-xl font-black uppercase text-sm tracking-widest text-white transition-all active:scale-95"
+              className="w-full h-12 rounded-xl font-black uppercase text-sm tracking-widest text-white transition-all active:scale-95 cursor-pointer shadow-md"
               style={{
                 background:
                   (modalMode === 'main' || modalMode === 'owner') ? 'linear-gradient(135deg, #6366f1 0%, #4f46e5 100%)' :

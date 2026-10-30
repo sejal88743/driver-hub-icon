@@ -115,25 +115,27 @@ export default function TopNav() {
             })}
           </div>
           <div className="flex items-center gap-1 pr-1">
-            {/* Urgent Message Pop Broadcast button */}
-            <button
-              onClick={() => setShowMsgModal(true)}
-              title="Message Pop / Broadcast (Send 30px Red Bold Popup)"
-              className={cn(
-                "relative flex items-center justify-center w-7 h-7 rounded-lg transition-all cursor-pointer",
-                activeMsgCount > 0
-                  ? "bg-red-600/15 text-red-600 hover:bg-red-600/25 ring-1 ring-red-500/50"
-                  : "hover:bg-muted text-muted-foreground hover:text-foreground"
-              )}
-            >
-              <Megaphone className={cn("w-3.5 h-3.5", activeMsgCount > 0 ? "animate-bounce" : "")} />
-              {activeMsgCount > 0 && (
-                <span className="absolute -top-0.5 -right-0.5 flex h-2 w-2">
-                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75"></span>
-                  <span className="relative inline-flex rounded-full h-2 w-2 bg-red-600"></span>
-                </span>
-              )}
-            </button>
+            {/* Urgent Message Pop Broadcast button (Owner Only) */}
+            {role === 'owner' && (
+              <button
+                onClick={() => setShowMsgModal(true)}
+                title="Message Pop / Broadcast (Owner Only - Send 48px Red Bold Popup)"
+                className={cn(
+                  "relative flex items-center justify-center w-7 h-7 rounded-lg transition-all cursor-pointer",
+                  activeMsgCount > 0
+                    ? "bg-red-600/15 text-red-600 hover:bg-red-600/25 ring-1 ring-red-500/50"
+                    : "hover:bg-muted text-muted-foreground hover:text-foreground"
+                )}
+              >
+                <Megaphone className={cn("w-3.5 h-3.5", activeMsgCount > 0 ? "animate-bounce" : "")} />
+                {activeMsgCount > 0 && (
+                  <span className="absolute -top-0.5 -right-0.5 flex h-2 w-2">
+                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75"></span>
+                    <span className="relative inline-flex rounded-full h-2 w-2 bg-red-600"></span>
+                  </span>
+                )}
+              </button>
+            )}
 
             <SyncDot />
             <button
@@ -147,11 +149,13 @@ export default function TopNav() {
         </div>
       </nav>
 
-      {/* Broadcast Message Modal */}
-      <SendUrgentMessageModal
-        isOpen={showMsgModal}
-        onClose={() => setShowMsgModal(false)}
-      />
+      {/* Broadcast Message Modal (Owner Only) */}
+      {role === 'owner' && (
+        <SendUrgentMessageModal
+          isOpen={showMsgModal}
+          onClose={() => setShowMsgModal(false)}
+        />
+      )}
     </>
   );
 }

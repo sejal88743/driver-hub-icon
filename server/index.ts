@@ -198,6 +198,63 @@ async function pgUpsert(table: string, rows: Record<string, unknown>[], conflict
   }
 }
 
+// ─── Transparent Supabase Proxy ──────────────────────────────────────────────
+const LOCKED_SUPABASE_URL = 'https://zybrzzouzleacqjvfiiu.supabase.co';
+const LOCKED_SUPABASE_PUBLISHABLE_KEY = 'sb_publishable_gkwGkK0YvU8q_GjkkcRNOg_XsE3AcGV';
+
+app.use('/api/supabase-proxy', async (req, res) => {
+  const targetPath = req.originalUrl.replace(/^\/api\/supabase-proxy/, '');
+  const targetUrl = LOCKED_SUPABASE_URL + targetPath;
+
+  const fwdHeaders = new Headers();
+  for (const [k, v] of Object.entries(req.headers)) {
+    const lk = k.toLowerCase();
+    if (lk !== 'host' && lk !== 'connection' && lk !== 'content-length' && lk !== 'accept-encoding' && typeof v === 'string') {
+      fwdHeaders.set(k, v);
+    }
+  }
+  // Guarantee the locked Supabase key is present
+  if (!fwdHeaders.has('apikey')) {
+    fwdHeaders.set('apikey', LOCKED_SUPABASE_PUBLISHABLE_KEY);
+  }
+  if (!fwdHeaders.has('authorization')) {
+    fwdHeaders.set('authorization', 'Bearer ' + LOCKED_SUPABASE_PUBLISHABLE_KEY);
+  }
+
+  let body: any = undefined;
+  if (['POST', 'PATCH', 'PUT', 'DELETE'].includes(req.method)) {
+    if (Buffer.isBuffer(req.body)) {
+      body = req.body;
+    } else if (typeof req.body === 'object' && req.body !== null) {
+      body = JSON.stringify(req.body);
+      fwdHeaders.set('content-type', 'application/json');
+    } else if (typeof req.body === 'string') {
+      body = req.body;
+    }
+  }
+
+  try {
+    const resp = await fetch(targetUrl, {
+      method: req.method,
+      headers: fwdHeaders,
+      body,
+    });
+
+    resp.headers.forEach((v, k) => {
+      const lower = k.toLowerCase();
+      if (lower !== 'content-encoding' && lower !== 'content-length' && lower !== 'transfer-encoding') {
+        res.setHeader(k, v);
+      }
+    });
+    res.status(resp.status);
+    const buf = Buffer.from(await resp.arrayBuffer());
+    res.send(buf);
+  } catch (err: any) {
+    console.error('[SupabaseProxy] Proxy error:', err?.message || err);
+    res.status(502).json({ error: String(err?.message || err) });
+  }
+});
+
 // ─── Health check ─────────────────────────────────────────────────────────────
 app.get('/api/health', (_req, res) => {
   res.json({ ok: true });
@@ -253,6 +310,51 @@ app.get('/api/all', async (_req, res) => {
     const salespersonContacts = Array.from(spMap.values());
     const settings: Record<string, string> = {};
     for (const r of settingsRes.rows as { key: string; value: string }[]) settings[r.key] = r.value;
+
+    // If local settings is empty (e.g. mock DB in dev), hydrate from Supabase
+    if (Object.keys(settings).length === 0) {
+      try {
+        const sRes = await fetch(`${LOCKED_SUPABASE_URL}/rest/v1/settings?select=key,value`, {
+          headers: {
+            apikey: LOCKED_SUPABASE_PUBLISHABLE_KEY,
+            Authorization: `Bearer ${LOCKED_SUPABASE_PUBLISHABLE_KEY}`,
+          },
+        });
+        if (sRes.ok) {
+          const sData = await sRes.json();
+          if (Array.isArray(sData)) {
+            for (const r of sData) {
+              if (r.key && r.value) settings[r.key] = r.value;
+            }
+          }
+        }
+      } catch (e) {
+        console.warn('[/api/all] Supabase settings fallback error:', e);
+      }
+    }
+
+    // If local drivers is empty, hydrate from Supabase
+    if (drivers.length === 0) {
+      try {
+        const dRes = await fetch(`${LOCKED_SUPABASE_URL}/rest/v1/drivers?select=id,name`, {
+          headers: {
+            apikey: LOCKED_SUPABASE_PUBLISHABLE_KEY,
+            Authorization: `Bearer ${LOCKED_SUPABASE_PUBLISHABLE_KEY}`,
+          },
+        });
+        if (dRes.ok) {
+          const dData = await dRes.json();
+          if (Array.isArray(dData)) {
+            for (const r of dData) {
+              if (r.name) drivers.push({ id: String(r.id), name: String(r.name) });
+            }
+          }
+        }
+      } catch (e) {
+        console.warn('[/api/all] Supabase drivers fallback error:', e);
+      }
+    }
+
     // Never expose the admin-saved Gemini API key to clients
     delete settings['gemini_api_key'];
 

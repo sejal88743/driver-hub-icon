@@ -512,23 +512,20 @@ function initSupabaseRealtime(force = false) {
           // Supabase's socket manages its own reconnect if disconnected. Do NOT trigger a loop here.
         } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
           if (!isIntentionallyClosing) {
-            const errStr = String(err?.message || err || '');
-            if (errStr.includes('heartbeat timeout')) {
-              // Heartbeat timeouts are normal transient network pauses; Supabase socket reconnects automatically.
-              console.debug('[Supabase Realtime] Heartbeat pause, auto-reconnecting...');
-            } else {
-              console.warn('[Supabase Realtime] Channel status:', status, err);
-            }
-            // Provide a graceful fallback with exponential backoff if it stays in error state.
-            if (navigator.onLine && !realtimeReconnectTimer) {
+            // Heartbeat/transport pauses are handled gracefully by falling back to HTTP REST polling
+            // We dispatch 'ok' because Supabase HTTP REST is fully online and active
+            window.dispatchEvent(new CustomEvent('sync-status', { detail: 'ok' }));
+            void doDeltaSync();
+
+            // Retry at most twice with gentle backoff, then rely on reliable HTTP polling
+            if (navigator.onLine && !realtimeReconnectTimer && reconnectAttempts < 2) {
               reconnectAttempts++;
-              const delay = Math.min(30000, 3000 * Math.pow(1.5, Math.min(reconnectAttempts, 5)));
+              const delay = 15000 * reconnectAttempts;
               realtimeReconnectTimer = setTimeout(() => {
                 realtimeReconnectTimer = null;
                 const state = (realtimeChannel as any)?.state;
                 if (!realtimeChannel || state === 'closed' || state === 'errored') {
                   initSupabaseRealtime(true);
-                  void doDeltaSync();
                 }
               }, delay);
             }

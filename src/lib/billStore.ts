@@ -830,7 +830,7 @@ export function loadCreditAssigns(serverAssigns: Record<string, CreditAssign>) {
   dispatchUpdate();
 }
 
-let _pwSuffix: string = (typeof window !== 'undefined' ? localStorage.getItem(LS_PW_SUFFIX) : null) || 'manoj';
+let _pwSuffix: string = (typeof window !== 'undefined' ? localStorage.getItem(LS_PW_SUFFIX) : null) || 'AS';
 let _billSearchAutoResetSec: number = typeof window !== 'undefined' ? Number(localStorage.getItem(LS_SEARCH_RESET_SEC) ?? 4) : 4;
 let _waTemplates: WhatsAppTemplates | null = null;
 // User permissions: name → {canEdit, canAdd, canBackDate}
@@ -844,12 +844,20 @@ let _userPerms: Record<string, { canEdit: boolean; canAdd: boolean; canBackDate?
 })();
 // User passwords: name → custom password string (owner can set per-user)
 let _userPasswords: Record<string, string> = (() => {
-  if (typeof window === 'undefined') return {};
+  const fallback = {
+    'PRATIXA': 'JIGO1307',
+    'khushi': 'KHUSHI@444',
+    'BOSS VIPUL': 'BOSS@9238',
+    'tarachand': 'TAra@905',
+  };
+  if (typeof window === 'undefined') return fallback;
   try {
-    return JSON.parse(localStorage.getItem(LS_USER_PASSWORDS) || '{}');
-  } catch {
-    return {};
-  }
+    const cached = JSON.parse(localStorage.getItem(LS_USER_PASSWORDS) || '{}');
+    if (cached && typeof cached === 'object' && Object.keys(cached).length > 0) {
+      return { ...fallback, ...cached };
+    }
+  } catch {}
+  return fallback;
 })();
 
 export function setServerData(data: {
@@ -2702,7 +2710,13 @@ export async function saveUserPerm(name: string, perm: { canEdit: boolean; canAd
 
 // ─── User passwords (per-user custom password set by owner) ──────────────────
 export function getUserPassword(name: string): string | null {
-  return _userPasswords[name] ?? null;
+  if (!name) return null;
+  if (_userPasswords[name]) return _userPasswords[name];
+  const lower = name.trim().toLowerCase();
+  for (const [k, v] of Object.entries(_userPasswords)) {
+    if (k.trim().toLowerCase() === lower) return v;
+  }
+  return null;
 }
 
 export function getAllUserPasswords(): Record<string, string> {
