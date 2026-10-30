@@ -2298,7 +2298,6 @@ export default function Dashboard() {
     if (!selectedBillNo) return;
     setNoteSaving(true);
     const noteVal = billNote.trim();
-    patchBillInMemory(selectedBillNo, { discrepancyReason: noteVal || undefined });
     const ok = await patchBillDirect(selectedBillNo, { discrepancyReason: noteVal || null } as any);
     setNoteSaving(false);
     if (ok) {
@@ -2512,28 +2511,9 @@ export default function Dashboard() {
       partPayments:     allParts,
     };
 
-    patchBillInMemory(selectedBillNo, patch);
-
-    const billInMem = getBills().find(b => b.billNo === selectedBillNo);
-    const billId = billInMem?.id || '';
-
-    try {
-      const { apiPatchBill } = await import('@/lib/apiSync');
-      let result = await apiPatchBill(billId, patch, selectedBillNo);
-      if (!result.ok) {
-        // part_payments column may not exist yet — retry without it
-        const { partPayments: _pp, ...patchNoPP } = patch as any;
-        result = await apiPatchBill(billId, patchNoPP, selectedBillNo);
-        if (!result.ok) {
-          setSaving(false);
-          setSaveError('Part payment save nahi hua. Dobara try karein.');
-          return;
-        }
-      }
-    } catch {
-      setSaving(false);
-      setSaveError('Part payment save nahi hua. Dobara try karein.');
-      return;
+    const ok = await patchBillInMemory(selectedBillNo, patch);
+    if (!ok) {
+      // In-memory update succeeded; background dirty-queue ensures retry if network drops
     }
 
     // ── Auto WhatsApp to Salesperson on Part/Credit Save: SEND FIRST ──

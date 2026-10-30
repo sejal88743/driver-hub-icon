@@ -233,7 +233,7 @@ function billToSupabase(b: Partial<Bill>): Record<string, unknown> {
   if ('cashAmount'        in b) out.cash_amount         = b.cashAmount ?? null;
   if ('upiAmount'         in b) out.upi_amount          = b.upiAmount ?? null;
   if ('chequeAmount'      in b) out.cheque_amount       = b.chequeAmount ?? null;
-  if ('lineCutAmt' in b || 'id' in b) {
+  if ('lineCutAmt' in b) {
     out.line_cut_amt = (b.lineCutAmt == null || isNaN(Number(b.lineCutAmt))) ? 0 : Number(b.lineCutAmt);
   }
   if ('delPendingHistory' in b) out.del_pending_history = b.delPendingHistory ?? null;
@@ -448,6 +448,14 @@ export async function fetchAllBills(options?: { fullHistory?: boolean }): Promis
 
 // All mirrors use bounded pages, respecting the backend's actual response cap.
 async function fetchAllRows(table: string, orderCol = 'id', selectCols = '*'): Promise<any[]> {
+  try {
+    let query = supabase.from(table).select(selectCols);
+    if (orderCol) query = query.order(orderCol, { ascending: true });
+    const { data, error } = await query.limit(1000);
+    if (!error && Array.isArray(data) && data.length < 1000) {
+      return data;
+    }
+  } catch {}
   return collectSyncPages<any>(async (from, to) => {
     let query = supabase.from(table).select(selectCols);
     if (orderCol) query = query.order(orderCol, { ascending: true });
@@ -703,12 +711,14 @@ export async function apiPatchBill(id: string, patch: Partial<Bill>, _billNo?: s
     };
 
     let affected = 0;
-    if (hasId) {
-      affected = await updateSingle('id', id);
+    // Fast path: if bill_no is available, bill_no is UNIQUE in Supabase schema.
+    // Try bill_no first for direct O(1) index hit
+    if (hasBillNo) {
+      affected = await updateSingle('bill_no', _billNo!.trim());
     }
 
-    if (affected === 0 && hasBillNo) {
-      affected = await updateSingle('bill_no', _billNo!.trim());
+    if (affected === 0 && hasId && id !== _billNo?.trim()) {
+      affected = await updateSingle('id', id);
     }
 
     if (affected === 0) {

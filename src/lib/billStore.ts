@@ -4,6 +4,7 @@ import { MASTER_SALESPERSON_DIRECTORY, findMasterSalesperson, getMasterSalespers
 import { getRole } from './auth';
 import { getGreenPartyNameByCode, loadGreenPartiesFromSettings, getGreenParties } from './greenParties';
 import { excelSerialToDate, isoToDisplay, displayToIso, normDateStr } from './dateUtils';
+import { extractMocNumber, extractMocSrNumber, formatMocSerialBillNo, formatMocPartyName, getNextMocSrNo } from './commissionMoc';
 
 function getTodayISO() {
   const now = new Date();
@@ -606,7 +607,7 @@ function doPersistLocalState() {
 
   // 2. Micro-cache for fast initial-render in localStorage (top recent bills only, stripped of bulky history)
   if (_bills.length > 0) {
-    const lightBills = _bills.slice(0, 60).map(b => {
+    const lightBills = _bills.slice(0, 500).map(b => {
       const { editHistory, delPendingHistory, ...rest } = b;
       return rest;
     });
@@ -3006,7 +3007,6 @@ export async function savePayment(
     if (chequeDate) fallbackPatch.chequeDate = excelSerialToDate(chequeDate);
     if (discrepancyReason != null) fallbackPatch.discrepancyReason = discrepancyReason;
     
-    const { extractMocNumber, formatMocSerialBillNo, getNextMocSrNo, formatMocPartyName } = await import('@/lib/commissionMoc');
     const mocNum = isMocBn ? (extractMocNumber(normBillNo) || '1') : '';
     const autoSrNo = isMocBn ? String(getNextMocSrNo(mocNum, _bills)) : '';
     const finalBillNo = isMocBn ? formatMocSerialBillNo(mocNum, autoSrNo) : billNo;
@@ -3142,7 +3142,6 @@ export async function savePayment(
     ...(isMocBill ? { billNetAmt: collected, lineCutAmt: 0, salespersonName: 'MOC', collectionCode: 'MOC', beatName: 'COMMISSION' } : {}),
   };
   if (isMocBill) {
-    const { extractMocNumber, extractMocSrNumber, formatMocSerialBillNo, formatMocPartyName, getNextMocSrNo } = await import('@/lib/commissionMoc');
     const mocNum = extractMocNumber(normBillNo) || extractMocNumber(_bills[index].billNo) || extractMocNumber(_bills[index].partyName) || '1';
     let srNo = _bills[index].srNo;
     const existingSrInBn = extractMocSrNumber(_bills[index].billNo);

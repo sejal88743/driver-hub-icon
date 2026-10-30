@@ -522,7 +522,7 @@ export default function LoginPage() {
       <button
         onClick={() => openModal('owner')}
         title="Owner Login"
-        className="absolute top-4 left-4 z-20 flex items-center gap-1.5 px-3 py-1.5 rounded-xl font-black uppercase text-[9px] tracking-widest transition-all active:scale-95 shadow-md"
+        className="hidden md:flex absolute top-4 left-4 z-20 items-center gap-1.5 px-3 py-1.5 rounded-xl font-black uppercase text-[9px] tracking-widest transition-all active:scale-95 shadow-md"
         style={{
           background: 'linear-gradient(135deg, #6366f1 0%, #4f46e5 100%)',
           boxShadow: '0 2px 10px rgba(99,102,241,0.4)',
@@ -535,7 +535,7 @@ export default function LoginPage() {
       </button>
 
       {/* Top-right tool buttons */}
-      <div className="absolute top-4 right-4 flex gap-2 z-20">
+      <div className="hidden md:flex absolute top-4 right-4 gap-2 z-20">
         <button
           onClick={() => openModal('xlsx')}
           title="XLSX Tool"
@@ -596,7 +596,7 @@ export default function LoginPage() {
 
         {/* ── User name buttons (Pahle ke jese: PRATIXA, khushi, BOSS VIPUL, tarachand) ── */}
         {staffNames.length > 0 && (
-          <div className="flex flex-wrap gap-2 justify-center mb-5">
+          <div className="hidden md:flex flex-wrap gap-2 justify-center mb-5">
             {staffNames.map(name => {
               const isSelected = pendingUserName.toLowerCase() === name.toLowerCase();
               return (
@@ -636,7 +636,7 @@ export default function LoginPage() {
               <Truck className="w-6 h-6 text-white" />
             </div>
             <div className="text-left flex-1">
-              <p className="text-base font-black leading-none">Driver</p>
+              <p className="text-base font-black leading-none">{isMobile ? 'Driver Login' : 'Driver'}</p>
               <p className="text-[10px] font-semibold text-indigo-200 mt-0.5 normal-case tracking-normal">Payment entry · Dashboard only</p>
             </div>
           </button>
