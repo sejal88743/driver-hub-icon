@@ -24,6 +24,10 @@ if (typeof window !== 'undefined') {
       message.includes('connection closed') ||
       errorMsg.includes('Connection Closed') ||
       errorMsg.includes('connection closed') ||
+      message.includes('EventSource') ||
+      message.includes('text/event-stream') ||
+      errorMsg.includes('EventSource') ||
+      errorMsg.includes('text/event-stream') ||
       (message.includes("Cannot read properties of null (reading 'addEventListener')") && (filename.includes('extension') || !filename || filename.includes('modal')))
     ) {
       event.preventDefault();

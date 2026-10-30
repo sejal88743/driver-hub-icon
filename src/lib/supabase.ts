@@ -33,79 +33,61 @@ const SUPABASE_ANON_KEY =
 export const FINAL_URL = LOCKED_SUPABASE_URL;
 export const FINAL_KEY = LOCKED_SUPABASE_PUBLISHABLE_KEY;
 
-// Proxy detection state
-let useProxyFallback = false;
+// Direct Supabase communication is primary and authoritative across all clients.
+// Clear any stale proxy state from previous sessions.
 if (typeof window !== 'undefined') {
   try {
-    if (sessionStorage.getItem('vt_use_supabase_proxy') === '1') {
-      useProxyFallback = true;
-    }
+    sessionStorage.removeItem('vt_use_supabase_proxy');
+    localStorage.removeItem('vt_use_supabase_proxy');
   } catch {}
 }
 
-// Fast reachability probe on client load
-if (typeof window !== 'undefined') {
-  // Probe within 2 seconds. If unreachable (e.g. timeout / ISP blocking Supabase direct IP), switch immediately to proxy.
-  fetch(`${LOCKED_SUPABASE_URL}/rest/v1/`, {
-    headers: { apikey: LOCKED_SUPABASE_PUBLISHABLE_KEY },
-    signal: typeof AbortSignal.timeout === 'function' ? AbortSignal.timeout(2000) : undefined,
-  })
-    .then((r) => {
-      if (r.ok || r.status === 200 || r.status === 404 || r.status === 401) {
-        useProxyFallback = false;
-        try { sessionStorage.removeItem('vt_use_supabase_proxy'); } catch {}
-      }
-    })
-    .catch(() => {
-      console.warn('[Supabase] Direct connection to zybrzzouzleacqjvfiiu.supabase.co unreachable; switching to server proxy /api/supabase-proxy');
-      useProxyFallback = true;
-      try { sessionStorage.setItem('vt_use_supabase_proxy', '1'); } catch {}
-    });
-}
-
-function combineSignals(s1?: AbortSignal | null, s2?: AbortSignal | null): AbortSignal | undefined {
-  if (!s1) return s2 || undefined;
-  if (!s2) return s1 || undefined;
-  if (typeof (AbortSignal as any).any === 'function') {
-    return (AbortSignal as any).any([s1, s2]);
-  }
-  const ctrl = new AbortController();
-  s1.addEventListener('abort', () => ctrl.abort(s1.reason), { once: true });
-  s2.addEventListener('abort', () => ctrl.abort(s2.reason), { once: true });
-  return ctrl.signal;
-}
-
-// Smart custom fetch that automatically routes via local /api/supabase-proxy if direct Supabase connection fails or times out
+// Smart custom fetch that ensures direct Supabase connection remains rock-solid
+// and strictly protects against receiving HTML ('<!doctype html>') as API JSON.
 async function resilientSupabaseFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
   const urlStr = typeof input === 'string' ? input : (input as Request).url;
 
-  // If proxy fallback is already enabled, rewrite directly to /api/supabase-proxy
-  if (useProxyFallback && urlStr.startsWith(LOCKED_SUPABASE_URL)) {
-    const proxiedUrl = urlStr.replace(LOCKED_SUPABASE_URL, '/api/supabase-proxy');
-    return fetch(proxiedUrl, init);
+  // Guarantee required Supabase headers
+  const headers = new Headers(init?.headers);
+  if (!headers.has('apikey')) {
+    headers.set('apikey', LOCKED_SUPABASE_PUBLISHABLE_KEY);
+  }
+  if (!headers.has('authorization')) {
+    headers.set('authorization', `Bearer ${LOCKED_SUPABASE_PUBLISHABLE_KEY}`);
   }
 
-  // If URL targets locked Supabase, attempt direct with a 3.5s timeout fallback
-  if (urlStr.startsWith(LOCKED_SUPABASE_URL)) {
-    const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(new Error('Supabase direct connection timeout')), 3500);
-    const signal = combineSignals(init?.signal, ctrl.signal);
+  const reqInit: RequestInit = {
+    ...init,
+    headers,
+  };
 
-    try {
-      const resp = await fetch(input, { ...init, signal });
-      clearTimeout(timer);
-      return resp;
-    } catch (err: any) {
-      clearTimeout(timer);
-      console.warn('[Supabase] Direct request failed or timed out (' + (err?.message || err) + '); routing via /api/supabase-proxy');
-      useProxyFallback = true;
-      try { sessionStorage.setItem('vt_use_supabase_proxy', '1'); } catch {}
-      const proxiedUrl = urlStr.replace(LOCKED_SUPABASE_URL, '/api/supabase-proxy');
-      return fetch(proxiedUrl, init);
+  // 1. Direct fetch to locked Supabase instance
+  try {
+    const resp = await fetch(input, reqInit);
+    // If Supabase responded, return response directly
+    return resp;
+  } catch (directErr: any) {
+    // Only attempt local proxy fallback if direct connection suffered a network/DNS error
+    // AND the URL targets the locked Supabase endpoint
+    if (urlStr.startsWith(LOCKED_SUPABASE_URL)) {
+      try {
+        const proxiedUrl = urlStr.replace(LOCKED_SUPABASE_URL, '/api/supabase-proxy');
+        const proxyResp = await fetch(proxiedUrl, reqInit);
+        
+        // Guard against HTML SPA fallback: a valid Supabase REST response is NEVER text/html!
+        const cType = proxyResp.headers.get('content-type') || '';
+        if (cType.includes('text/html')) {
+          console.warn('[Supabase] Local proxy returned HTML instead of JSON; discarding proxy response');
+          throw directErr;
+        }
+        return proxyResp;
+      } catch {
+        // If proxy fails or returns HTML, bubble up the original direct error
+        throw directErr;
+      }
     }
+    throw directErr;
   }
-
-  return fetch(input, init);
 }
 
 export const supabase = createClient(FINAL_URL, FINAL_KEY, {

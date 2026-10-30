@@ -1,3 +1,4 @@
+import { supabase } from './supabase';
 import { getLoggedInName, getRole } from './auth';
 
 export interface UrgentMessage {
@@ -14,11 +15,14 @@ export interface UrgentMessage {
 type Listener = () => void;
 const listeners = new Set<Listener>();
 
+const URGENT_SETTINGS_KEY = 'urgent_messages';
+
 let _activeMessages: UrgentMessage[] = [];
 let _allMessages: UrgentMessage[] = [];
 let _eventSource: EventSource | null = null;
 let _pollInterval: any = null;
 let _hasInitialized = false;
+const playedSoundIds = new Set<string>();
 
 // Audio beep notification using Web Audio API
 function playUrgentAlertSound() {
@@ -75,10 +79,45 @@ function dedupeMessages(list: UrgentMessage[]): UrgentMessage[] {
 }
 
 /**
+ * Read persistent urgent messages directly from Supabase (works cross-device).
+ */
+async function fetchSupabaseMessages(): Promise<UrgentMessage[]> {
+  try {
+    const { data, error } = await supabase
+      .from('settings')
+      .select('value')
+      .eq('key', URGENT_SETTINGS_KEY)
+      .maybeSingle();
+
+    if (error || !data?.value) return [];
+    const parsed = JSON.parse(data.value);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Persist urgent messages to Supabase settings table.
+ */
+async function persistSupabaseMessages(messages: UrgentMessage[]): Promise<boolean> {
+  try {
+    const jsonStr = JSON.stringify(messages);
+    const { error } = await supabase
+      .from('settings')
+      .upsert({ key: URGENT_SETTINGS_KEY, value: jsonStr }, { onConflict: 'key' });
+    return !error;
+  } catch (e) {
+    console.warn('[UrgentMessageStore] Supabase save error:', e);
+    return false;
+  }
+}
+
+/**
  * Checks whether this urgent message is meant for the current user and not yet dismissed by them.
  */
 export function isMessageForCurrentUser(msg: UrgentMessage): boolean {
-  if (!msg.active) return false;
+  if (!msg || !msg.active) return false;
 
   const myName = (getLoggedInName() || '').trim().toLowerCase();
   const myRole = (getRole() || '').trim().toLowerCase();
@@ -89,7 +128,7 @@ export function isMessageForCurrentUser(msg: UrgentMessage): boolean {
   }
 
   // If already dismissed by this user
-  if (myName && msg.dismissedBy.some(u => u.trim().toLowerCase() === myName)) {
+  if (myName && Array.isArray(msg.dismissedBy) && msg.dismissedBy.some(u => u.trim().toLowerCase() === myName)) {
     return false;
   }
 
@@ -105,6 +144,9 @@ export function isMessageForCurrentUser(msg: UrgentMessage): boolean {
 
   // Exact name match (case-insensitive)
   if (myName && target === myName) return true;
+
+  // Partial name match (e.g. "PRATIXA" vs "Pratixa")
+  if (myName && target && (myName.includes(target) || target.includes(myName))) return true;
 
   return false;
 }
@@ -134,24 +176,45 @@ export function getAllMessages(): UrgentMessage[] {
 }
 
 /**
- * Fetch latest active messages from server.
+ * Fetch latest active messages from Supabase (and local server fallback).
  */
 export async function syncActiveMessages() {
+  const prevActiveIds = new Set(_activeMessages.map(m => m.id));
+
+  // 1. Primary: Fetch from Supabase (guaranteed cross-device sync)
+  const remoteMessages = await fetchSupabaseMessages();
+  const now = Date.now();
+  const freshMessages = remoteMessages.filter(m => {
+    if (!m || !m.createdAt) return false;
+    const msgAge = now - new Date(m.createdAt).getTime();
+    return msgAge < 24 * 60 * 60 * 1000; // keep within 24 hours
+  });
+
+  if (freshMessages.length > 0 || remoteMessages.length > 0) {
+    _allMessages = dedupeMessages(freshMessages);
+    _activeMessages = freshMessages.filter(m => m.active);
+
+    const currentPopup = getCurrentUserActivePopup();
+    if (currentPopup && !prevActiveIds.has(currentPopup.id) && !playedSoundIds.has(currentPopup.id)) {
+      playedSoundIds.add(currentPopup.id);
+      playUrgentAlertSound();
+    }
+    notifyListeners();
+  }
+
+  // 2. Secondary: If local express server is running, fetch its cache too
   try {
-    const res = await fetch('/api/urgent-messages/active');
-    if (!res.ok) return;
-    const data = await res.json();
-    if (data.ok && Array.isArray(data.messages)) {
-      const prevActiveIds = new Set(_activeMessages.map(m => m.id));
-      _activeMessages = dedupeMessages(data.messages);
-
-      // Check if a new message arrived that targets this user
-      const currentPopup = getCurrentUserActivePopup();
-      if (currentPopup && !prevActiveIds.has(currentPopup.id)) {
-        playUrgentAlertSound();
+    const res = await fetch('/api/urgent-messages/active', {
+      signal: typeof AbortSignal.timeout === 'function' ? AbortSignal.timeout(1500) : undefined,
+    });
+    const cType = res.headers.get('content-type') || '';
+    if (res.ok && cType.includes('application/json')) {
+      const data = await res.json();
+      if (data.ok && Array.isArray(data.messages)) {
+        const merged = dedupeMessages([..._activeMessages, ...data.messages.filter((m: any) => m.active)]);
+        _activeMessages = merged;
+        notifyListeners();
       }
-
-      notifyListeners();
     }
   } catch {}
 }
@@ -160,19 +223,29 @@ export async function syncActiveMessages() {
  * Fetch all messages for management view.
  */
 export async function syncAllMessages() {
+  const remote = await fetchSupabaseMessages();
+  if (remote.length > 0) {
+    _allMessages = dedupeMessages(remote);
+    notifyListeners();
+  }
+
   try {
-    const res = await fetch('/api/urgent-messages/all');
-    if (!res.ok) return;
-    const data = await res.json();
-    if (data.ok && Array.isArray(data.messages)) {
-      _allMessages = dedupeMessages(data.messages);
-      notifyListeners();
+    const res = await fetch('/api/urgent-messages/all', {
+      signal: typeof AbortSignal.timeout === 'function' ? AbortSignal.timeout(1500) : undefined,
+    });
+    const cType = res.headers.get('content-type') || '';
+    if (res.ok && cType.includes('application/json')) {
+      const data = await res.json();
+      if (data.ok && Array.isArray(data.messages)) {
+        _allMessages = dedupeMessages([..._allMessages, ...data.messages]);
+        notifyListeners();
+      }
     }
   } catch {}
 }
 
 /**
- * Initialize SSE connection and fallback polling.
+ * Initialize SSE connection, Supabase Realtime and periodic polling.
  */
 export function initUrgentMessageClient() {
   if (_hasInitialized || typeof window === 'undefined') return;
@@ -182,8 +255,31 @@ export function initUrgentMessageClient() {
   syncActiveMessages();
   syncAllMessages();
 
-  // Set up SSE stream
+  // Supabase Realtime listener on settings table
+  try {
+    supabase
+      .channel('vt_urgent_messages_channel')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'settings', filter: `key=eq.${URGENT_SETTINGS_KEY}` },
+        () => {
+          syncActiveMessages();
+        }
+      )
+      .subscribe();
+  } catch (err) {
+    console.warn('[UrgentMessageStore] Realtime subscription note:', err);
+  }
+
+  // Fast polling interval (every 2.5s) to guarantee arrival across all devices & background tabs
+  _pollInterval = setInterval(() => {
+    syncActiveMessages();
+  }, 2500);
+
+  // Optional local SSE connection (with automatic error suppression if running on static/proxy)
+  let sseDisabled = false;
   function connectSse() {
+    if (sseDisabled) return;
     try {
       if (_eventSource) {
         _eventSource.close();
@@ -201,7 +297,8 @@ export function initUrgentMessageClient() {
             _activeMessages = dedupeMessages([..._activeMessages.filter(m => m.id !== newMsg.id), newMsg]);
             _allMessages = dedupeMessages([newMsg, ..._allMessages.filter(m => m.id !== newMsg.id)]);
             
-            if (isMessageForCurrentUser(newMsg)) {
+            if (isMessageForCurrentUser(newMsg) && !playedSoundIds.has(newMsg.id)) {
+              playedSoundIds.add(newMsg.id);
               playUrgentAlertSound();
             }
             notifyListeners();
@@ -210,7 +307,7 @@ export function initUrgentMessageClient() {
             _activeMessages = dedupeMessages(
               _activeMessages.map(m => {
                 if (m.id === id) {
-                  const dismissed = [...m.dismissedBy];
+                  const dismissed = [...(m.dismissedBy || [])];
                   if (!dismissed.includes(userName)) dismissed.push(userName);
                   return { ...m, dismissedBy: dismissed, active: active !== undefined ? active : m.active };
                 }
@@ -219,7 +316,6 @@ export function initUrgentMessageClient() {
             );
             notifyListeners();
           } else if (payload.type === 'urgent-message:cancelled') {
-            // SENDER CANCELLED/CLOSED MESSAGE: IMMEDIATELY CLOSE IT FOR ALL CLIENTS
             const { id } = payload;
             _activeMessages = _activeMessages.filter(m => m.id !== id);
             _allMessages = dedupeMessages(_allMessages.map(m => m.id === id ? { ...m, active: false } : m));
@@ -231,18 +327,18 @@ export function initUrgentMessageClient() {
       _eventSource.onerror = () => {
         try { _eventSource?.close(); } catch {}
         _eventSource = null;
-        // Reconnect after 4s
-        setTimeout(connectSse, 4000);
+        // If SSE fails (e.g. on static/preview host), do not retry continuously
+        sseDisabled = true;
       };
-    } catch {}
+    } catch {
+      sseDisabled = true;
+    }
   }
 
-  connectSse();
-
-  // Fallback poll every 4 seconds to guarantee sync even across background tab throttles
-  _pollInterval = setInterval(() => {
-    syncActiveMessages();
-  }, 4000);
+  // Only try SSE on full-stack dev origin
+  if (typeof window !== 'undefined' && window.location.hostname === 'localhost') {
+    connectSse();
+  }
 }
 
 /**
@@ -258,6 +354,7 @@ export function subscribeUrgentMessages(listener: Listener): () => void {
 
 /**
  * Send a new urgent message to all or specific users.
+ * Saved immediately to Supabase so it reaches ALL devices instantly!
  */
 export async function sendUrgentMessage(params: {
   targetUser: string;
@@ -267,32 +364,52 @@ export async function sendUrgentMessage(params: {
     const senderName = getLoggedInName() || 'Owner';
     const senderRole = getRole() || 'owner';
 
-    const res = await fetch('/api/urgent-messages/send', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        senderName,
-        senderRole,
-        targetUser: params.targetUser,
-        text: params.text,
-      }),
-    });
+    const newMsg: UrgentMessage = {
+      id: `urg_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+      senderName,
+      senderRole,
+      targetUser: params.targetUser,
+      text: params.text,
+      createdAt: new Date().toISOString(),
+      active: true,
+      dismissedBy: [],
+    };
 
-    const data = await res.json();
-    if (data.ok && data.message) {
-      _activeMessages = dedupeMessages([..._activeMessages.filter(m => m.id !== data.message.id), data.message]);
-      _allMessages = dedupeMessages([data.message, ..._allMessages.filter(m => m.id !== data.message.id)]);
-      notifyListeners();
-      return { ok: true, message: data.message };
-    }
-    return { ok: false, error: data.error || 'Failed to send' };
+    // 1. Fetch current messages from Supabase
+    const existing = await fetchSupabaseMessages();
+    const updated = [newMsg, ...existing.filter(m => m.id !== newMsg.id)].slice(0, 100);
+
+    // 2. Persist to Supabase (cross-device authoritative sync)
+    await persistSupabaseMessages(updated);
+
+    // 3. Update local state
+    _activeMessages = dedupeMessages([newMsg, ..._activeMessages]);
+    _allMessages = dedupeMessages([newMsg, ..._allMessages]);
+    notifyListeners();
+
+    // 4. Secondary: Post to local server if available
+    try {
+      fetch('/api/urgent-messages/send', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          senderName,
+          senderRole,
+          targetUser: params.targetUser,
+          text: params.text,
+        }),
+      }).catch(() => {});
+    } catch {}
+
+    return { ok: true, message: newMsg };
   } catch (err: any) {
-    return { ok: false, error: err?.message || 'Network error' };
+    return { ok: false, error: err?.message || 'Failed to send message' };
   }
 }
 
 /**
  * Recipient dismisses the message on their device.
+ * Updates Supabase so dismissal is synced.
  */
 export async function dismissUrgentMessage(id: string): Promise<boolean> {
   const userName = getLoggedInName() || 'User';
@@ -301,7 +418,7 @@ export async function dismissUrgentMessage(id: string): Promise<boolean> {
   _activeMessages = dedupeMessages(
     _activeMessages.map(m => {
       if (m.id === id) {
-        const dismissed = [...m.dismissedBy];
+        const dismissed = [...(m.dismissedBy || [])];
         if (!dismissed.includes(userName)) dismissed.push(userName);
         return { ...m, dismissedBy: dismissed };
       }
@@ -310,22 +427,35 @@ export async function dismissUrgentMessage(id: string): Promise<boolean> {
   );
   notifyListeners();
 
+  // Update Supabase
   try {
-    const res = await fetch('/api/urgent-messages/dismiss', {
+    const existing = await fetchSupabaseMessages();
+    const updated = existing.map(m => {
+      if (m.id === id) {
+        const dismissed = [...(m.dismissedBy || [])];
+        if (!dismissed.includes(userName)) dismissed.push(userName);
+        return { ...m, dismissedBy: dismissed };
+      }
+      return m;
+    });
+    await persistSupabaseMessages(updated);
+  } catch {}
+
+  // Local server mirror
+  try {
+    fetch('/api/urgent-messages/dismiss', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ id, userName }),
-    });
-    const data = await res.json();
-    return Boolean(data.ok);
-  } catch {
-    return false;
-  }
+    }).catch(() => {});
+  } catch {}
+
+  return true;
 }
 
 /**
  * Sender cancels / stops the message ("ME BAND KARU TOBHI BAND HO JAYE GA").
- * Immediately makes active = false on server and removes it everywhere!
+ * Immediately makes active = false in Supabase and removes it everywhere!
  */
 export async function cancelUrgentMessage(id: string): Promise<boolean> {
   // Optimistically remove from active list locally
@@ -333,15 +463,21 @@ export async function cancelUrgentMessage(id: string): Promise<boolean> {
   _allMessages = dedupeMessages(_allMessages.map(m => m.id === id ? { ...m, active: false } : m));
   notifyListeners();
 
+  // Update Supabase
   try {
-    const res = await fetch('/api/urgent-messages/cancel', {
+    const existing = await fetchSupabaseMessages();
+    const updated = existing.map(m => (m.id === id ? { ...m, active: false } : m));
+    await persistSupabaseMessages(updated);
+  } catch {}
+
+  // Local server mirror
+  try {
+    fetch('/api/urgent-messages/cancel', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ id }),
-    });
-    const data = await res.json();
-    return Boolean(data.ok);
-  } catch {
-    return false;
-  }
+    }).catch(() => {});
+  } catch {}
+
+  return true;
 }

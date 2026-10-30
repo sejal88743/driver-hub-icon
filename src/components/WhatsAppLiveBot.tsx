@@ -62,6 +62,9 @@ export function WhatsAppLiveBot() {
           }
         } catch {}
       };
+      es.onerror = () => {
+        try { es?.close(); } catch {}
+      };
     } catch {}
     return () => {
       try { es?.close(); } catch {}

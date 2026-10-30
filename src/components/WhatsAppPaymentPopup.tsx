@@ -228,19 +228,23 @@ export function WhatsAppPaymentPopup() {
         es.onerror = () => {
           try { es?.close(); } catch {}
           es = null;
+          sseErrors++;
           if (!unmounted) {
             clearTimeout(reconnectTimer);
-            reconnectTimer = setTimeout(connectSSE, 4000);
+            // If failed repeatedly, back off to 30s to avoid console spam
+            const delay = sseErrors > 2 ? 30000 : 5000;
+            reconnectTimer = setTimeout(connectSSE, delay);
           }
         };
       } catch {
         if (!unmounted) {
           clearTimeout(reconnectTimer);
-          reconnectTimer = setTimeout(connectSSE, 5000);
+          reconnectTimer = setTimeout(connectSSE, 30000);
         }
       }
     }
 
+    let sseErrors = 0;
     connectSSE();
 
     return () => {
