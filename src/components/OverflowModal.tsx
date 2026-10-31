@@ -140,6 +140,13 @@ export default function OverflowModal({
       return;
     }
     
+    // MANDATORY CHECK: Ensure the last/current pending item has its lineCutInput filled (0 or any value)
+    const lastItem = pendingItems[pendingItems.length - 1];
+    if (lastItem && (lastItem.lineCutInput === '' || lastItem.lineCutInput === undefined || lastItem.lineCutInput === null)) {
+      setNextBillErr(`Pehle bill "${lastItem.billNo}" ka line cut amount daalein (0 ya jo bhi ho) tabhi agla bill add hoga!`);
+      return;
+    }
+    
     const foundBill = findBillInList(bn, allAvailableBills);
     if (!foundBill) {
       setNextBillErr(`Bill "${bn}" nahi mila`);
@@ -152,7 +159,7 @@ export default function OverflowModal({
     
     const billNetAmt = Number(foundBill.billNetAmt) || Number(foundBill.outstandingAmount) || 0;
     const existingLc = (Number(foundBill.lineCutAmt) || 0) || (Number(foundBill.cancelLine) || 0);
-    const nextLineCut = existingLc > 0 ? String(existingLc) : '0';
+    const nextLineCut = existingLc > 0 ? String(existingLc) : '';
 
     setNextBillErr('');
     setPendingItems(prev => [
@@ -365,6 +372,11 @@ export default function OverflowModal({
             <Button
               id="overflow-save-all-btn"
               onClick={() => {
+                const unFilledItem = pendingItems.find(item => item.lineCutInput === '' || item.lineCutInput === undefined || item.lineCutInput === null);
+                if (unFilledItem) {
+                  setNextBillErr(`Pehle bill "${unFilledItem.billNo}" ka line cut amount daalein (0 ya jo bhi ho)!`);
+                  return;
+                }
                 if (!isFullySettled) {
                   setNextBillErr(`Remain amount ₹${remaining.toLocaleString('en-IN')} bacha hai! Remain amount = 0 hoga tohi entry save hogi.`);
                   nextInputRef.current?.focus();

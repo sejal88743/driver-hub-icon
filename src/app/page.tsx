@@ -2170,13 +2170,12 @@ export default function Dashboard() {
     // If there is ANY difference, Dashboard entry MUST NOT save!
     if (!isMoc && !isZeroColMode && selectedBill && totalCollected > 0) {
       const netPayable = Math.max(0, (selectedBill.billNetAmt || 0) - (lineCutToSave || 0));
-      const diffVal = Math.round((netPayable - totalCollected) * 100) / 100;
-      if (Math.abs(diffVal) > 0.01) {
+      if (netPayable - totalCollected > 0.01) {
         setSaving(false);
-        setSaveError(`Diff ₹${Math.abs(diffVal)} hai! Net Payable aur Received barabar hone chahiye. Entry save nahi hogi.`);
+        setSaveError(`Received amount kam hai! Short ₹${Math.round(netPayable - totalCollected)}.`);
         toast({
-          title: 'Entry Save Nahi Hogi',
-          description: `Diff ₹${Math.abs(diffVal)} hai! Net Payable (₹${netPayable.toLocaleString('en-IN')}) aur Received (₹${totalCollected.toLocaleString('en-IN')}) match hona zaroori hai.`,
+          title: 'Entry Save Nahi Hogi (Short Hai)',
+          description: `Received amount (₹${totalCollected.toLocaleString('en-IN')}) Net Payable (₹${netPayable.toLocaleString('en-IN')}) se kam hai!`,
           variant: 'destructive',
         });
         return;
@@ -2343,7 +2342,7 @@ export default function Dashboard() {
     setOverflowChequeDateSaved(effectiveChequeDate || '');
     setOverflowRecDateSaved(effectiveRecDate || '');
     const existingLc = (Number(selectedBill.lineCutAmt) || 0) || (Number(selectedBill.cancelLine) || 0);
-    const initLineCut = existingLc > 0 ? String(existingLc) : '0';
+    const initLineCut = existingLc > 0 ? String(existingLc) : '';
     setOverflowPendingItems([{ billNo: selectedBillNo, partyName: selectedBill.partyName, billNetAmt: selectedBill.billNetAmt, lineCutInput: initLineCut }]);
     setOverflowNextBillInput('');
     setOverflowNextBillErr('');
@@ -2586,15 +2585,16 @@ export default function Dashboard() {
     const netPayable = Math.max(0, (netAmt ?? 0) - activeLc);
     const diffVal = Math.round((netPayable - totalCollected) * 100) / 100;
 
-    // USER RULE: DIFF HOGA TO DASHBOARD KA ENTRY SAVE NAHI HOGA
-    if (!isSpecial && !isMoc && selectedBill && totalCollected > 0 && Math.abs(diffVal) > 0.01) {
-      setSaveError(`Diff ₹${Math.abs(diffVal)} hai! Diff hone par entry save nahi hogi.`);
-      toast({
-        title: 'Entry Save Nahi Hogi (Diff Hai)',
-        description: `Diff ₹${Math.abs(diffVal)} hai! Net Payable (₹${netPayable.toLocaleString('en-IN')}) aur Received (₹${totalCollected.toLocaleString('en-IN')}) match hona zaroori hai.`,
-        variant: 'destructive',
-      });
-      return;
+    if (!isSpecial && !isMoc && selectedBill && totalCollected > 0) {
+      if (netPayable - totalCollected > 0.01) {
+        setSaveError(`Received amount kam hai! Short ₹${Math.round(netPayable - totalCollected)}.`);
+        toast({
+          title: 'Entry Save Nahi Hogi (Short Hai)',
+          description: `Received amount (₹${totalCollected.toLocaleString('en-IN')}) Net Payable (₹${netPayable.toLocaleString('en-IN')}) se kam hai!`,
+          variant: 'destructive',
+        });
+        return;
+      }
     }
 
     if (isSpecial) doSave(null, recDate);
@@ -2657,14 +2657,16 @@ export default function Dashboard() {
     const netPayableClick = Math.max(0, (selectedBill?.billNetAmt || 0) - activeLcClick);
     const diffClick = Math.round((netPayableClick - totalCollected) * 100) / 100;
 
-    if (!isMoc && !isSpecial && !isChqMetaOnlyEdit && !isEditLockedChqMeta && selectedBill && totalCollected > 0 && Math.abs(diffClick) > 0.01) {
-      toast({
-        title: 'Entry Save Nahi Hogi (Diff Hai)',
-        description: `Diff ₹${Math.abs(diffClick)} hai! Net Payable (₹${netPayableClick.toLocaleString('en-IN')}) aur Received (₹${totalCollected.toLocaleString('en-IN')}) barabar hona zaroori hai.`,
-        variant: 'destructive',
-      });
-      setSaveError(`Diff ₹${Math.abs(diffClick)} hai! Diff hone par entry save nahi hogi.`);
-      return;
+    if (!isMoc && !isSpecial && !isChqMetaOnlyEdit && !isEditLockedChqMeta && selectedBill && totalCollected > 0) {
+      if (netPayableClick - totalCollected > 0.01) {
+        toast({
+          title: 'Entry Save Nahi Hogi (Short Hai)',
+          description: `Received amount (₹${totalCollected.toLocaleString('en-IN')}) Net Payable (₹${netPayableClick.toLocaleString('en-IN')}) se kam hai!`,
+          variant: 'destructive',
+        });
+        setSaveError(`Received amount kam hai! Short ₹${Math.round(netPayableClick - totalCollected)}.`);
+        return;
+      }
     }
 
     if (Number(chqAmt) > 0) {
