@@ -580,7 +580,7 @@ function initGlobalSync() {
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'visible') {
       lastUserActivityAt = Date.now();
-      void doDeltaSync();
+      void doFullSync(true);
       void flushDirtyQueue();
       void flushPendingWrites();
       initSupabaseRealtime();
@@ -588,12 +588,12 @@ function initGlobalSync() {
   });
   window.addEventListener('focus', () => {
     lastUserActivityAt = Date.now();
-    void doDeltaSync();
+    void doFullSync(true);
   });
   window.addEventListener('online', () => {
     void flushDirtyQueue();
     void flushPendingWrites();
-    void doDeltaSync();
+    void doFullSync(true);
     initSupabaseRealtime();
   });
 
@@ -614,7 +614,7 @@ function initGlobalSync() {
     void flushPendingWrites();
   }, 15000);
 
-  // Initial load: Hydrate immediately from cache with 0ms delay, then delta sync in background
+  // Initial load: Hydrate immediately from cache with 0ms delay, then authoritative full sync in background
   void (async () => {
     try {
       await whenStoreHydrated();
@@ -625,12 +625,10 @@ function initGlobalSync() {
       patch({ loading: false });
       const savedTs = typeof window !== 'undefined' ? localStorage.getItem('vitratrack_last_sync_ts') : null;
       deltaCursor = savedTs || new Date(Date.now() - 24 * 3600 * 1000).toISOString();
-      // Repair caches created by older estimate-limited or failed-page downloads once.
       fullCacheVerified = localStorage.getItem(FULL_CACHE_KEY) === 'complete';
-      if (fullCacheVerified) void doDeltaSync();
-      else void doFullSync(true);
+      // Always run authoritative full sync on boot to guarantee 100% data parity across all devices
+      void doFullSync(true);
     } else {
-      // Fresh device or empty local cache: do initial full sync
       void doFullSync(true);
     }
   })();
