@@ -4,6 +4,7 @@ import { apiFetchAllData, apiFetchBillsSince, mapBillFromSupabase, flushPendingW
 import { supabase } from '@/lib/supabase';
 import { isWriteInProgress, getLastWriteAt } from '@/lib/syncState';
 import { applyDirtyPatches, isDirtyPending, flushDirtyQueue } from '@/lib/localQueue';
+import { filterPendingLocalOnlyBills } from '@/lib/ghostPrune';
 
 // ─── Global singleton ─────────────────────────────────────────────────────
 // Polling + Supabase Realtime WebSocket + BroadcastChannel multi-tab
@@ -263,7 +264,12 @@ async function doFullSync(force = false) {
     });
 
     const fetchedKeys = new Set(mergedBills.map(b => getBillKey(b)));
-    const pendingNewBills = currentLocalBills.filter(b => !fetchedKeys.has(getBillKey(b)));
+    const pendingNewBills = filterPendingLocalOnlyBills(
+      currentLocalBills,
+      fetchedKeys,
+      getBillKey,
+      isDirtyPending,
+    );
     const finalBills = [...mergedBills, ...pendingNewBills];
 
     // 3. Preserve any recently created local drivers not yet in Supabase
