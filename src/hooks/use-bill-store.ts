@@ -4,6 +4,7 @@ import { apiFetchAllData, apiFetchBillsSince, mapBillFromSupabase, flushPendingW
 import { supabase } from '@/lib/supabase';
 import { isWriteInProgress, getLastWriteAt } from '@/lib/syncState';
 import { applyDirtyPatches, isDirtyPending, flushDirtyQueue } from '@/lib/localQueue';
+import { filterPendingLocalOnlyBills } from '@/lib/ghostPrune';
 
 // ─── Global singleton ─────────────────────────────────────────────────────
 // Polling + Supabase Realtime WebSocket + BroadcastChannel multi-tab
