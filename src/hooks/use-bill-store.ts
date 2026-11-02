@@ -263,7 +263,18 @@ async function doFullSync(force = false) {
     });
 
     const fetchedKeys = new Set(mergedBills.map(b => getBillKey(b)));
-    const pendingNewBills = currentLocalBills.filter(b => !fetchedKeys.has(getBillKey(b)));
+    // Keep local-only bills ONLY while they may still be genuinely unsaved:
+    // dirty-pending now, or freshly created/edited on this device (updatedAt < 24h).
+    // Anything else is a stale ghost (deleted/merged in Supabase) and must be dropped
+    // so bill counts and find results always match the real database.
+    const GHOST_GRACE_MS = 24 * 3600 * 1000;
+    const nowMs = Date.now();
+    const pendingNewBills = currentLocalBills.filter(b => {
+      if (fetchedKeys.has(getBillKey(b))) return false;
+      if (isDirtyPending(b.id, b.billNo)) return true;
+      const localTs = Date.parse(b.updatedAt || '');
+      return !isNaN(localTs) && localTs > 0 && (nowMs - localTs) < GHOST_GRACE_MS;
+    });
     const finalBills = [...mergedBills, ...pendingNewBills];
 
     // 3. Preserve any recently created local drivers not yet in Supabase
