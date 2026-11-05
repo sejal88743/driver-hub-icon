@@ -266,6 +266,20 @@ export type Bill = {
   ushopAmount?: number;
 };
 
+export function getPartyName(b?: Bill | null): string {
+  if (!b) return '—';
+  const name = (b.partyName || '').trim();
+  if (name && name !== '—') {
+    return cleanPartyName(name);
+  }
+  if (b.partyCode) {
+    const green = getGreenPartyNameByCode(b.partyCode);
+    if (green) return green;
+    return `Party ${b.partyCode}`;
+  }
+  return '—';
+}
+
 export type Driver = {
   id: string;
   name: string;
@@ -2474,16 +2488,17 @@ export async function patchBillsInMemory(patches: Array<{ billNo: string; patch:
   }
 
   markWriteStart();
-  try {
-    const { apiBulkUpsertWithProgress } = await import('@/lib/apiSync');
-    await apiBulkUpsertWithProgress(updatedBills);
-    return true;
-  } catch (err) {
-    console.warn('[patchBillsInMemory] Supabase sync warning:', err);
-    return false;
-  } finally {
+  import('@/lib/apiSync').then(({ apiBulkUpsertWithProgress }) => {
+    apiBulkUpsertWithProgress(updatedBills).catch(err => {
+      console.warn('[patchBillsInMemory] Supabase background sync warning:', err);
+    }).finally(() => {
+      markWriteEnd();
+    });
+  }).catch(() => {
     markWriteEnd();
-  }
+  });
+
+  return true;
 }
 
 /**
