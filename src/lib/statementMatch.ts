@@ -13,6 +13,7 @@ export type StatementEntry = {
   description: string;
   creditAmount: number;
   chequeNo?: string;
+  clearingDate?: string;
   matched: boolean;
   matchedBillNos: string[];
   matchedBillIds: string[];
@@ -832,6 +833,59 @@ export async function downloadUnmatchedStatementEntries(
   XLSX.writeFile(wb, fileName);
 }
 
+export function stripChequeNo(chq?: string): string {
+  if (!chq) return '';
+  return String(chq).replace(/[^0-9A-Z]/gi, '').replace(/^0+/, '').toUpperCase();
+}
+
+export function parseStatementDescription(desc: string): { chequeNo?: string; clearingDate?: string } {
+  if (!desc) return {};
+  const upper = String(desc).toUpperCase();
+  let chequeNo: string | undefined;
+  let clearingDate: string | undefined;
+
+  const instMatch = upper.match(/(?:BY\s+CLG\s+)?(?:INST|CHQ|CHEQUE|REF|UTR|FT)[\s\:\-\/]*([A-Z0-9]+)(?:\/(\d{1,2}[\-\/]\d{1,2}[\-\/]\d{2,4}))?/i);
+  if (instMatch) {
+    chequeNo = instMatch[1].trim();
+    if (instMatch[2]) {
+      clearingDate = normDate(instMatch[2]);
+    }
+  } else {
+    const chqMatch = upper.match(/(?:CHQ|CHEQUE|INST)[\s\:\-\#]*([0-9]{4,10})/i);
+    if (chqMatch) {
+      chequeNo = chqMatch[1].trim();
+    }
+  }
+
+  if (!clearingDate) {
+    const dateMatch = upper.match(/(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})/);
+    if (dateMatch) {
+      clearingDate = normDate(`${dateMatch[1]}/${dateMatch[2]}/${dateMatch[3]}`);
+    }
+  }
+
+  return { chequeNo, clearingDate };
+}
+
+function parseDateToMs(dateStr?: string): number {
+  if (!dateStr) return 0;
+  const parts = dateStr.split('/');
+  if (parts.length < 3) return 0;
+  const [d, m, y] = parts;
+  const fullY = y.length === 2 ? (parseInt(y, 10) < 50 ? `20${y}` : `19${y}`) : y;
+  const ms = new Date(`${fullY}-${m}-${d}`).getTime();
+  return isNaN(ms) ? 0 : ms;
+}
+
+function areDatesClose(dateA?: string, dateB?: string, maxDays = 14): boolean {
+  if (!dateA || !dateB) return true;
+  const msA = parseDateToMs(dateA);
+  const msB = parseDateToMs(dateB);
+  if (!msA || !msB) return dateA === dateB;
+  const diffDays = Math.abs(msA - msB) / (1000 * 60 * 60 * 24);
+  return diffDays <= maxDays;
+}
+
 /**
  * Parses Bank Statement file (CSV or XLSX/XLS).
  * Supports standard Indian Bank formats (HDFC, ICICI, SBI, Bank of Baroda, etc.)
@@ -920,12 +974,16 @@ export async function parseStatementFile(file: File): Promise<StatementEntry[]> 
     const dmy = normDate(rawDateStr);
     if (!dmy || !dmy.includes('/')) continue;
 
+    const parsedDesc = parseStatementDescription(rawDesc);
+
     entries.push({
       id: `stmt_${seq++}_${dmy.replace(/\//g, '')}_${Math.round(numAmt)}`,
       date: dmy,
       rawDate: rawDateStr,
       description: rawDesc,
       creditAmount: Math.round(numAmt * 100) / 100,
+      chequeNo: parsedDesc.chequeNo,
+      clearingDate: parsedDesc.clearingDate || parsedDesc.chequeNo ? dmy : undefined,
       matched: false,
       matchedBillNos: [],
       matchedBillIds: [],
@@ -940,7 +998,7 @@ export async function parseStatementFile(file: File): Promise<StatementEntry[]> 
  *
  * Rules:
  * 1. ONLY GPay (UPI) and Cheque entries match! Cash, Credit, Del Pending without cash are excluded.
- * 2. Date match: statement Date === bill recDate.
+ * 2. Date match: statement Date === bill recDate (or nearby clearing date).
  * 3. Multi-bill support: If multiple bills share a single GPay transaction or Cheque,
  *    their combined single amount matches the statement credit amount!
  * 4. Single-bill support: Single bill received amount matches the statement credit amount!
@@ -1155,6 +1213,54 @@ export function matchStatementWithBills(
         totalStmtAmt += ex.creditAmount;
         for (const bn of ex.matchedBillNos) matchedBillNos.add(stripGST(bn));
         for (const id of ex.matchedBillIds) matchedBillIds.add(id);
+      }
+    }
+  }
+
+  // PASS 0: Cheque Number & Amount Matching (Supports "BY CLG INST 000004/10-04-26/KCC/SURAT" format)
+  for (const entry of entriesCopy) {
+    if (entry.matched) continue;
+    const entryChq = stripChequeNo(entry.chequeNo);
+    if (!entryChq) continue;
+
+    const matchingChequeItems = bankItems.filter(item => {
+      const itemChq = stripChequeNo(item.chequeNo);
+      return itemChq && itemChq === entryChq;
+    });
+
+    if (matchingChequeItems.length > 0) {
+      const totalChqAmt = Math.round(matchingChequeItems.reduce((s, i) => s + i.recAmt, 0) * 100) / 100;
+
+      if (Math.abs(totalChqAmt - entry.creditAmount) < 0.05) {
+        if (!matchingChequeItems.some(item => matchedBillNos.has(stripGST(item.billNo)))) {
+          const refDate = entry.clearingDate || entry.date;
+          if (matchingChequeItems.every(item => areDatesClose(refDate, item.recDate, 14))) {
+            entry.matched = true;
+            entry.matchType = matchingChequeItems.length > 1 ? 'multi' : 'single';
+            entry.matchGroupKey = `CHQ_MATCH_${entryChq}`;
+            for (const item of matchingChequeItems) {
+              if (item.bill.id) matchedBillIds.add(item.bill.id);
+              matchedBillNos.add(stripGST(item.billNo));
+              entry.matchedBillNos.push(item.billNo);
+              if (item.bill.id) entry.matchedBillIds.push(item.bill.id);
+            }
+            continue;
+          }
+        }
+      }
+
+      for (const item of matchingChequeItems) {
+        if (matchedBillNos.has(stripGST(item.billNo))) continue;
+        if (Math.abs(item.recAmt - entry.creditAmount) < 0.05) {
+          entry.matched = true;
+          entry.matchType = 'single';
+          entry.matchGroupKey = `CHQ_SINGLE_${entryChq}`;
+          if (item.bill.id) matchedBillIds.add(item.bill.id);
+          matchedBillNos.add(stripGST(item.billNo));
+          entry.matchedBillNos.push(item.billNo);
+          if (item.bill.id) entry.matchedBillIds.push(item.bill.id);
+          break;
+        }
       }
     }
   }
