@@ -1280,7 +1280,9 @@ export default function DriverDayTable({ bills, selectedDriver, displayDate, onS
 
               // Snapshot rows = bill was Del Pending for this driver/date.
               // Even if re-assigned on a later date, on this historical date it MUST show as DEL PEND!
-              const isFBR = !isSnapshot && (_bm === 'fbr' || _bm === 'cancel') && !hasMoneyRec;
+              const _lc = (Number(b.lineCutAmt) || 0) || Number(b.cancelLine) || 0;
+              const _net = Number(b.billNetAmt) || 0;
+              const isFBR = !isSnapshot && (_bm === 'fbr' || _bm === 'cancel' || (_lc > 0 && _net > 0 && Math.abs(_lc - _net) < 0.05) || Boolean(b.discrepancyReason && b.discrepancyReason.trim() && !hasMoneyRec));
               const isDelPend = isSnapshot || ((_bm === 'del pending' || _bm === 'pending') && !hasMoneyRec);
               const isCredit = !isSnapshot && _bm === 'credit';
               const collected = b.collectedAmount || 0;

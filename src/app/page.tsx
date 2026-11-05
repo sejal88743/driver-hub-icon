@@ -3608,12 +3608,13 @@ export default function Dashboard() {
                   }
 
                   const _bm = (b?.paymentMode || '').toLowerCase();
-                  const isFBR = _bm === 'fbr' || _bm === 'cancel';
                   const isCredit = _bm === 'credit';
                   const isDelPend = _bm === 'del pending';
                   const _ddLC = (b?.lineCutAmt || 0) || Number(b?.cancelLine) || 0;
-                  const _ddNet = (b?.billNetAmt || 0) - _ddLC;
+                  const _rawNet = Number(b?.billNetAmt) || 0;
                   const _ddColl = b?.collectedAmount || 0;
+                  const isFBR = _bm === 'fbr' || _bm === 'cancel' || (_ddLC > 0 && _rawNet > 0 && Math.abs(_ddLC - _rawNet) < 0.05) || Boolean(b?.discrepancyReason && b.discrepancyReason.trim() && _ddColl === 0);
+                  const _ddNet = _rawNet - _ddLC;
                   const _ddFull = _ddColl > 0 && (_ddNet - _ddColl) <= 1;
                   const _ddHasMoney = _ddColl > 0 || (Number(b?.cashAmount) || 0) > 0 || (Number(b?.upiAmount) || 0) > 0 || (Number(b?.chequeAmount) || 0) > 0;
                   const _ddIsPaid = _ddFull || (!!b?.paymentDate && _ddHasMoney);
