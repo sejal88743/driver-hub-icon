@@ -1027,7 +1027,20 @@ export function matchStatementWithBills(
   const bankItems: BillBankItem[] = [];
 
   for (const b of bills) {
+    const mode = (b.paymentMode || '').toLowerCase().trim();
+    // Strictly exclude Cash, FBR, Unpaid, Credit, Del Pending, or empty mode
+    if (mode === 'cash' || mode === 'fbr' || mode === 'unpaid' || mode === 'credit' || mode === 'del pending' || mode === '') {
+      continue;
+    }
+    // Only allow UPI/GPay or Cheque/Chq payment modes with bank amounts
+    const isUpiMode = mode === 'upi' || mode === 'gpay';
+    const isChqMode = mode === 'cheque' || mode === 'chq';
     const eff = getEffAmt(b);
+
+    if (!isUpiMode && !isChqMode && eff.upi <= 0 && eff.chq <= 0 && (!b.chequeNo || !b.chequeNo.trim())) {
+      continue;
+    }
+
     const cleanBn = stripGST(getDisplayBillNo(b));
     const recDate = normDate(b.paymentDate) || normDate(b.deliveryDate) || normDate(b.date);
     if (!recDate) continue;
@@ -1301,10 +1314,7 @@ export function matchStatementWithBills(
   const singleGroups = allGroups.filter(g => g.items.length === 1);
 
   for (const entry of entriesCopy) {
-    if (entry.matched) {
-      updatedEntries.push(entry);
-      continue;
-    }
+    if (entry.matched) continue;
 
     for (const grp of singleGroups) {
       if (grp.matched) continue;
@@ -1326,7 +1336,54 @@ export function matchStatementWithBills(
         break;
       }
     }
+  }
 
+  // PASS 3: Description Bill Number Mention Matching
+  for (const entry of entriesCopy) {
+    if (entry.matched) continue;
+    const descUpper = String(entry.description || '').toUpperCase();
+    if (!descUpper) continue;
+
+    for (const item of bankItems) {
+      if (matchedBillNos.has(stripGST(item.billNo))) continue;
+      const cleanBn = stripGST(item.billNo);
+      if (cleanBn && cleanBn.length >= 3 && descUpper.includes(cleanBn)) {
+        if (Math.abs(item.recAmt - entry.creditAmount) < 0.05) {
+          entry.matched = true;
+          entry.matchType = 'single';
+          entry.matchGroupKey = `DESC_MATCH_${cleanBn}`;
+          if (item.bill.id) matchedBillIds.add(item.bill.id);
+          matchedBillNos.add(cleanBn);
+          entry.matchedBillNos.push(item.billNo);
+          if (item.bill.id) entry.matchedBillIds.push(item.bill.id);
+          break;
+        }
+      }
+    }
+  }
+
+  // PASS 4: Flexible Amount & Date Proximity Fallback (Zero false unmatched entries for database bills)
+  for (const entry of entriesCopy) {
+    if (entry.matched) continue;
+
+    for (const item of bankItems) {
+      if (matchedBillNos.has(stripGST(item.billNo))) continue;
+      if (Math.abs(item.recAmt - entry.creditAmount) < 0.05) {
+        if (areDatesClose(entry.date, item.recDate, 30)) {
+          entry.matched = true;
+          entry.matchType = 'single';
+          entry.matchGroupKey = `FLEX_MATCH_${stripGST(item.billNo)}`;
+          if (item.bill.id) matchedBillIds.add(item.bill.id);
+          matchedBillNos.add(stripGST(item.billNo));
+          entry.matchedBillNos.push(item.billNo);
+          if (item.bill.id) entry.matchedBillIds.push(item.bill.id);
+          break;
+        }
+      }
+    }
+  }
+
+  for (const entry of entriesCopy) {
     updatedEntries.push(entry);
   }
 
