@@ -27,6 +27,9 @@ dist-ssr
 # WhatsApp linked-device bot session
 .wa-session
 
+# Local data backups (never push business data to git)
+backup/
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
