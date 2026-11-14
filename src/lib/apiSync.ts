@@ -4,12 +4,6 @@ import { normalizeEditHistory, type Bill, type Driver, type Bank, type DriverDai
 import { getRole } from './auth';
 import { normDateStr, displayToIso } from './dateUtils';
 
-function auditLog(tableName: string, action: 'INSERT' | 'UPDATE' | 'UPSERT' | 'DELETE', payload: any) {
-  console.log("TABLE", tableName);
-  console.log("ACTION", action);
-  console.log("PAYLOAD", payload);
-}
-
 const UNSUPPORTED_COLS_STORAGE_KEY = 'vt_unsupported_bill_cols_v2';
 
 function loadUnsupportedColumns(): Set<string> {
@@ -90,14 +84,6 @@ export async function probeBillSchemaColumns() {
   } finally {
     probedSchema = true;
   }
-}
-
-export async function probePaymentMethodColumn() {
-  await probeBillSchemaColumns();
-}
-
-if (typeof window !== 'undefined') {
-  setTimeout(() => { void probeBillSchemaColumns(); }, 300);
 }
 
 export function cleanRowForSupabase(row: Record<string, unknown>): Record<string, unknown> {
@@ -300,16 +286,6 @@ function summaryToSupabase(s: DriverDailySummary): Record<string, unknown> {
   };
 }
 
-const EMPTY_ALL = {
-  bills: [] as Bill[],
-  drivers: [] as Driver[],
-  banks: [] as Bank[],
-  summaries: [] as DriverDailySummary[],
-  partyContacts: [] as Contact[],
-  salespersonContacts: [] as Contact[],
-  settings: {} as Record<string, string>,
-};
-
 function dispatchSyncStatus(status: 'ok' | 'error') {
   if (typeof window !== 'undefined') {
     window.dispatchEvent(new CustomEvent('sync-status', { detail: status }));
@@ -475,7 +451,6 @@ function dedupeBillsByBillNo(bills: Bill[]): Bill[] {
 
 export async function apiFetchAllData(options?: { fullHistory?: boolean }) {
   try {
-    void probePaymentMethodColumn();
     const [bills, driversRaw, banksRaw, summariesRaw, settingsRaw, contactsRaw] = await Promise.all([
       fetchAllBills(options),
       fetchAllRows('drivers', 'id', 'id, name'),
@@ -549,35 +524,6 @@ export async function apiCheckExistingBillNos(billNos: string[]): Promise<Set<st
 
 export async function apiBulkUpsertBills(bills: Bill[]) {
   return apiPushBills(bills);
-}
-
-export async function apiInsertBills(bills: Bill[]) {
-  if (bills.length === 0) return { count: 0 };
-  try {
-    await probeBillSchemaColumns();
-    const unique = dedupeBillsByBillNo(bills);
-    let rows = unique.map(billToSupabase);
-    await withRetry(async () => {
-      const { error } = await supabase!.from('bills').upsert(rows, { onConflict: 'id' });
-      if (error) {
-        const missing = extractMissingColumnFromError(error);
-        if (missing) {
-          markColumnUnsupported(missing);
-          rows = unique.map(billToSupabase);
-          const retryRes = await supabase!.from('bills').upsert(rows, { onConflict: 'id' });
-          if (retryRes.error) throw retryRes.error;
-          return;
-        }
-        throw error;
-      }
-    }, 'apiInsertBills.upsert');
-    dispatchSyncStatus('ok');
-    return { count: unique.length };
-  } catch (err) {
-    console.error('[apiSync] apiInsertBills error (after retries):', err);
-    dispatchSyncStatus('error');
-    return { count: 0 };
-  }
 }
 
 async function chunkedUpsertWithProgress(
@@ -754,51 +700,9 @@ export async function apiPatchBill(id: string, patch: Partial<Bill>, _billNo?: s
   }
 }
 
-export async function apiPatchBills(patches: Array<{ id: string; patch: Partial<Bill> }>) {
-  try {
-    await probeBillSchemaColumns();
-    await withRetry(async () => {
-      await Promise.all(patches.map(async ({ id, patch }) => {
-        const safe = stripPatchForUpdate(patch);
-        if (Object.keys(safe).length === 0) return;
-        const row = billToSupabase(safe);
-        const { error } = await supabase!.from('bills').update(row).eq('id', id);
-        if (error) {
-          const missing = extractMissingColumnFromError(error);
-          if (missing) {
-            markColumnUnsupported(missing);
-            delete row[missing];
-            const retryRes = await supabase!.from('bills').update(cleanRowForSupabase(row)).eq('id', id);
-            if (retryRes.error) throw retryRes.error;
-            return;
-          }
-          throw error;
-        }
-      }));
-    }, 'apiPatchBills.bulk');
-    dispatchSyncStatus('ok');
-    return { count: patches.length };
-  } catch (err) {
-    console.error('[apiSync] apiPatchBills error (after retries):', err);
-    // Enqueue every patch so they retry later.
-    for (const { id, patch } of patches) enqueuePending({ id, patch, ts: Date.now() });
-    dispatchSyncStatus('error');
-    return { count: 0 };
-  }
-}
-
-export async function apiSyncPaidStatus(
-  onProgress?: (done: number, total: number) => void
-): Promise<{ updated: number; errors: number }> {
-  onProgress?.(1, 1);
-  dispatchSyncStatus('ok');
-  return { updated: 0, errors: 0 };
-}
-
 export async function apiDeleteBill(id?: string, billNo?: string): Promise<boolean> {
   if (!supabase) return false;
   try {
-    auditLog('bills', 'DELETE', { id, billNo });
     let deleted = false;
     if (id) {
       const { error } = await supabase.from('bills').delete().eq('id', id);
@@ -1159,85 +1063,6 @@ export async function apiDeleteContactsByIds(ids: string[]): Promise<{ deleted: 
   }
 }
 
-/**
- * One-time cleanup: for every bill whose salesperson_name contains a " - SMNxxxxx"
- * suffix, strip the suffix and update ONLY the salesperson_name column in Supabase.
- * Also deduplicates salesperson contacts in the contacts table.
- * No other bill column is touched.
- */
-export async function apiCleanSalespersonNames(): Promise<{ billsUpdated: number; contactsUpdated: number; contactsDeleted: number }> {
-  if (!supabase) return { billsUpdated: 0, contactsUpdated: 0, contactsDeleted: 0 };
-  const SMN_RE = /\s*-\s*SMN\w+\s*$/i;
-
-  try {
-    // ── 1. Bills: group by cleaned name → bulk update per unique name ────────
-    const allBillRows = await fetchAllRows('bills', 'id');
-    const dirtyBills = allBillRows.filter((r: any) => SMN_RE.test(String(r.salesperson_name || '')));
-
-    // Group bill IDs by cleaned salesperson name for batch updates
-    const byCleanedName = new Map<string, string[]>();
-    for (const r of dirtyBills) {
-      const cleaned = String(r.salesperson_name || '').trim().replace(SMN_RE, '').trim();
-      if (!byCleanedName.has(cleaned)) byCleanedName.set(cleaned, []);
-      byCleanedName.get(cleaned)!.push(r.id as string);
-    }
-
-    let billsUpdated = 0;
-    for (const [cleanedName, ids] of byCleanedName) {
-      const BATCH = 500;
-      for (let i = 0; i < ids.length; i += BATCH) {
-        const { error } = await supabase
-          .from('bills')
-          .update({ salesperson_name: cleanedName })
-          .in('id', ids.slice(i, i + BATCH));
-        if (!error) billsUpdated += Math.min(BATCH, ids.length - i);
-      }
-    }
-
-    // ── 2. Contacts: clean names + deduplicate ─────────────────────────────
-    const contactRows = await fetchAllRows('contacts', 'id');
-    const spContacts = contactRows.filter((c: any) => c.type === 'salesperson');
-
-    const seen = new Map<string, string>(); // cleanedLower → canonical id to keep
-    const toUpdate: { id: string; name: string }[] = [];
-    const toDelete: string[] = [];
-
-    for (const c of spContacts) {
-      const raw = String(c.name || '').trim();
-      const cleaned = raw.replace(SMN_RE, '').trim();
-      const key = cleaned.toLowerCase();
-
-      if (seen.has(key)) {
-        // Duplicate entry — delete
-        toDelete.push(c.id as string);
-      } else {
-        seen.set(key, c.id as string);
-        if (cleaned !== raw) toUpdate.push({ id: c.id as string, name: cleaned });
-      }
-    }
-
-    let contactsUpdated = 0;
-    for (const item of toUpdate) {
-      const { error } = await supabase.from('contacts').update({ name: item.name }).eq('id', item.id);
-      if (!error) contactsUpdated++;
-    }
-
-    let contactsDeleted = 0;
-    const DEL_BATCH = 100;
-    for (let i = 0; i < toDelete.length; i += DEL_BATCH) {
-      const { error } = await supabase.from('contacts').delete().in('id', toDelete.slice(i, i + DEL_BATCH));
-      if (!error) contactsDeleted += Math.min(DEL_BATCH, toDelete.length - i);
-    }
-
-    dispatchSyncStatus('ok');
-    return { billsUpdated, contactsUpdated, contactsDeleted };
-  } catch (err) {
-    console.error('[apiSync] apiCleanSalespersonNames error:', err);
-    dispatchSyncStatus('error');
-    return { billsUpdated: 0, contactsUpdated: 0, contactsDeleted: 0 };
-  }
-}
-
 export async function apiPushSetting(key: string, value: string) {
   if (!supabase) {
     enqueuePendingSetting({ key, value });
@@ -1375,107 +1200,6 @@ export async function apiRecalcAllBillStatus(
 
 
 
-// ── Fix-bills: enforce the payment rule engine on every bill, one by one ───────
-// Rule 1: billNetAmt - collectedAmount - lineCutAmt = outstandingAmount.
-//         If outstandingAmount === 0 → paymentMode = "Paid".
-// Rule 2: If billNetAmt === lineCutAmt → paymentMode = "FBR" AND paymentMethod = "FBR"
-//         (takes priority over Rule 1).
-export async function apiFixBills(): Promise<{ ok: boolean; fixed: number; spAdded: number; total: number; error?: string }> {
-  try {
-    const { applyPaymentRules } = await import('./billStore');
-    const allBills = await fetchAllBills();
-    const total = allBills.length;
-
-    const now = new Date();
-    const today = `${String(now.getDate()).padStart(2, '0')}/${String(now.getMonth() + 1).padStart(2, '0')}/${now.getFullYear()}`;
-
-    const CHUNK = 200;
-    let fixed = 0;
-
-    for (let i = 0; i < allBills.length; i += CHUNK) {
-      const chunk = allBills.slice(i, i + CHUNK);
-      const updates: Array<Record<string, unknown>> = [];
-
-      for (const bill of chunk) {
-        // Skip bills already correctly marked as Paid
-        if ((Number(bill.cashAmount) > 0 || Number(bill.upiAmount) > 0 || Number(bill.chequeAmount) > 0) && (bill.paymentMode || '').toLowerCase() === 'paid') continue;
-
-        const chequeNo = String(bill.chequeNo || '').trim();
-        const ruled = applyPaymentRules(bill);
-
-        const patch: Record<string, unknown> = { id: bill.id, bill_no: bill.billNo, outstanding_amount: ruled.outstandingAmount };
-
-        const modeChanged = ruled.paymentMode !== bill.paymentMode;
-        if (modeChanged) {
-          patch.payment_mode = ruled.paymentMode ?? null;
-          if (ruled.paymentMode === 'FBR') {
-            patch.payment_method = 'FBR';
-          } else if (ruled.paymentMode === 'Paid' && !bill.paymentMethod) {
-            patch.payment_method = chequeNo ? 'Cheque' : 'Cash';
-            if (!bill.cashAmount && !bill.chequeAmount && !bill.upiAmount) {
-              if (chequeNo) patch.cheque_amount = bill.collectedAmount;
-              else patch.cash_amount = bill.collectedAmount;
-            }
-            if (!bill.paymentDate) patch.payment_date = bill.deliveryDate || bill.date || null;
-          }
-        }
-
-        // Clean stale payment_date if bill has no money collected and is not Paid/FBR
-        const isFbrMode = ruled.paymentMode === 'FBR';
-        const hasColl = (Number(bill.collectedAmount) || 0) > 0;
-        if (!hasColl && !isFbrMode && ruled.paymentMode !== 'Paid' && bill.paymentDate) {
-          patch.payment_date = null;
-          patch.payment_time = null;
-        }
-
-        updates.push(patch);
-        if (modeChanged || ruled.outstandingAmount !== bill.outstandingAmount) fixed++;
-      }
-
-      if (updates.length > 0) {
-        const { error } = await supabase!.from('bills').upsert(updates, { onConflict: 'id' });
-        if (error) console.error('[apiFixBills] upsert error:', error);
-      }
-    }
-
-    // Auto-add salesperson contacts from bill data
-    const spNames = new Set<string>();
-    for (const b of allBills) {
-      const name = String(b.salespersonName || '').trim();
-      if (name) spNames.add(name);
-    }
-
-    const { data: existingContacts } = await supabase!.from('contacts').select('name').eq('type', 'salesperson');
-    const existingSet = new Set((existingContacts || []).map((c: any) => String(c.name || '').toLowerCase()));
-
-    const { findMasterSalesperson } = await import('./salespersonDirectory');
-    const toInsert = Array.from(spNames)
-      .filter(name => !existingSet.has(name.toLowerCase()))
-      .map(name => {
-        const master = findMasterSalesperson(name);
-        return {
-          id: `sp_${name.toLowerCase().replace(/[^a-z0-9]/g, '_').substring(0, 40)}`,
-          type: 'salesperson',
-          name,
-          mobile: master?.mobile || '',
-        };
-      });
-
-    let spAdded = 0;
-    if (toInsert.length > 0) {
-      const { error } = await supabase!.from('contacts').upsert(toInsert, { onConflict: 'id' });
-      if (!error) spAdded = toInsert.length;
-    }
-
-    dispatchSyncStatus('ok');
-    return { ok: true, fixed, spAdded, total };
-  } catch (err) {
-    console.error('[apiFixBills] error:', err);
-    dispatchSyncStatus('error');
-    return { ok: false, fixed: 0, spAdded: 0, total: 0, error: String(err) };
-  }
-}
-
 // ── Fast settings-only fetch (used at startup before full sync) ───────────────
 // Retries up to `attempts` times so Supabase cold-start doesn't block login.
 export async function apiFetchSettingsEarly(attempts = 4, delayMs = 2000): Promise<Record<string, string>> {
@@ -1505,120 +1229,6 @@ export async function apiPingSupabase(): Promise<boolean> {
   }
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-// PERFORMANCE HELPERS — scale to 100k+ bills without slowing reports.
-// All additive; nothing above this line changed behavior.
-// ═══════════════════════════════════════════════════════════════════════════
-
-// ─── Windowed bill fetch (last N days by bill date) ────────────────────────
-// Uses the list_bills_since RPC so the server filters by parsed DD/MM/YYYY.
-// Returns bills whose date is within `days` OR whose date is unparseable
-// (kept so nothing silently disappears from the UI).
-export async function apiFetchRecentBills(days: number): Promise<Bill[]> {
-  const { data, error } = await supabase!.rpc('list_bills_since', { days_back: days });
-  if (error) { console.error('[apiSync] list_bills_since error:', error); return []; }
-  return ((data ?? []) as Record<string, unknown>[]).map(mapBillFromSupabase);
-}
-
-// ─── Paged bill fetch for server-side bills list / search ──────────────────
-export type BillsPageFilters = {
-  fromDate?: string;      // DD/MM/YYYY (matches bills.date)
-  toDate?: string;
-  driverName?: string;
-  salespersonName?: string;
-  paymentMode?: string;
-  partyCode?: string;
-  billNoLike?: string;    // partial bill_no match
-  partyNameLike?: string; // partial party_name match
-};
-export async function fetchBillsPage(opts: {
-  filters?: BillsPageFilters;
-  page?: number;
-  pageSize?: number;
-  orderBy?: string;
-  ascending?: boolean;
-}): Promise<{ rows: Bill[]; total: number }> {
-  const page = Math.max(0, opts.page ?? 0);
-  const size = Math.min(500, Math.max(10, opts.pageSize ?? 100));
-  const from = page * size;
-  const to = from + size - 1;
-  let q = supabase!.from('bills').select(BILL_SELECT_COLUMNS, { count: 'exact' }).range(from, to)
-    .order(opts.orderBy ?? 'id', { ascending: opts.ascending ?? true });
-  const f = opts.filters ?? {};
-  if (f.driverName)       q = q.eq('driver_name', f.driverName);
-  if (f.salespersonName)  q = q.eq('salesperson_name', f.salespersonName);
-  if (f.paymentMode)      q = q.eq('payment_mode', f.paymentMode);
-  if (f.partyCode)        q = q.eq('party_code', f.partyCode);
-  if (f.billNoLike)       q = q.ilike('bill_no', `%${f.billNoLike}%`);
-  if (f.partyNameLike)    q = q.ilike('party_name', `%${f.partyNameLike}%`);
-  // Note: date range filtering as text works only when using ISO dates. For
-  // DD/MM/YYYY we filter in JS post-fetch when both bounds present. Server-
-  // side date-range requires the parse_ddmmyyyy path via a dedicated RPC.
-  const { data, error, count } = await q;
-  if (error) { console.error('[apiSync] fetchBillsPage error:', error); return { rows: [], total: 0 }; }
-  let rows = ((data ?? []) as Record<string, unknown>[]).map(mapBillFromSupabase);
-  if (f.fromDate || f.toDate) {
-    const toParts = (s?: string) => {
-      if (!s) return null;
-      const m = /^(\d{2})\/(\d{2})\/(\d{4})$/.exec(s);
-      return m ? new Date(+m[3], +m[2] - 1, +m[1]).getTime() : null;
-    };
-    const fd = toParts(f.fromDate);
-    const td = toParts(f.toDate);
-    rows = rows.filter(b => {
-      const t = toParts(b.date);
-      if (t == null) return false;
-      if (fd != null && t < fd) return false;
-      if (td != null && t > td) return false;
-      return true;
-    });
-  }
-  return { rows, total: count ?? rows.length };
-}
-
-// ─── Aggregation RPC callers (return small pre-aggregated rows) ────────────
-export type DriverSummaryRow = {
-  driver_name: string; bill_count: number;
-  total_bill_amt: number; total_collected: number; total_outstanding: number;
-  paid_count: number; fbr_count: number; credit_count: number;
-  del_pending_count: number; unpaid_count: number;
-};
-export async function rpcReportDriverSummary(fromDate: string, toDate: string): Promise<DriverSummaryRow[]> {
-  const { data, error } = await supabase!.rpc('report_driver_summary', { from_date: fromDate, to_date: toDate });
-  if (error) { console.error('[apiSync] report_driver_summary error:', error); return []; }
-  return (data ?? []) as DriverSummaryRow[];
-}
-
-export type SalespersonSummaryRow = Omit<DriverSummaryRow, 'driver_name'> & { salesperson_name: string };
-export async function rpcReportSalespersonSummary(fromDate: string, toDate: string): Promise<SalespersonSummaryRow[]> {
-  const { data, error } = await supabase!.rpc('report_salesperson_summary', { from_date: fromDate, to_date: toDate });
-  if (error) { console.error('[apiSync] report_salesperson_summary error:', error); return []; }
-  return (data ?? []) as SalespersonSummaryRow[];
-}
-
-export type PaymentModeSummaryRow = {
-  status: string; bill_count: number;
-  total_bill_amt: number; total_collected: number; total_outstanding: number;
-};
-export async function rpcReportPaymentModeSummary(fromDate: string, toDate: string): Promise<PaymentModeSummaryRow[]> {
-  const { data, error } = await supabase!.rpc('report_payment_mode_summary', { from_date: fromDate, to_date: toDate });
-  if (error) { console.error('[apiSync] report_payment_mode_summary error:', error); return []; }
-  return (data ?? []) as PaymentModeSummaryRow[];
-}
-
-export type DailyCollectionRow = {
-  collection_date: string; bill_count: number;
-  cash_amount: number; upi_amount: number; cheque_amount: number; total_collected: number;
-};
-export async function rpcReportDailyCollection(fromDate: string, toDate: string): Promise<DailyCollectionRow[]> {
-  const { data, error } = await supabase!.rpc('report_daily_collection', { from_date: fromDate, to_date: toDate });
-  if (error) { console.error('[apiSync] report_daily_collection error:', error); return []; }
-  return (data ?? []) as DailyCollectionRow[];
-}
-
-export type PartyOutstandingRow = {
-  party_code: string; party_name: string; bill_count: number; total_outstanding: number;
-};
 /**
  * Merge two salesperson names across Supabase:
  *  - All bills where salesperson_name = fromName → updated to toName
@@ -1793,23 +1403,6 @@ export async function apiMergeTwoParties(
     dispatchSyncStatus('error');
     return { billsUpdated: 0, ok: false, error: String(err?.message ?? err) };
   }
-}
-
-export async function rpcReportPartyOutstanding(limitN = 200): Promise<PartyOutstandingRow[]> {
-  const { data, error } = await supabase!.rpc('report_party_outstanding', { limit_n: limitN });
-  if (error) { console.error('[apiSync] report_party_outstanding error:', error); return []; }
-  return (data ?? []) as PartyOutstandingRow[];
-}
-
-export type DashboardCountsRow = {
-  load_count: number; done_count: number; pend_count: number;
-  total_amt: number; collected_amt: number;
-};
-export async function rpcDashboardCounts(targetDate: string, driver: string): Promise<DashboardCountsRow | null> {
-  const { data, error } = await supabase!.rpc('dashboard_counts', { target_date: targetDate, driver });
-  if (error) { console.error('[apiSync] dashboard_counts error:', error); return null; }
-  const row = Array.isArray(data) ? data[0] : data;
-  return (row as DashboardCountsRow) ?? null;
 }
 
 // ─── Incremental delta sync ───────────────────────────────────────────────────

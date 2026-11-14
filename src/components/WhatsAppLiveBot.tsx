@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import {
   MessageSquare, Loader2, Power, PowerOff, CheckCircle2, XCircle,
-  Users, Smartphone, BellRing, Sparkles, Check, Edit3, QrCode, RefreshCw,
+  Users, Smartphone, Sparkles, Check, Edit3, QrCode, RefreshCw,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
@@ -40,8 +40,6 @@ export function WhatsAppLiveBot() {
   const [busy, setBusy] = useState(false);
   const [customGroupName, setCustomGroupName] = useState('');
   const [isEditingGroupName, setIsEditingGroupName] = useState(false);
-  const [testTriggering, setTestTriggering] = useState(false);
-  const [testSuccess, setTestSuccess] = useState(false);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // Instant real-time SSE listener for QR code generation and connection changes
@@ -50,13 +48,11 @@ export function WhatsAppLiveBot() {
     let cancelled = false;
     async function initSSE() {
       try {
-        const probe = await fetch('/api/admin/whatsapp-bot/events', {
-          method: 'GET',
-          headers: { Accept: 'text/event-stream' },
+        const probe = await fetch('/api/health', {
           signal: typeof AbortSignal.timeout === 'function' ? AbortSignal.timeout(1500) : undefined,
         });
         const cType = probe.headers.get('content-type') || '';
-        if (!probe.ok || !cType.includes('text/event-stream') || cancelled) {
+        if (!probe.ok || !cType.includes('application/json') || cancelled) {
           return;
         }
         es = new EventSource('/api/admin/whatsapp-bot/events');
@@ -210,29 +206,6 @@ export function WhatsAppLiveBot() {
     setCustomGroupName('');
   }
 
-  async function triggerTestPopup() {
-    setTestTriggering(true);
-    setTestSuccess(false);
-    try {
-      const res = await fetch('/api/admin/whatsapp-bot/test-event', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          billNo: '42911',
-          amount: 5000,
-          method: 'GPay',
-          accountName: 'LAXMI TRADERS',
-        }),
-      });
-      const d = await res.json();
-      if (d?.ok) {
-        setTestSuccess(true);
-        setTimeout(() => setTestSuccess(false), 3000);
-      }
-    } catch {}
-    setTestTriggering(false);
-  }
-
   const connected = Boolean(status?.connected);
   const running = Boolean(status?.running);
   const groups = status?.groups || [];
@@ -275,20 +248,6 @@ export function WhatsAppLiveBot() {
         </div>
 
         <div className="flex items-center gap-2 flex-wrap">
-          {/* Test Popup Trigger */}
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            onClick={triggerTestPopup}
-            disabled={testTriggering}
-            className="font-bold text-[10px] uppercase tracking-wider px-3 py-1.5 rounded-xl border-emerald-500/40 text-emerald-700 dark:text-emerald-300 hover:bg-emerald-500/10 flex items-center gap-1.5"
-            title="App me payment popup test karne ke liye click karein"
-          >
-            {testTriggering ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : testSuccess ? <Check className="w-3.5 h-3.5 text-green-600" /> : <BellRing className="w-3.5 h-3.5" />}
-            {testSuccess ? 'Popup Sent!' : 'Test Popup'}
-          </Button>
-
           {/* Quick Change WhatsApp / New QR button when connected */}
           {connected && (
             <Button

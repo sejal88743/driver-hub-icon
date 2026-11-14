@@ -497,7 +497,7 @@ function initSupabaseRealtime(force = false) {
         { event: '*', schema: 'public', table: 'settings' },
         (payload) => {
           applyRealtimeTableChange('settings', payload.eventType as any, payload.new, payload.old);
-          if (payload.new && (payload.new as any).key === 'driver_download_records_v1') {
+          if (payload.new && ((payload.new as any).key === 'vt_driver_downloads' || (payload.new as any).key === 'driver_download_records_v1')) {
             window.dispatchEvent(new CustomEvent('driver-download-records-updated', { detail: (payload.new as any).value }));
           }
           scheduleReadLocal();

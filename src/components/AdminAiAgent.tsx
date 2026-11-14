@@ -940,25 +940,8 @@ export function AdminAiAgent() {
         setExecutionProgress({ saved, total });
       });
 
-      // 2. Asynchronously notify backend server for PostgreSQL sync if available
-      try {
-        const samplePatches = response.patches.slice(0, 500);
-        fetch('/api/admin/ai-agent', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            ...(geminiApiKey.trim() ? { 'x-gemini-api-key': geminiApiKey.trim() } : {}),
-          },
-          body: JSON.stringify({
-            action: 'execute',
-            patches: samplePatches,
-            apiKey: geminiApiKey.trim() || undefined,
-          }),
-        }).catch(() => {});
-      } catch {}
-
       setResultMessage(
-        `✅ ${res.updatedCount} bills successfully updated in Supabase ('qmnofkoxoijihgwgrefv') & App Memory!`
+        `✅ ${res.updatedCount} bills successfully updated in Supabase & App Memory!`
       );
       setShowConfirm(false);
 

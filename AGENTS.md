@@ -14,51 +14,26 @@ Strict Rules:
 2. The frontend directly communicates with Supabase (`src/lib/apiSync.ts`, `src/lib/supabase.ts`).
 3. Never use delete-before-insert on Supabase tables; use safe upsert with onConflict.
 
-## 2. Base44 Dev Environment
+## 2. Dev Environment & Runtime
 
 ### Architecture (single process)
-- `npm run dev` = `tsx server/index.ts`: one Express server that mounts Vite dev
-  middleware (frontend HMR) AND serves the React SPA, all on port 3000. Single
-  origin — no separate API port, no CORS config needed for the app's own calls.
-- The frontend talks to Supabase directly (`src/lib/supabase.ts`, credentials
-  hardcoded/locked). The backend's own Postgres (`bills` etc.) is a secondary cache.
-
-### Database
-- `server/db.ts` falls back to an in-memory mock pool when `DATABASE_URL` is unset
-  or a query fails — the app boots without a DB, but API endpoints return empty.
-  SSL is auto-disabled for local/internal hosts (localhost, 127.0.0.1, `db`);
-  remote managed DBs use SSL. The pool wrapper exposes `query/connect/on/end`.
-- Schema is created by `server/migrate.ts` (run as a one-shot compose service on
-  boot). Tables: bills, drivers, banks, driver_summaries, settings, contacts.
+- `npm run dev` = `tsx server.ts`: Express server that mounts Vite dev middleware AND serves the React SPA on port 3000.
+- The frontend talks to Supabase directly (`src/lib/supabase.ts`, credentials locked).
 
 ### Secrets
-- `GEMINI_API_KEY` (Google Gemini) is read lazily per-request by the AI agent
-  endpoint; the app boots without it. A dev placeholder is generated so the var
-  exists — replace it with a real key (https://aistudio.google.com/apikey) for the
-  AI agent feature to work.
+- `GEMINI_API_KEY` (Google Gemini) is read lazily per-request by the AI agent endpoint; the app boots without it.
 - Supabase credentials are hardcoded in `src/lib/supabase.ts` — no secret needed.
 
 ### WhatsApp Bot (linked-device)
-- `server/whatsappBot.ts` runs Baileys (`@whiskeysockets/baileys`, ESM-only pkg,
-  needs `git` at `npm install` time — installed via apt in the compose commands).
-- **Baileys 6.7.x config key is `auth`**, NOT `authState` (silent API change).
-- Session lives in `.wa-session/` (gitignored). Bot start/stop/status via
-  `/api/admin/whatsapp-bot/*`; live events stream over SSE at
-  `/api/admin/whatsapp-bot/events`.
-- The bot's Gemini key comes ONLY from the `settings` table row `gemini_api_key`
-  (saved from the admin UI, never the env/Base44 key). `/api/all` strips that key.
-- Payment extraction is shared: `server/whatsappExtract.ts` (used by both the
-  upload endpoint and the live bot). Saves happen ONLY after the user confirms
-  in the popup (`src/components/WhatsAppPaymentPopup.tsx`).
-- **Bill-no stitch**: real groups me receipt-screenshot aur "Billno42911/42842"
-  jaisi bill-number text ALAG messages me aate hain. `server/whatsappBot.ts`
-  dono sides 30 min tak stash karta hai (`pendingPayment` / `pendingBillNos`)
-  aur dono milne par ek combined event emit karta hai.
+- `server/whatsappBot.ts` runs Baileys (`@whiskeysockets/baileys`, **6.7.x config key is `auth`**).
+- Session lives in `.wa-session/` (gitignored). Bot start/stop/status via `/api/admin/whatsapp-bot/*`; live events stream over SSE at `/api/admin/whatsapp-bot/events`.
+- The bot's Gemini key comes ONLY from the `settings` table row `gemini_api_key` (saved from the admin UI, never the env key).
+- Payment extraction is shared: `server/whatsappExtract.ts` (used by both the upload endpoint and the live bot). Saves happen ONLY after the user confirms in the popup (`src/components/WhatsAppPaymentPopup.tsx`).
+- **Bill-no stitch**: real groups me receipt-screenshot aur "Billno42911/42842" jaisi bill-number text ALAG messages me aate hain. `server/whatsappBot.ts` dono sides 30 min tak stash karta hai (`pendingPayment` / `pendingBillNos`) aur dono milne par ek combined event emit karta hai.
 - Drain bounded, stably ordered pages for full and incremental sync; never terminate using estimates or accept failed pages as empty, because doing so silently loses bills.
 - Repair legacy incomplete caches once, and mark completion only after every remote page is applied; subsequent boots use cached data and incremental sync to avoid repeated full downloads.
 - Never advance the incremental cursor on failure; bulk broadcasts and database changes complement polling so missed live notifications remain recoverable.
 
 ### Verify it works
 - `curl localhost:3000/api/health` → `{"ok":true}`
-- `curl localhost:3000/api/all` → JSON with bills/drivers/banks/... arrays
 - Preview loads at `/login` (auth-gated) and renders the distribution management UI.

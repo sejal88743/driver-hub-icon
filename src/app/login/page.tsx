@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { Shield, Truck, Lock, Eye, EyeOff, X, FileSpreadsheet, Receipt, CalendarCheck, User, Users } from 'lucide-react';
 import { setRole, setLoggedInName } from '@/lib/auth';
 import { getSystemPassword, getOwnerPassword, findUserByPassword, getUserPassword, getAllUserPasswords, setServerData } from '@/lib/billStore';
-import { supabase } from '@/integrations/supabase/client';
+import { supabase } from '@/lib/supabase';
 import { cn } from '@/lib/utils';
 
 type ModalMode = 'main' | 'owner' | 'xlsx' | 'bankslip';
@@ -143,21 +143,6 @@ export default function LoginPage() {
       } catch (err) {
         console.warn('[LoginPage] Hydration note:', err);
       }
-
-      // Also hydrate from backend API
-      try {
-        const apiRes = await fetch('/api/all');
-        if (apiRes.ok) {
-          const apiData = await apiRes.json();
-          if (apiData?.settings?.user_passwords) {
-            const p = JSON.parse(apiData.settings.user_passwords);
-            const userKeys = Object.keys(p).filter(Boolean);
-            if (userKeys.length > 0) {
-              setStaffNames(prev => Array.from(new Set([...prev, ...userKeys])));
-            }
-          }
-        }
-      } catch {}
     })();
   }, []);
 

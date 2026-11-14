@@ -2272,7 +2272,6 @@ export default function SettingsPage() {
       if (ok) {
         setAssignCreditStatus('ok');
         setAssignCreditResult(`${total} bills check kiye · ${fixed} bills fix hue (Assigned / Credit / Unpaid correct)`);
-        const { apiFetchAllData: _f } = await import('@/lib/apiSync'); void _f;
         window.dispatchEvent(new Event('focus'));
         window.dispatchEvent(new Event('bill-store-update'));
       } else {

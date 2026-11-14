@@ -1,13 +1,8 @@
 import fs from 'fs';
 import path from 'path';
-import { createClient } from '@supabase/supabase-js';
-import { pool } from './db.js';
+import { supabaseServer } from './supabaseServer.js';
 
 const CONFIG_FILE = path.join(process.cwd(), '.wa-bot-config.json');
-
-const SUPABASE_URL = 'https://qmnofkoxoijihgwgrefv.supabase.co';
-const SUPABASE_PUBLISHABLE_KEY = 'sb_publishable_nxq5s4XWrgD6QdNOr4sPSQ_0rPdFlvK';
-const supabase = createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY);
 
 export type WaBotConfig = {
   selectedGroup: { jid: string; name: string } | null;
@@ -21,7 +16,7 @@ let cachedConfig: WaBotConfig = {
   enabled: false,
 };
 
-// 1. Initial read from file on startup
+// 1. Initial read from disk cache on startup
 try {
   if (fs.existsSync(CONFIG_FILE)) {
     const raw = fs.readFileSync(CONFIG_FILE, 'utf-8');
@@ -31,20 +26,15 @@ try {
       geminiApiKey: String(parsed.geminiApiKey || '').trim(),
       enabled: Boolean(parsed.enabled),
     };
-    console.log('[WaBotConfig] Loaded persistent config from disk:', {
-      group: cachedConfig.selectedGroup?.name,
-      hasCustomApiKey: Boolean(cachedConfig.geminiApiKey),
-      enabled: cachedConfig.enabled,
-    });
   }
 } catch (err) {
   console.warn('[WaBotConfig] Error reading config file:', err);
 }
 
-// 2. Sync from Supabase settings table in background
-async function syncFromSupabase() {
+// 2. Sync authoritative settings from Supabase
+export async function syncWaConfigFromSupabase() {
   try {
-    const { data, error } = await supabase
+    const { data, error } = await supabaseServer
       .from('settings')
       .select('key, value')
       .in('key', ['wa_group_jid', 'wa_group_name', 'gemini_api_key', 'wa_bot_enabled']);
@@ -63,20 +53,20 @@ async function syncFromSupabase() {
         };
         changed = true;
       }
-      if (map.gemini_api_key && !cachedConfig.geminiApiKey) {
+      if (map.gemini_api_key && cachedConfig.geminiApiKey !== map.gemini_api_key.trim()) {
         cachedConfig.geminiApiKey = map.gemini_api_key.trim();
         changed = true;
       }
       if (map.wa_bot_enabled !== undefined) {
-        cachedConfig.enabled = map.wa_bot_enabled === 'true';
+        const nextEnabled = map.wa_bot_enabled === 'true';
+        if (cachedConfig.enabled !== nextEnabled) {
+          cachedConfig.enabled = nextEnabled;
+          changed = true;
+        }
       }
 
       if (changed) {
         saveConfigFile();
-        console.log('[WaBotConfig] Synced from Supabase settings:', {
-          group: cachedConfig.selectedGroup?.name,
-          enabled: cachedConfig.enabled,
-        });
       }
     }
   } catch (err) {
@@ -84,8 +74,7 @@ async function syncFromSupabase() {
   }
 }
 
-// Run initial Supabase sync
-syncFromSupabase();
+void syncWaConfigFromSupabase();
 
 function saveConfigFile() {
   try {
@@ -113,23 +102,12 @@ export async function setSavedGroup(jid: string, name: string): Promise<{ jid: s
   }
 
   saveConfigFile();
-  console.log('[WaBotConfig] Permanent group saved:', cachedConfig.selectedGroup);
 
-  // Sync to Supabase
   try {
-    await supabase.from('settings').upsert([
+    await supabaseServer.from('settings').upsert([
       { key: 'wa_group_jid', value: cachedConfig.selectedGroup?.jid || '' },
       { key: 'wa_group_name', value: cachedConfig.selectedGroup?.name || '' },
     ], { onConflict: 'key' });
-  } catch {}
-
-  // Sync to local DB pool if available
-  try {
-    await pool.query(
-      `INSERT INTO settings (key, value) VALUES ('wa_group_jid', $1), ('wa_group_name', $2)
-       ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`,
-      [cachedConfig.selectedGroup?.jid || '', cachedConfig.selectedGroup?.name || '']
-    );
   } catch {}
 
   return cachedConfig.selectedGroup;
@@ -140,18 +118,10 @@ export async function setGeminiApiKey(key: string) {
   saveConfigFile();
 
   try {
-    await supabase.from('settings').upsert({
+    await supabaseServer.from('settings').upsert({
       key: 'gemini_api_key',
       value: cachedConfig.geminiApiKey,
     }, { onConflict: 'key' });
-  } catch {}
-
-  try {
-    await pool.query(
-      `INSERT INTO settings (key, value) VALUES ('gemini_api_key', $1)
-       ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`,
-      [cachedConfig.geminiApiKey]
-    );
   } catch {}
 }
 
@@ -160,26 +130,13 @@ export async function setWaBotEnabled(enabled: boolean) {
   saveConfigFile();
 
   try {
-    await supabase.from('settings').upsert({
+    await supabaseServer.from('settings').upsert({
       key: 'wa_bot_enabled',
       value: String(enabled),
     }, { onConflict: 'key' });
   } catch {}
-
-  try {
-    await pool.query(
-      `INSERT INTO settings (key, value) VALUES ('wa_bot_enabled', $1)
-       ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`,
-      [String(enabled)]
-    );
-  } catch {}
 }
 
-/**
- * Returns effective Gemini API key:
- * 1. Custom user key saved in Admin UI (highest priority)
- * 2. process.env.GEMINI_API_KEY (fallback)
- */
 export function getEffectiveGeminiApiKey(): string {
   const custom = cachedConfig.geminiApiKey?.trim();
   if (custom) return custom;

@@ -2,12 +2,12 @@ import type { WASocket, WAMessage } from '@whiskeysockets/baileys';
 import QRCode from 'qrcode';
 import fs from 'fs';
 import { extractPaymentEntries, extractPaymentEntriesLocal, parseBillNosFromText, WaExtractEntry } from './whatsappExtract.js';
-import { pool } from './db.js';
+import { supabaseServer } from './supabaseServer.js';
 import {
   getWaBotConfig,
   setSavedGroup,
   setWaBotEnabled,
-  getEffectiveGeminiApiKey,
+  syncWaConfigFromSupabase,
 } from './waBotConfig.js';
 import {
   isMsgAlreadyProcessed,
@@ -208,14 +208,21 @@ const silentLogger: any = {
   trace() {}, debug() {}, info() {}, warn() {}, error() {}, fatal() {},
 };
 
-/** Gemini key saved from the admin page (settings table) — NEVER the env/Base44 key. */
+/** Gemini key saved from the admin page (settings table) — NEVER the env key. */
 async function getGeminiKey(): Promise<string> {
+  const cached = getWaBotConfig().geminiApiKey?.trim();
+  if (cached) return cached;
   try {
-    const r = await pool.query(`SELECT value FROM settings WHERE key = 'gemini_api_key'`);
-    return String((r.rows?.[0] as any)?.value || '').trim();
-  } catch {
-    return '';
-  }
+    const { data, error } = await supabaseServer
+      .from('settings')
+      .select('value')
+      .eq('key', 'gemini_api_key')
+      .maybeSingle();
+    if (!error && data?.value) {
+      return String(data.value).trim();
+    }
+  } catch {}
+  return '';
 }
 
 // ── Pending-payment stitch ──────────────────────────────────────────────────
@@ -877,12 +884,6 @@ export function startBot() {
   status.error = null;
   status.qrDataUrl = null;
   setWaBotEnabled(true).catch(() => {});
-  try {
-    pool.query(
-      `INSERT INTO settings (key, value) VALUES ('wa_bot_enabled', 'true')
-       ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`
-    ).catch(() => {});
-  } catch {}
   notifyStatusChange();
   connect();
 }
@@ -934,12 +935,9 @@ export function resetBotSession() {
 
 export async function initBotOnBoot() {
   try {
+    await syncWaConfigFromSupabase();
     const hasCreds = isSessionSaved();
-    let isEnabled = getWaBotConfig().enabled;
-    try {
-      const { rows } = await pool.query(`SELECT value FROM settings WHERE key = 'wa_bot_enabled'`);
-      if (rows?.[0]?.value === 'true') isEnabled = true;
-    } catch {}
+    const isEnabled = getWaBotConfig().enabled;
 
     if (hasCreds || isEnabled) {
       console.log('[WhatsApp Bot] Persistent session detected or bot enabled on server boot. Auto-starting...');

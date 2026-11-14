@@ -12,6 +12,7 @@ export function getRole(): Role | null {
 export function setRole(role: Role) {
   try { sessionStorage.setItem(KEY, role); } catch {}
   try { localStorage.removeItem(KEY); } catch {}
+  if (typeof window !== 'undefined') window.dispatchEvent(new Event('vt-auth-changed'));
 }
 
 export function clearRole() {
@@ -19,6 +20,7 @@ export function clearRole() {
   try { sessionStorage.removeItem(NAME_KEY); } catch {}
   try { localStorage.removeItem(KEY); } catch {}
   try { localStorage.removeItem(NAME_KEY); } catch {}
+  if (typeof window !== 'undefined') window.dispatchEvent(new Event('vt-auth-changed'));
 }
 
 export function getLoggedInName(): string {

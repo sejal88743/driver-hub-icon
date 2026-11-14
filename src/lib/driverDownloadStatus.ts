@@ -1,4 +1,4 @@
-import { supabase } from '@/integrations/supabase/client';
+import { supabase } from '@/lib/supabase';
 
 export type DriverDownloadType = 'TPL' | 'RPT';
 
@@ -75,25 +75,27 @@ export function initDriverDownloadsRealtimeSync() {
   if (typeof window === 'undefined' || _syncInitialized) return;
   _syncInitialized = true;
 
-  // 1. Initial fetch from Supabase settings
-  (async () => {
-    try {
-      if (!supabase) return;
-      const { data, error } = await supabase
-        .from('settings')
-        .select('value')
-        .eq('key', SETTING_KEY)
-        .maybeSingle();
-      if (!error && data?.value) {
-        try {
-          const parsed = JSON.parse(data.value);
-          applyDriverDownloadsFromServer(parsed);
-        } catch {}
-      }
-    } catch {}
-  })();
+  // Fetch only if local cache is empty; otherwise setServerData & realtime sync keep it fresh
+  if (!localStorage.getItem(STORAGE_KEY)) {
+    (async () => {
+      try {
+        if (!supabase) return;
+        const { data, error } = await supabase
+          .from('settings')
+          .select('value')
+          .eq('key', SETTING_KEY)
+          .maybeSingle();
+        if (!error && data?.value) {
+          try {
+            const parsed = JSON.parse(data.value);
+            applyDriverDownloadsFromServer(parsed);
+          } catch {}
+        }
+      } catch {}
+    })();
+  }
 
-  // 2. Listen to shared settings realtime event from unified realtime channel
+  // Listen to shared settings realtime event from unified realtime channel
   window.addEventListener('driver-download-records-updated', (e: any) => {
     const rawVal = e.detail;
     if (rawVal) {

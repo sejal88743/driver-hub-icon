@@ -24,13 +24,20 @@ let _pollInterval: any = null;
 let _hasInitialized = false;
 const playedSoundIds = new Set<string>();
 
-// Audio beep notification using Web Audio API
+// Audio beep notification using Web Audio API (only after user interaction to prevent browser autoplay warnings)
 function playUrgentAlertSound() {
   try {
+    if (typeof navigator !== 'undefined' && (navigator as any).userActivation && !(navigator as any).userActivation.hasBeenActive) {
+      return;
+    }
     const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
     if (!AudioCtx) return;
     const ctx = new AudioCtx();
-    
+    if (ctx.state === 'suspended') {
+      void ctx.close().catch(() => {});
+      return;
+    }
+
     // First high tone
     const osc1 = ctx.createOscillator();
     const gain1 = ctx.createGain();
@@ -54,6 +61,9 @@ function playUrgentAlertSound() {
     gain2.connect(ctx.destination);
     osc2.start(ctx.currentTime + 0.28);
     osc2.stop(ctx.currentTime + 0.55);
+    osc2.onended = () => {
+      void ctx.close().catch(() => {});
+    };
   } catch {}
 }
 
@@ -289,13 +299,12 @@ export function initUrgentMessageClient() {
   async function connectSse() {
     if (sseDisabled) return;
     try {
-      const probe = await fetch('/api/urgent-messages/stream', {
+      const probe = await fetch('/api/health', {
         method: 'GET',
-        headers: { Accept: 'text/event-stream' },
         signal: typeof AbortSignal.timeout === 'function' ? AbortSignal.timeout(1500) : undefined,
       });
       const cType = probe.headers.get('content-type') || '';
-      if (!probe.ok || !cType.includes('text/event-stream')) {
+      if (!probe.ok || !cType.includes('application/json')) {
         sseDisabled = true;
         return;
       }

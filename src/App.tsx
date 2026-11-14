@@ -32,52 +32,6 @@ function RouteLoading() {
   );
 }
 
-function OfflineGate({ children }: { children: React.ReactNode }) {
-  const [isOnline, setIsOnline] = useState(true);
-  const [dbReachable, setDbReachable] = useState(true);
-
-  useEffect(() => {
-    setIsOnline(navigator.onLine);
-    const goOnline = () => setIsOnline(true);
-    const goOffline = () => { setIsOnline(false); setDbReachable(false); };
-    window.addEventListener('online', goOnline);
-    window.addEventListener('offline', goOffline);
-    return () => {
-      window.removeEventListener('online', goOnline);
-      window.removeEventListener('offline', goOffline);
-    };
-  }, []);
-
-  // Supabase reachability check — pings Supabase every 10s.
-  useEffect(() => {
-    let cancelled = false;
-    async function ping() {
-      if (!navigator.onLine) { if (!cancelled) setDbReachable(false); return; }
-      try {
-        const { apiPingSupabase } = await import('@/lib/apiSync');
-        const ok = await apiPingSupabase();
-        if (!cancelled) setDbReachable(ok);
-      } catch {
-        if (!cancelled) setDbReachable(false);
-      }
-    }
-    ping();
-    const onOnline = () => ping();
-    const onOffline = () => { if (!cancelled) setDbReachable(false); };
-    window.addEventListener('online', onOnline);
-    window.addEventListener('offline', onOffline);
-    return () => {
-      cancelled = true;
-      window.removeEventListener('online', onOnline);
-      window.removeEventListener('offline', onOffline);
-    };
-  }, []);
-
-  // Removed aggressive full-screen blocking to support offline first cache rendering.
-  // The bottom-right ConnectionStatus floating pill already informs the user of actual status.
-  return <>{children}</>;
-}
-
 function FontSizeApplier() {
   useEffect(() => {
     function applyZoom() {
@@ -116,8 +70,16 @@ function AuthGuard({ children, allowedRoles }: { children: React.ReactNode; allo
 
 export default function App() {
   useBillStore();
+  useLocation();
   const [showCalc, setShowCalc] = useState(false);
-  const role = getRole();
+  const [role, setRoleState] = useState<Role | null>(() => getRole());
+
+  useEffect(() => {
+    const syncRole = () => setRoleState(getRole());
+    syncRole();
+    window.addEventListener('vt-auth-changed', syncRole);
+    return () => window.removeEventListener('vt-auth-changed', syncRole);
+  }, []);
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -140,41 +102,39 @@ export default function App() {
   return (
     <TooltipProvider>
       <FontSizeApplier />
-      <OfflineGate>
-        <ConnectionStatus />
-        <Toaster />
-        <UrgentMessagePopup />
-        {role && <WhatsAppPaymentPopup />}
-        
-        {/* Floating calculator button in bottom-left corner for mobile/touch screens */}
-        {role && (
-          <button
-            onClick={() => setShowCalc(true)}
-            className="fixed bottom-4 left-4 z-[100] w-10 h-10 bg-primary hover:bg-primary/90 text-primary-foreground rounded-full flex items-center justify-center shadow-lg hover:scale-105 active:scale-95 transition-all cursor-pointer border border-primary/20"
-            title="Calculator (F2)"
-          >
-            <Calculator className="w-5 h-5" />
-          </button>
-        )}
+      <ConnectionStatus />
+      <Toaster />
+      {role && <UrgentMessagePopup />}
+      {role && <WhatsAppPaymentPopup />}
+      
+      {/* Floating calculator button in bottom-left corner for mobile/touch screens */}
+      {role && (
+        <button
+          onClick={() => setShowCalc(true)}
+          className="fixed bottom-4 left-4 z-[100] w-10 h-10 bg-primary hover:bg-primary/90 text-primary-foreground rounded-full flex items-center justify-center shadow-lg hover:scale-105 active:scale-95 transition-all cursor-pointer border border-primary/20"
+          title="Calculator (F2)"
+        >
+          <Calculator className="w-5 h-5" />
+        </button>
+      )}
 
-        <F1CalculatorModal isOpen={showCalc} onClose={() => setShowCalc(false)} />
+      <F1CalculatorModal isOpen={showCalc} onClose={() => setShowCalc(false)} />
 
-        <Suspense fallback={<RouteLoading />}>
-          <Routes>
-            <Route path="/login" element={<LoginPage />} />
-            <Route path="/" element={<AuthGuard><Dashboard /></AuthGuard>} />
-            <Route path="/bills" element={<AuthGuard allowedRoles={['owner','user']}><BillsPage /></AuthGuard>} />
-            <Route path="/outstanding" element={<AuthGuard allowedRoles={['owner','user']}><OutstandingPage /></AuthGuard>} />
-            <Route path="/driver" element={<AuthGuard allowedRoles={['owner','user']}><DriverPage /></AuthGuard>} />
-            <Route path="/reports" element={<AuthGuard allowedRoles={['owner','user']}><ReportsPage /></AuthGuard>} />
-            <Route path="/settings" element={<AuthGuard allowedRoles={['owner']}><SettingsPage /></AuthGuard>} />
-            <Route path="/cheque-return" element={<AuthGuard allowedRoles={['owner','user']}><ChequeReturnPage /></AuthGuard>} />
-            <Route path="/history" element={<AuthGuard allowedRoles={['owner']}><HistoryPage /></AuthGuard>} />
-            <Route path="/diagnostics" element={<AuthGuard allowedRoles={['owner']}><DiagnosticsPage /></AuthGuard>} />
-            <Route path="*" element={<NotFound />} />
-          </Routes>
-        </Suspense>
-      </OfflineGate>
+      <Suspense fallback={<RouteLoading />}>
+        <Routes>
+          <Route path="/login" element={<LoginPage />} />
+          <Route path="/" element={<AuthGuard><Dashboard /></AuthGuard>} />
+          <Route path="/bills" element={<AuthGuard allowedRoles={['owner','user']}><BillsPage /></AuthGuard>} />
+          <Route path="/outstanding" element={<AuthGuard allowedRoles={['owner','user']}><OutstandingPage /></AuthGuard>} />
+          <Route path="/driver" element={<AuthGuard allowedRoles={['owner','user']}><DriverPage /></AuthGuard>} />
+          <Route path="/reports" element={<AuthGuard allowedRoles={['owner','user']}><ReportsPage /></AuthGuard>} />
+          <Route path="/settings" element={<AuthGuard allowedRoles={['owner']}><SettingsPage /></AuthGuard>} />
+          <Route path="/cheque-return" element={<AuthGuard allowedRoles={['owner','user']}><ChequeReturnPage /></AuthGuard>} />
+          <Route path="/history" element={<AuthGuard allowedRoles={['owner']}><HistoryPage /></AuthGuard>} />
+          <Route path="/diagnostics" element={<AuthGuard allowedRoles={['owner']}><DiagnosticsPage /></AuthGuard>} />
+          <Route path="*" element={<NotFound />} />
+        </Routes>
+      </Suspense>
     </TooltipProvider>
   );
 }

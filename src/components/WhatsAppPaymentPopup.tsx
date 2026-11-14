@@ -139,16 +139,14 @@ export function WhatsAppPaymentPopup() {
     async function connectSSE() {
       if (unmounted) return;
       try {
-        // Probe endpoint to ensure text/event-stream is available before calling new EventSource
+        // Probe /api/health to verify Node backend is active without leaking an open SSE stream
         try {
-          const probe = await fetch('/api/admin/whatsapp-bot/events', {
+          const probe = await fetch('/api/health', {
             method: 'GET',
-            headers: { Accept: 'text/event-stream' },
             signal: typeof AbortSignal.timeout === 'function' ? AbortSignal.timeout(1500) : undefined,
           });
           const cType = probe.headers.get('content-type') || '';
-          if (!probe.ok || !cType.includes('text/event-stream')) {
-            // WhatsApp bot SSE is inactive on this origin (e.g. Vite SPA fallback text/html). Do not open EventSource.
+          if (!probe.ok || !cType.includes('application/json')) {
             return;
           }
         } catch {
@@ -397,16 +395,6 @@ export function WhatsAppPaymentPopup() {
       tellServerDismiss(current.eventId, current.entry);
       storeSeen(getPaymentSig(current.entry));
       storeSeen(current.eventId);
-
-      // Backend Postgres sync (best-effort)
-      try {
-        const key = (typeof window !== 'undefined' && localStorage.getItem('gemini_api_key')) || '';
-        fetch('/api/admin/ai-agent', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'x-gemini-api-key': key },
-          body: JSON.stringify({ action: 'execute', patches: [patch] }),
-        }).catch(() => {});
-      } catch {}
 
       setJustSaved((n) => n + 1);
       setManualBillSearch('');

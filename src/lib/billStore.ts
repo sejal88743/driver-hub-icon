@@ -1015,6 +1015,9 @@ export function setServerData(data: {
       }
     } catch { /* ignore */ }
   }
+  if (data.settings?.['vt_driver_downloads'] && typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent('driver-download-records-updated', { detail: data.settings['vt_driver_downloads'] }));
+  }
 }
 
 // ─── Direct Realtime incremental mutators ──────────────────────────────────
@@ -1205,6 +1208,8 @@ export function applyRealtimeTableChange(
             localStorage.setItem('vitratrack_credit_assigns', JSON.stringify(_creditAssigns));
           }
         } catch {}
+      } else if (key === 'vt_driver_downloads' && typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent('driver-download-records-updated', { detail: value }));
       }
       dispatchUpdate();
     }
@@ -2877,20 +2882,26 @@ export function applyPaymentRules(bill: Bill): Bill {
 // ── patchBillDirect: update memory + Supabase immediately (bypasses dirty queue) ──
 // Use for cheque metadata saves and sibling propagation where instant sync matters.
 export async function patchBillDirect(billNo: string, patch: Partial<Bill>): Promise<boolean> {
-  const targetKey = getBillDedupeKey({ billNo, id: billNo });
-  const normBillNo = (billNo || '').trim().toUpperCase();
-  const idx = _bills.findIndex(b => getBillDedupeKey(b) === targetKey || b.id === billNo || (b.billNo || '').trim().toUpperCase() === normBillNo);
+  let idx = findBillIndexFast(billNo, billNo);
+  if (idx === -1) {
+    const targetKey = getBillDedupeKey({ billNo, id: billNo });
+    const normBillNo = (billNo || '').trim().toUpperCase();
+    idx = _bills.findIndex(b => getBillDedupeKey(b) === targetKey || b.id === billNo || (b.billNo || '').trim().toUpperCase() === normBillNo);
+  }
   if (idx === -1) return false;
   if (!('updatedAt' in patch) || !patch.updatedAt) {
     patch = { ...patch, updatedAt: new Date().toISOString() };
   }
-  _bills[idx] = { ..._bills[idx], ...patch };
+  const nextBills = [..._bills];
+  const updatedBill = { ...nextBills[idx], ...patch };
+  nextBills[idx] = updatedBill;
+  _bills = nextBills;
   dispatchUpdate();
   persistLocalState(true);
   if (typeof window !== 'undefined') {
-    window.dispatchEvent(new CustomEvent('broadcast-bill-update', { detail: _bills[idx] }));
+    window.dispatchEvent(new CustomEvent('broadcast-bill-update', { detail: updatedBill }));
   }
-  const bill = _bills[idx];
+  const bill = updatedBill;
 
   markWriteStart();
   (async () => {
@@ -3289,10 +3300,12 @@ export async function resetBill(billNo: string) {
     chequeAmount: 0,
     outstandingAmount: _bills[index].billNetAmt,
   };
-  _bills[index] = { ..._bills[index], ...patch };
+  const nextBills = [..._bills];
+  nextBills[index] = { ...nextBills[index], ...patch };
+  _bills = nextBills;
   dispatchUpdate();
   persistLocalState();
-  const billId = _bills[index].id;
+  const billId = nextBills[index].id;
   
   import('@/lib/localQueue').then(({ enqueueDirty }) => {
     enqueueDirty(billId, patch, billNo);
