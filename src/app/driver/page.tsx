@@ -182,26 +182,35 @@ export default function DriverPage() {
       const todayNow = new Date();
       const todayFmt = `${String(todayNow.getDate()).padStart(2,'0')}/${String(todayNow.getMonth()+1).padStart(2,'0')}/${todayNow.getFullYear()}`;
 
+      const parseAmt = (val: unknown): number => {
+        if (typeof val === 'number' && Number.isFinite(val)) return val;
+        const str = String(val ?? '').trim();
+        if (!str) return 0;
+        let cleaned = str;
+        if (/^\(.*\)$/.test(cleaned)) cleaned = '-' + cleaned.slice(1, -1);
+        const parsed = Number(cleaned.replace(/,/g, '').replace(/[^\d.-]/g, ''));
+        return Number.isFinite(parsed) ? parsed : 0;
+      };
+
       // Load all files as ArrayBuffers in parallel
       const buffers = await Promise.all(
         files.map(f => f.arrayBuffer().then(ab => new Uint8Array(ab)))
       );
 
-      // Work on a single mutable copy of bills across all files
-      const currentBills = [...getBills()];
-      const xlsPatches: Array<{ billNo: string; patch: { driverName?: string; deliveryDate?: string; paymentMode?: string; partyName?: string; billNetAmt?: number; lineCutAmt?: number } }> = [];
-      const newBillsCreated: Bill[] = [];
-      const existingDrivers = getDrivers();
+      type BillRowGroup = {
+        rawBn: string;
+        formattedBn: string;
+        positiveVal: number;
+        negativeVal: number;
+        driverName: string;
+        tripDate: string;
+        partyName: string;
+        ushopAmount: number;
+      };
 
-      // Canonical driver map (case-insensitive)
-      const canonicalDriverMap = new Map<string, string>();
-      existingDrivers.forEach(d => canonicalDriverMap.set(d.name.toLowerCase().trim(), d.name));
-
-      const allDriverNames = new Set<string>();
-      let totalUpdated = 0, totalCreated = 0, totalMissing = 0;
-
-      // Track date frequency to auto-jump to the most common trip date
+      const billGroups = new Map<string, BillRowGroup>();
       const dateCounts = new Map<string, number>();
+      const allDriverNames = new Set<string>();
 
       for (const data of buffers) {
         const wb = safeReadWorkbook(XLSX, data, { cellDates: false });
@@ -264,7 +273,6 @@ export default function DriverPage() {
               const val = String(cell?.v || '').toLowerCase().trim();
               if (!val) continue;
               cellCount++;
-              // Skip metadata and title blocks
               if (val.includes('register') || val.includes('distributor') || val.includes('list of') || val.includes('report type') || val.includes('division')) continue;
               if (BILL_KEYWORDS.some(kw => val === kw || val === kw + ' no' || val === kw + ' number' || (val.length <= 25 && val.includes(kw)))) score += 3;
               if (AMT_KEYWORDS.some(kw => val === kw || (val.length <= 25 && val.includes(kw)))) score += 2;
@@ -282,7 +290,6 @@ export default function DriverPage() {
           let headerRow = bestHeaderRow !== -1 ? bestHeaderRow : range.s.r;
 
           function findCol(keywords: string[], excludeSubstrings: string[] = []): number {
-            // Priority 1: Exact match
             for (let c = range.s.c; c <= range.e.c; c++) {
               const cell = ws[XLSX.utils.encode_cell({ r: headerRow, c })] as { v?: unknown } | undefined;
               const val = String(cell?.v || '').toLowerCase().trim();
@@ -290,7 +297,6 @@ export default function DriverPage() {
               if (excludeSubstrings.some(ex => val.includes(ex))) continue;
               if (keywords.some(kw => val === kw)) return c;
             }
-            // Priority 2: Substring includes
             for (let c = range.s.c; c <= range.e.c; c++) {
               const cell = ws[XLSX.utils.encode_cell({ r: headerRow, c })] as { v?: unknown } | undefined;
               const val = String(cell?.v || '').toLowerCase().trim();
@@ -314,12 +320,10 @@ export default function DriverPage() {
               }
             }
           }
-          // Amount column must NOT match the line cut column or line cut keywords
           let COL_AMT = findCol(AMT_KEYWORDS, ['line', 'cut', 'short', 'diff', 'deduct', 'discount', 'adj', 'damage', 'return', 'less', 'claim']);
           if (COL_AMT === COL_LINECUT) COL_AMT = -1;
           if (COL_AMT === COL_USHOP) COL_AMT = -1;
 
-          // Driver: check HHT VAN first, fallback to standard Driver column
           let COL_DRIVER = findCol(HHT_VAN_KEYWORDS);
           if (COL_DRIVER === -1) {
             COL_DRIVER = findCol(DRIVER_FALLBACK_KEYWORDS, ['vehicle', 'plate', 'truck', 'van no', 'van number']);
@@ -328,7 +332,6 @@ export default function DriverPage() {
           let COL_TRIP_DATE = findCol(DATE_KEYWORDS);
           let COL_PARTY = findCol(PARTY_KEYWORDS);
 
-          // If bill column not found by header, inspect contents of first data row
           if (COL_BILL_NO === -1) {
             for (let c = range.s.c; c <= range.e.c; c++) {
               const sampleCell = ws[XLSX.utils.encode_cell({ r: headerRow + 1, c })] as { v?: unknown } | undefined;
@@ -340,23 +343,10 @@ export default function DriverPage() {
             }
           }
 
-          if (COL_BILL_NO === -1) COL_BILL_NO = 1; // Fallback to second column
+          if (COL_BILL_NO === -1) COL_BILL_NO = 1;
           const colBill = COL_BILL_NO;
           const colDriver = COL_DRIVER;
           const colDate = COL_TRIP_DATE;
-
-          // Pre-index current bills for fast multi-tiered lookup
-          const exactMap = new Map<string, number>();
-          const strippedMap = new Map<string, number>();
-          const digitsMap = new Map<string, number>();
-
-          currentBills.forEach((b, i) => {
-            exactMap.set(b.billNo.toLowerCase().trim(), i);
-            const s = strip(b.billNo);
-            if (s) strippedMap.set(s, i);
-            const d = getDigits(b.billNo);
-            if (d) digitsMap.set(d, i);
-          });
 
           for (let r = headerRow + 1; r <= range.e.r; r++) {
             const bnCell = ws[XLSX.utils.encode_cell({ r, c: colBill })] as { v?: unknown } | undefined;
@@ -369,7 +359,7 @@ export default function DriverPage() {
 
             let rawBn = String(bnCell?.v || '').trim();
             if (typeof bnCell?.v === 'number') rawBn = String(bnCell.v).replace(/\.0+$/, '');
-            if (!rawBn || rawBn.toLowerCase() === 'bill no' || rawBn.toLowerCase() === 'bill number') continue; // skip empty or header rows
+            if (!rawBn || rawBn.toLowerCase() === 'bill no' || rawBn.toLowerCase() === 'bill number') continue;
 
             const rawBnUpper = rawBn.toUpperCase().replace(/\s+/g, ' ').trim();
             if (
@@ -378,157 +368,185 @@ export default function DriverPage() {
               rawBnUpper.includes('LIST OF') || rawBnUpper.includes('CONFIANCE') || rawBnUpper.includes('TAXABLE AMOUNT') || rawBnUpper.includes('SALES RETURN') || rawBnUpper.includes('BILLDATE') ||
               /^\d+\.\d+$/.test(rawBn.trim())
             ) {
-              continue; // Skip header/metadata and summary rows
+              continue;
             }
+
+            const formattedBn = /^\d{3,6}$/.test(rawBn.trim()) ? ('GST' + rawBn.trim()) : rawBn.trim();
+            const groupKey = formattedBn.toLowerCase();
 
             const dr = String(drCell?.v || '').trim();
             const partyVal = String(partyCell?.v || '').trim();
-            let netAmtVal = 0;
-            let lineCutVal = 0;
-            let ushopVal = 0;
-            if (amtCell?.v != null) {
-              const parsedAmt = parseFloat(String(amtCell.v).replace(/,/g, '').replace(/[^0-9.-]/g, ''));
-              if (!isNaN(parsedAmt)) {
-                if (parsedAmt < 0) {
-                  // Negative bill value represents a line cut / sales return deduction
-                  lineCutVal += Math.abs(parsedAmt);
-                } else {
-                  netAmtVal = parsedAmt;
-                }
-              }
-            }
-            if (lcCell?.v != null) {
-              const parsedLc = parseFloat(String(lcCell.v).replace(/,/g, '').replace(/[^0-9.-]/g, ''));
-              if (!isNaN(parsedLc)) lineCutVal += Math.abs(parsedLc);
-            }
-            if (ushopCell?.v != null) {
-              const parsedUshop = parseFloat(String(ushopCell.v).replace(/,/g, '').replace(/[^0-9.-]/g, ''));
-              if (!isNaN(parsedUshop) && parsedUshop > 0) ushopVal = parsedUshop;
-            }
+            const amtVal = amtCell?.v != null ? parseAmt(amtCell.v) : 0;
+            const lcVal = lcCell?.v != null ? Math.abs(parseAmt(lcCell.v)) : 0;
+            const ushopVal = ushopCell?.v != null ? parseAmt(ushopCell.v) : 0;
 
             const parsedRawDate = dtCell?.v != null ? excelSerialToDate(dtCell.v) : '';
             const tripDate = parsedRawDate ? toDDMMYYYY(parsedRawDate) : todayFmt;
             if (parsedRawDate) dateCounts.set(tripDate, (dateCounts.get(tripDate) || 0) + 1);
 
-            const patch: { deliveryDate?: string; driverName?: string; paymentMode?: string; partyName?: string; billNetAmt?: number; lineCutAmt?: number; cancelLine?: string; outstandingAmount?: number; ushopAmount?: number } = {};
-
-            // Multi-tiered bill matching (handles both '49552' and 'GST49552')
-            const bnLower = rawBn.toLowerCase().trim();
-            const bnStrip = strip(rawBn);
-            const bnDigits = getDigits(rawBn);
-            const bnWithGst = /^\d{3,6}$/.test(rawBn.trim()) ? ('gst' + rawBn.trim().toLowerCase()) : bnLower;
-
-            let idx = exactMap.get(bnLower) ?? -1;
-            if (idx === -1 && bnWithGst !== bnLower) idx = exactMap.get(bnWithGst) ?? -1;
-            if (idx === -1 && bnStrip) idx = strippedMap.get(bnStrip) ?? -1;
-            if (idx === -1 && bnDigits) idx = digitsMap.get(bnDigits) ?? -1;
-            if (idx === -1) {
-              idx = currentBills.findIndex(b => {
-                const bLower = b.billNo.toLowerCase();
-                return bLower.endsWith(bnLower) || bnLower.endsWith(bLower);
-              });
+            let group = billGroups.get(groupKey);
+            if (!group) {
+              group = {
+                rawBn,
+                formattedBn,
+                positiveVal: 0,
+                negativeVal: 0,
+                driverName: dr,
+                tripDate,
+                partyName: partyVal,
+                ushopAmount: ushopVal > 0 ? ushopVal : 0,
+              };
+              billGroups.set(groupKey, group);
             }
 
-            if (idx !== -1) {
-              const curBill = currentBills[idx];
-              const curMode = (curBill.paymentMode || '').trim().toLowerCase();
-              const hasPaymentRec = (Number(curBill.collectedAmount) || 0) > 0 || (Number(curBill.cashAmount) || 0) > 0 || (Number(curBill.upiAmount) || 0) > 0 || (Number(curBill.chequeAmount) || 0) > 0 || !!curBill.paymentDate;
-              const isCredit = curMode === 'credit';
-              const isFBR = curMode === 'fbr' || curMode === 'cancel';
+            if (amtVal < 0) {
+              group.negativeVal += Math.abs(amtVal);
+            } else if (amtVal > 0) {
+              group.positiveVal += amtVal;
+            }
+            if (lcVal > 0) {
+              group.negativeVal += lcVal;
+            }
+            if (dr && !group.driverName) group.driverName = dr;
+            if (partyVal && (!group.partyName || group.partyName.startsWith('Party '))) group.partyName = partyVal;
+            if (parsedRawDate && group.tripDate === todayFmt) group.tripDate = tripDate;
+            if (ushopVal > 0) group.ushopAmount = Math.max(group.ushopAmount, ushopVal);
+          }
+        }
+      }
 
-              // NEVER overwrite deliveryDate or driverName on bills that are already paid or settled
-              if (!hasPaymentRec && !isCredit && !isFBR) {
-                if (parsedRawDate) {
-                  patch.deliveryDate = tripDate;
-                } else if (!curBill.deliveryDate) {
-                  patch.deliveryDate = todayFmt;
-                }
-                if (dr) {
-                  const canonicalDr = canonicalDriverMap.get(dr.toLowerCase().trim()) ?? dr;
-                  patch.driverName = canonicalDr;
-                  allDriverNames.add(canonicalDr);
-                  if (curMode === '' || curMode === 'pending' || curMode === 'assigned' || curMode === 'del pending' || curMode === 'unpaid') {
-                    patch.paymentMode = 'Assigned';
-                  }
-                }
-              }
+      const currentBills = [...getBills()];
+      const existingDrivers = getDrivers();
+      const canonicalDriverMap = new Map<string, string>();
+      existingDrivers.forEach(d => canonicalDriverMap.set(d.name.toLowerCase().trim(), d.name));
 
-              if (partyVal && (!curBill.partyName || curBill.partyName.startsWith('Party '))) {
-                patch.partyName = partyVal;
-              }
-              if (netAmtVal > 0 && !curBill.billNetAmt) {
-                patch.billNetAmt = netAmtVal;
-              }
+      const exactMap = new Map<string, number>();
+      const strippedMap = new Map<string, number>();
+      const digitsMap = new Map<string, number>();
 
-              // Line Cut from XLS: if line cut covers the full bill amount → bill becomes FBR
-              // (Del Pending / Assigned status is removed). Paid/Credit bills are never touched.
-              if (lineCutVal > 0) {
-                const prevLc = Number(curBill.lineCutAmt) || 0;
-                const totalLc = prevLc + lineCutVal;
-                patch.lineCutAmt = totalLc;
-                patch.cancelLine = String(totalLc);
-                const effBillAmt = netAmtVal > 0 ? netAmtVal : (curBill.billNetAmt || 0);
-                const isFullCut = effBillAmt > 0 && (effBillAmt - totalLc) <= 1;
-                if (isFullCut && !hasPaymentRec && !isCredit) {
-                  patch.paymentMode = 'FBR';
-                }
-                patch.outstandingAmount = isFullCut ? 0 : Math.max(0, effBillAmt - totalLc - (Number(curBill.collectedAmount) || 0));
-              }
-              if (ushopVal > 0) {
-                patch.ushopAmount = ushopVal;
-              }
-              if (Object.keys(patch).length > 0) {
-                currentBills[idx] = { ...currentBills[idx], ...patch };
-                xlsPatches.push({ billNo: currentBills[idx].billNo, patch });
-                totalUpdated++;
-              }
-            } else {
-              const effectiveTripDate = parsedRawDate ? tripDate : todayFmt;
-              const canonicalDr = dr ? (canonicalDriverMap.get(dr.toLowerCase().trim()) ?? dr) : '';
-              if (canonicalDr) allDriverNames.add(canonicalDr);
+      currentBills.forEach((b, i) => {
+        exactMap.set(b.billNo.toLowerCase().trim(), i);
+        const s = strip(b.billNo);
+        if (s) strippedMap.set(s, i);
+        const d = getDigits(b.billNo);
+        if (d) digitsMap.set(d, i);
+      });
 
-              // Standardize numeric bill numbers (e.g. 49552 -> GST49552) for uniform search and reports
-              const formattedBn = /^\d{3,6}$/.test(rawBn.trim()) ? ('GST' + rawBn.trim()) : rawBn.trim();
+      const xlsPatches: Array<{ billNo: string; patch: any }> = [];
+      const newBillsCreated: Bill[] = [];
+      let totalUpdated = 0, totalCreated = 0;
 
-              // Create NEW bill so driver cards display ALL bills in uploaded XLS
-              const effNetAmt = netAmtVal > 0 ? netAmtVal : (lineCutVal > 0 ? lineCutVal : 0);
-              const newIsFullCut = lineCutVal > 0 && (effNetAmt <= lineCutVal || Math.abs(effNetAmt - lineCutVal) <= 1);
-              const newBill: Bill = {
-                id: (typeof crypto !== 'undefined' && crypto.randomUUID) ? crypto.randomUUID() : ('xls_' + Date.now() + '_' + Math.random().toString(36).substr(2, 6)),
-                billNo: formattedBn,
-                partyName: partyVal || `Party ${formattedBn}`,
-                date: effectiveTripDate,
-                deliveryDate: effectiveTripDate,
-                billNetAmt: effNetAmt,
-                collectedAmount: 0,
-                cashAmount: 0,
-                upiAmount: 0,
-                chequeAmount: 0,
-                lineCutAmt: lineCutVal || 0,
-                cancelLine: lineCutVal > 0 ? String(lineCutVal) : '',
-                ushopAmount: ushopVal > 0 ? ushopVal : undefined,
-                paymentMode: newIsFullCut ? 'FBR' : (canonicalDr ? 'Assigned' : 'Unpaid'),
-                driverName: canonicalDr,
-                delPendingHistory: [],
-                srNo: '',
-                salespersonName: '',
-                collectionCode: '',
-                partyCode: '',
-                partyHulCode: '',
-                beatName: '',
-                outstandingAmount: newIsFullCut ? 0 : Math.max(0, effNetAmt - lineCutVal),
-                billAgeing: 0,
-              };
-              newBillsCreated.push(newBill);
-              currentBills.push(newBill);
-              const newIdx = currentBills.length - 1;
-              exactMap.set(formattedBn.toLowerCase(), newIdx);
-              exactMap.set(bnLower, newIdx);
-              if (bnStrip) strippedMap.set(bnStrip, newIdx);
-              if (bnDigits) digitsMap.set(bnDigits, newIdx);
-              totalCreated++;
+      for (const group of billGroups.values()) {
+        const bnLower = group.formattedBn.toLowerCase().trim();
+        const bnStrip = strip(group.formattedBn);
+        const bnDigits = getDigits(group.formattedBn);
+        const bnWithGst = /^\d{3,6}$/.test(group.rawBn.trim()) ? ('gst' + group.rawBn.trim().toLowerCase()) : bnLower;
+
+        let idx = exactMap.get(bnLower) ?? -1;
+        if (idx === -1 && bnWithGst !== bnLower) idx = exactMap.get(bnWithGst) ?? -1;
+        if (idx === -1 && bnStrip) idx = strippedMap.get(bnStrip) ?? -1;
+        if (idx === -1 && bnDigits) idx = digitsMap.get(bnDigits) ?? -1;
+        if (idx === -1) {
+          idx = currentBills.findIndex(b => {
+            const bLower = b.billNo.toLowerCase();
+            return bLower.endsWith(bnLower) || bnLower.endsWith(bLower);
+          });
+        }
+
+        const canonicalDr = group.driverName ? (canonicalDriverMap.get(group.driverName.toLowerCase().trim()) ?? group.driverName) : '';
+        if (canonicalDr) allDriverNames.add(canonicalDr);
+
+        if (idx !== -1) {
+          const curBill = currentBills[idx];
+          const curMode = (curBill.paymentMode || '').trim().toLowerCase();
+          const hasPaymentRec = (Number(curBill.collectedAmount) || 0) > 0 || (Number(curBill.cashAmount) || 0) > 0 || (Number(curBill.upiAmount) || 0) > 0 || (Number(curBill.chequeAmount) || 0) > 0 || !!curBill.paymentDate;
+          const isCredit = curMode === 'credit';
+          const isFBR = curMode === 'fbr' || curMode === 'cancel';
+
+          const patch: any = {};
+          if (!hasPaymentRec && !isCredit && !isFBR) {
+            if (group.tripDate && group.tripDate !== todayFmt) {
+              patch.deliveryDate = group.tripDate;
+            } else if (!curBill.deliveryDate) {
+              patch.deliveryDate = todayFmt;
+            }
+            if (canonicalDr) {
+              patch.driverName = canonicalDr;
+              if (curMode === '' || curMode === 'pending' || curMode === 'assigned' || curMode === 'del pending' || curMode === 'unpaid') {
+                patch.paymentMode = 'Assigned';
+              }
             }
           }
+
+          if (group.partyName && (!curBill.partyName || curBill.partyName.startsWith('Party '))) {
+            patch.partyName = group.partyName;
+          }
+          if (group.positiveVal > 0) {
+            patch.billNetAmt = group.positiveVal;
+          }
+
+          if (group.negativeVal > 0) {
+            const prevLc = Number(curBill.lineCutAmt) || 0;
+            const totalLc = Math.max(prevLc, group.negativeVal);
+            patch.lineCutAmt = totalLc;
+            patch.cancelLine = String(totalLc);
+            const effBillAmt = group.positiveVal > 0 ? group.positiveVal : (curBill.billNetAmt || 0);
+            const isFullCut = effBillAmt > 0 && (effBillAmt - totalLc) <= 1;
+            if (isFullCut && !hasPaymentRec && !isCredit) {
+              patch.paymentMode = 'FBR';
+            }
+            patch.outstandingAmount = isFullCut ? 0 : Math.max(0, effBillAmt - totalLc - (Number(curBill.collectedAmount) || 0));
+          }
+
+          if (group.ushopAmount > 0) {
+            patch.ushopAmount = group.ushopAmount;
+          }
+
+          if (Object.keys(patch).length > 0) {
+            currentBills[idx] = { ...currentBills[idx], ...patch };
+            xlsPatches.push({ billNo: currentBills[idx].billNo, patch });
+            totalUpdated++;
+          }
+        } else {
+          // Create NEW bill so driver cards display ALL bills in uploaded XLS
+          const effectiveTripDate = group.tripDate || todayFmt;
+          const effNetAmt = group.positiveVal > 0 ? group.positiveVal : (group.negativeVal > 0 ? group.negativeVal : 0);
+          const newIsFullCut = group.negativeVal > 0 && (effNetAmt <= group.negativeVal || Math.abs(effNetAmt - group.negativeVal) <= 1);
+
+          const newBill: Bill = {
+            id: (typeof crypto !== 'undefined' && crypto.randomUUID) ? crypto.randomUUID() : ('xls_' + Date.now() + '_' + Math.random().toString(36).substr(2, 6)),
+            billNo: group.formattedBn,
+            partyName: group.partyName || `Party ${group.formattedBn}`,
+            date: effectiveTripDate,
+            deliveryDate: effectiveTripDate,
+            billNetAmt: effNetAmt,
+            collectedAmount: 0,
+            cashAmount: 0,
+            upiAmount: 0,
+            chequeAmount: 0,
+            lineCutAmt: group.negativeVal || 0,
+            cancelLine: group.negativeVal > 0 ? String(group.negativeVal) : '',
+            ushopAmount: group.ushopAmount > 0 ? group.ushopAmount : undefined,
+            paymentMode: newIsFullCut ? 'FBR' : (canonicalDr ? 'Assigned' : 'Unpaid'),
+            driverName: canonicalDr,
+            delPendingHistory: [],
+            srNo: '',
+            salespersonName: '',
+            collectionCode: '',
+            partyCode: '',
+            partyHulCode: '',
+            beatName: '',
+            outstandingAmount: newIsFullCut ? 0 : Math.max(0, effNetAmt - group.negativeVal),
+            billAgeing: 0,
+          };
+          newBillsCreated.push(newBill);
+          currentBills.push(newBill);
+          const newIdx = currentBills.length - 1;
+          exactMap.set(group.formattedBn.toLowerCase(), newIdx);
+          exactMap.set(bnLower, newIdx);
+          if (bnStrip) strippedMap.set(bnStrip, newIdx);
+          if (bnDigits) digitsMap.set(bnDigits, newIdx);
+          totalCreated++;
         }
       }
 
@@ -539,14 +557,12 @@ export default function DriverPage() {
         await addBillsToStore(newBillsCreated);
       }
 
-      // Auto-jump date picker safely to the most common trip date
       if (dateCounts.size > 0) {
         const topDate = [...dateCounts.entries()].sort((a, b) => b[1] - a[1])[0][0];
         const safeISO = toYYYYMMDD(topDate);
         setSelectedDate(safeISO);
       }
 
-      // Add any new driver names encountered across all files
       const existingLower = new Set(existingDrivers.map(d => d.name.toLowerCase().trim()));
       const newDrivers = [...allDriverNames]
         .filter(n => !existingLower.has(n.toLowerCase().trim()))
@@ -554,7 +570,7 @@ export default function DriverPage() {
       if (newDrivers.length > 0) await saveDrivers([...existingDrivers, ...newDrivers]);
 
       refresh(true);
-      setXlsStats({ updated: totalUpdated, created: totalCreated, missing: totalMissing });
+      setXlsStats({ updated: totalUpdated, created: totalCreated, missing: 0 });
       setXlsStatus('ok');
       setTimeout(() => setXlsStatus('idle'), 5000);
     } catch (err) {
@@ -562,6 +578,7 @@ export default function DriverPage() {
       setXlsStatus('err');
     }
   }
+
 
   async function handleAssignBill() {
     const role = getRole();

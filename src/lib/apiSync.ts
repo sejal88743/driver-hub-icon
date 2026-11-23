@@ -224,7 +224,7 @@ function billToSupabase(b: Partial<Bill>): Record<string, unknown> {
   }
   if ('delPendingHistory' in b) out.del_pending_history = b.delPendingHistory ?? null;
   if ('partPayments'      in b) out.part_payments       = b.partPayments ?? null;
-  if ('editHistory'       in b) out.edit_history        = b.editHistory ?? [];
+  out.edit_history = (b.editHistory != null && Array.isArray(b.editHistory)) ? b.editHistory : [];
   if ('editDate'          in b) out.edit_date           = b.editDate ?? null;
   if ('user'              in b) out.user                = b.user ?? null;
   if ('owner'             in b) out.owner               = b.owner ?? null;
