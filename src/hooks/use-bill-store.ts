@@ -15,10 +15,11 @@ import { filterPendingLocalOnlyBills } from '@/lib/ghostPrune';
 // - Fast fallback when Realtime WebSocket is offline: 10s
 // - Idle backoff when user is away (> 2 min): 30s
 // - Hidden tab / background: 0s (Completely pauses polling)
-const POLL_SAFETY_MS = 8_000;
-const POLL_FAST_MS = 10_000;
-const POLL_IDLE_MS = 30_000;
-const POLL_TICK_MS = 2_000;
+// 2-minute background sync intervals (local-first storage guarantees instant speed with 0 data loss)
+const POLL_SAFETY_MS = 120_000; // 2 minutes
+const POLL_FAST_MS = 120_000;   // 2 minutes
+const POLL_IDLE_MS = 300_000;   // 5 minutes
+const POLL_TICK_MS = 10_000;
 
 
 
@@ -634,8 +635,8 @@ function initGlobalSync() {
       const savedTs = typeof window !== 'undefined' ? localStorage.getItem('vitratrack_last_sync_ts') : null;
       deltaCursor = savedTs || new Date(Date.now() - 24 * 3600 * 1000).toISOString();
       fullCacheVerified = localStorage.getItem(FULL_CACHE_KEY) === 'complete';
-      // Always run authoritative full sync on boot to guarantee 100% data parity across all devices
-      void doFullSync(true);
+      // Local-first load: render instantly, sync delta in background every 2 minutes
+      void doDeltaSync();
     } else {
       void doFullSync(true);
     }

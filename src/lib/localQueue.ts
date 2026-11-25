@@ -131,7 +131,7 @@ export function applyDirtyPatches(bills: Bill[]): Bill[] {
   });
 }
 
-// ─── Flush all pending patches to Supabase in parallel chunks ─────────────────
+// ─── Flush all pending patches to Supabase in parallel chunks / bulk upsert ──
 let isFlushing = false;
 
 export async function flushDirtyQueue(): Promise<{ flushed: number; remaining: number }> {
@@ -142,10 +142,10 @@ export async function flushDirtyQueue(): Promise<{ flushed: number; remaining: n
   if (list.length === 0) return { flushed: 0, remaining: 0 };
 
   isFlushing = true;
-  // Dynamic imports avoid circular deps
-  const [syncMod, apiMod] = await Promise.all([
+  const [syncMod, apiMod, billStoreMod] = await Promise.all([
     import('./syncState'),
     import('./apiSync'),
+    import('./billStore'),
   ]);
 
   syncMod.markWriteStart();
@@ -153,27 +153,49 @@ export async function flushDirtyQueue(): Promise<{ flushed: number; remaining: n
   let flushed = 0;
 
   try {
-    // Process in parallel batches of 5 for speed without overwhelming network
-    const BATCH_SIZE = 5;
-    for (let i = 0; i < list.length; i += BATCH_SIZE) {
-      const batch = list.slice(i, i + BATCH_SIZE);
-      const results = await Promise.all(
-        batch.map(async (entry) => {
-          try {
-            const res = await apiMod.apiPatchBill(entry.id, entry.patch, entry.billNo);
-            return { entry, ok: !!res.ok };
-          } catch {
-            return { entry, ok: false };
-          }
-        })
-      );
+    const allBills = billStoreMod.getBills();
+    const billMap = new Map(allBills.map(b => [b.id, b]));
+    const billNoMap = new Map(allBills.map(b => [(b.billNo || '').trim().toUpperCase(), b]));
 
-      for (const r of results) {
-        if (r.ok) {
-          flushed++;
-        } else {
-          remain.push(r.entry);
+    const billsToUpsert: Bill[] = [];
+    const entriesWithoutBillObj: DirtyEntry[] = [];
+
+    for (const entry of list) {
+      let b = entry.id ? billMap.get(entry.id) : undefined;
+      if (!b && entry.billNo) {
+        b = billNoMap.get(entry.billNo.trim().toUpperCase());
+      }
+      if (b) {
+        billsToUpsert.push({ ...b, ...entry.patch });
+      } else {
+        entriesWithoutBillObj.push(entry);
+      }
+    }
+
+    if (billsToUpsert.length > 0) {
+      const res = await apiMod.apiBulkUpsertBills(billsToUpsert);
+      if (res.count > 0) {
+        flushed += billsToUpsert.length;
+      } else {
+        for (const entry of list) {
+          try {
+            const r = await apiMod.apiPatchBill(entry.id, entry.patch, entry.billNo);
+            if (r.ok) flushed++;
+            else remain.push(entry);
+          } catch {
+            remain.push(entry);
+          }
         }
+      }
+    }
+
+    for (const entry of entriesWithoutBillObj) {
+      try {
+        const r = await apiMod.apiPatchBill(entry.id, entry.patch, entry.billNo);
+        if (r.ok) flushed++;
+        else remain.push(entry);
+      } catch {
+        remain.push(entry);
       }
     }
   } finally {

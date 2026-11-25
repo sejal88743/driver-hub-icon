@@ -379,24 +379,55 @@ export async function flushPendingWrites(): Promise<{ flushed: number; remaining
   const remain: PendingPatch[] = [];
   let flushed = 0;
 
-  const BATCH_SIZE = 5;
-  for (let i = 0; i < list.length; i += BATCH_SIZE) {
-    const batch = list.slice(i, i + BATCH_SIZE);
-    const results = await Promise.all(
-      batch.map(async (p) => {
-        try {
-          const res = await apiPatchBill(p.id, p.patch, p.billNo);
-          return { p, ok: !!res.ok };
-        } catch {
-          return { p, ok: false };
-        }
-      })
-    );
+  try {
+    const { getBills } = await import('./billStore');
+    const allBills = getBills();
+    const billMap = new Map(allBills.map(b => [b.id, b]));
+    const billNoMap = new Map(allBills.map(b => [(b.billNo || '').trim().toUpperCase(), b]));
 
-    for (const r of results) {
-      if (r.ok) flushed++;
-      else remain.push(r.p);
+    const billsToUpsert: Bill[] = [];
+    const otherPending: PendingPatch[] = [];
+
+    for (const p of list) {
+      let b = p.id ? billMap.get(p.id) : undefined;
+      if (!b && p.billNo) {
+        b = billNoMap.get(p.billNo.trim().toUpperCase());
+      }
+      if (b) {
+        billsToUpsert.push({ ...b, ...p.patch });
+      } else {
+        otherPending.push(p);
+      }
     }
+
+    if (billsToUpsert.length > 0) {
+      const res = await apiBulkUpsertBills(billsToUpsert);
+      if (res.count > 0) {
+        flushed += billsToUpsert.length;
+      } else {
+        for (const p of list) {
+          try {
+            const r = await apiPatchBill(p.id, p.patch, p.billNo);
+            if (r.ok) flushed++;
+            else remain.push(p);
+          } catch {
+            remain.push(p);
+          }
+        }
+      }
+    }
+
+    for (const p of otherPending) {
+      try {
+        const r = await apiPatchBill(p.id, p.patch, p.billNo);
+        if (r.ok) flushed++;
+        else remain.push(p);
+      } catch {
+        remain.push(p);
+      }
+    }
+  } catch {
+    for (const p of list) remain.push(p);
   }
 
   writePending(remain);
@@ -672,13 +703,28 @@ export async function apiPatchBill(id: string, patch: Partial<Bill>, _billNo?: s
       try {
         const { getBills } = await import('./billStore');
         const allB = getBills();
-        const existing = id ? allB.find(b => b.id === id) : (_billNo ? allB.find(b => b.billNo === _billNo.trim()) : undefined);
-        if (existing) {
-          const upsertRes = await apiBulkUpsertBills([existing]);
-          if (upsertRes.count > 0) {
-            dispatchSyncStatus('ok');
-            return { ok: true };
-          }
+        const existing = id ? allB.find(b => b.id === id) : (_billNo ? allB.find(b => (b.billNo || '').trim().toUpperCase() === _billNo.trim().toUpperCase()) : undefined);
+        const targetBill = existing ? { ...existing, ...patch } : {
+          id: id || `bill_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+          srNo: '',
+          date: new Date().toLocaleDateString('en-GB'),
+          salespersonName: '',
+          collectionCode: '',
+          billNo: (_billNo || id || '').trim(),
+          partyCode: '',
+          partyHulCode: '',
+          partyName: '',
+          beatName: '',
+          billNetAmt: 0,
+          collectedAmount: 0,
+          outstandingAmount: 0,
+          billAgeing: 0,
+          ...patch,
+        };
+        const upsertRes = await apiBulkUpsertBills([targetBill as Bill]);
+        if (upsertRes.count > 0) {
+          dispatchSyncStatus('ok');
+          return { ok: true };
         }
       } catch (e) {
         console.error('[apiSync] Fallback upsert failed:', e);
