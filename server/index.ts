@@ -74,8 +74,8 @@ app.use(cors({
 app.use(express.json({ limit: '50mb' }));
 
 // ─── Transparent Supabase Proxy ──────────────────────────────────────────────
-const LOCKED_SUPABASE_URL = 'https://qmnofkoxoijihgwgrefv.supabase.co';
-const LOCKED_SUPABASE_PUBLISHABLE_KEY = 'sb_publishable_nxq5s4XWrgD6QdNOr4sPSQ_0rPdFlvK';
+const LOCKED_SUPABASE_URL = 'https://dyeerksnenfyvgevqskp.supabase.co';
+const LOCKED_SUPABASE_PUBLISHABLE_KEY = 'sb_publishable_CmOpnx0qPWRyhczXGRb2gQ_xVbZwFaz';
 
 app.use('/api/supabase-proxy', async (req, res) => {
   const targetPath = req.originalUrl.replace(/^\/api\/supabase-proxy/, '');

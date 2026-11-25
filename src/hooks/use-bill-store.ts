@@ -620,12 +620,14 @@ function initGlobalSync() {
     void flushPendingWrites();
   }, 15000);
 
-  // Initial load: Hydrate immediately from cache with 0ms delay, then authoritative full sync in background
+  // Initial load: Hydrate immediately from cache with 0ms delay, then flush pending browser-memory queue and sync in background
   void (async () => {
     try {
       await whenStoreHydrated();
     } catch {}
     readLocal();
+    void flushDirtyQueue();
+    void flushPendingWrites();
     const localBills = getBills();
     if (localBills && localBills.length > 0) {
       patch({ loading: false });
