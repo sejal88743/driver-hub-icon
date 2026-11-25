@@ -79,21 +79,38 @@ function patch(delta: Partial<StoreSnapshot>) {
   notify();
 }
 
+let lastBillsLength = 0;
+let lastBillsFirstId = '';
+let lastBillsLastId = '';
+
 function readLocal(force = false) {
   const b = getBills();
   const d = getDrivers();
   const bk = getBanks();
   const s = getSummaries();
+
+  const len = b.length;
+  const firstId = len > 0 ? (b[0]?.id || b[0]?.billNo || '') : '';
+  const lastId = len > 0 ? (b[len - 1]?.id || b[len - 1]?.billNo || '') : '';
+
   if (
     !force &&
-    currentSnapshot.bills === b &&
+    currentSnapshot.loading === false &&
     currentSnapshot.drivers === d &&
     currentSnapshot.banks === bk &&
     currentSnapshot.summaries === s &&
-    currentSnapshot.loading === false
+    lastBillsLength === len &&
+    lastBillsFirstId === firstId &&
+    lastBillsLastId === lastId &&
+    currentSnapshot.bills === b
   ) {
     return;
   }
+
+  lastBillsLength = len;
+  lastBillsFirstId = firstId;
+  lastBillsLastId = lastId;
+
   currentSnapshot = {
     bills: b,
     drivers: d,
