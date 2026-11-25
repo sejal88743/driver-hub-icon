@@ -77,7 +77,7 @@ function parseAmountExpression(value: string | number | undefined | null): numbe
 }
 
 export default function Dashboard() {
-  const { bills, drivers, banks, loading, refresh } = useBillStore();
+  const { bills, drivers, banks, loading, syncing, refresh } = useBillStore();
   const { isMatched } = useStatementMatch();
   
   const [selectedBillNo, setSelectedBillNo] = useState('');
@@ -3441,7 +3441,12 @@ export default function Dashboard() {
           {driverStats && (
             <div className="flex gap-2.5 font-black items-center py-0 flex-1 justify-center scale-90">
               <div className="flex flex-col items-center">
-                <span className="text-lg text-primary-foreground leading-none">{driverStats.total}</span>
+                <span className="text-lg text-primary-foreground leading-none flex items-center gap-1">
+                  {driverStats.total}
+                  {syncing && bills.length < 1000 && (
+                    <Loader2 className="w-3 h-3 animate-spin text-primary-foreground/70" />
+                  )}
+                </span>
                 <span className="text-[7px] text-primary-foreground/50 uppercase tracking-tighter">{driverStats.isStaff ? 'TOTAL' : 'LOAD'}</span>
               </div>
               <div className="flex flex-col items-center">

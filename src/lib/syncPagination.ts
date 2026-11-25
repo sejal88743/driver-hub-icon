@@ -62,24 +62,12 @@ export async function collectKeysetPages<T extends { id?: unknown }>(
 
   const rows: T[] = [];
   let lastId: string | null = null;
-  let effectivePageSize = pageSize;
 
   while (true) {
-    const page = await read(lastId, effectivePageSize);
+    const page = await read(lastId, pageSize);
     if (page.length === 0) return rows;
-    if (lastId === null && page.length < effectivePageSize) {
-      // Check if server returned a hard cap like 1000 cleanly: if first page already < requestedSize,
-      // wait—what if Supabase REST max-rows is 500 or 1000? If pageSize was 1000 and REST cap is 1000, page.length === 1000.
-      // If REST cap were smaller and hit on page 1, only one extra probe of > lastId confirms end.
-      effectivePageSize = Math.min(effectivePageSize, page.length);
-      rows.push(...page);
-      if (page.length < 500) return rows;
-      lastId = String(page[page.length - 1]?.id ?? '');
-      if (!lastId) return rows;
-      continue;
-    }
     rows.push(...page);
-    if (page.length < effectivePageSize) return rows;
+    if (page.length < pageSize) return rows;
     const nextLastId = String(page[page.length - 1]?.id ?? '');
     if (!nextLastId || nextLastId === lastId) return rows;
     lastId = nextLastId;

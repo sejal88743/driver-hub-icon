@@ -647,6 +647,24 @@ function doPersistLocalState() {
   }
 }
 
+export async function persistFullCacheToIdbNow(): Promise<boolean> {
+  if (typeof window === 'undefined') return false;
+  try {
+    await idbSetMany({
+      cached_bills_full: _bills,
+      cached_drivers: _drivers,
+      cached_banks: _banks,
+      cached_summaries: _summaries,
+      cached_party_contacts: _partyContacts,
+      cached_salesperson_contacts: _salespersonContacts,
+    });
+    const check = await idbGet<Bill[]>('cached_bills_full');
+    return Array.isArray(check) && check.length === _bills.length;
+  } catch {
+    return false;
+  }
+}
+
 // ─── In-memory store (server is the source of truth) ──────────────────────────
 let _bills: Bill[] = [];
 let _drivers: Driver[] = [];

@@ -1,6 +1,6 @@
 import { useEffect, useSyncExternalStore } from 'react';
-import { getBills, getDrivers, getBanks, getSummaries, getPartyContacts, getSalespersonContacts, setServerData, applyRealtimeBillChange, applyRealtimeTableChange, applyBillsDelta, whenStoreHydrated, Bill, Driver, Bank, DriverDailySummary } from '@/lib/billStore';
-import { apiFetchAllData, apiFetchBillsSince, mapBillFromSupabase, flushPendingWrites } from '@/lib/apiSync';
+import { getBills, getDrivers, getBanks, getSummaries, getPartyContacts, getSalespersonContacts, setServerData, applyRealtimeBillChange, applyRealtimeTableChange, applyBillsDelta, whenStoreHydrated, persistFullCacheToIdbNow, Bill, Driver, Bank, DriverDailySummary } from '@/lib/billStore';
+import { apiFetchAllData, apiFetchBillsSince, apiGetBillsCount, mapBillFromSupabase, flushPendingWrites } from '@/lib/apiSync';
 import { supabase } from '@/lib/supabase';
 import { isWriteInProgress, getLastWriteAt } from '@/lib/syncState';
 import { applyDirtyPatches, isDirtyPending, flushDirtyQueue } from '@/lib/localQueue';
@@ -136,13 +136,14 @@ let lastFullSyncTime = 0;
 let deltaCursor: string | null = null;
 let deltaInFlight = false;
 let billChangeTimer: ReturnType<typeof setTimeout> | null = null;
-const FULL_CACHE_KEY = 'vitratrack_complete_cache_v3';
+const FULL_CACHE_KEY = 'vitratrack_complete_cache_v4';
+const FULL_CACHE_COUNT_KEY = 'vitratrack_complete_bill_count_v4';
 let fullCacheVerified = false;
 
 function scheduleDebouncedFullSync(delayMs = 1500) {
   if (fullSyncDebounceTimer) clearTimeout(fullSyncDebounceTimer);
   fullSyncDebounceTimer = setTimeout(() => {
-    doFullSync(true);
+    void doFullSync(true);
   }, delayMs);
 }
 
@@ -213,15 +214,16 @@ export async function doDeltaSync(force = false, showSyncIndicator = false) {
   }
 }
 
-async function doFullSync(force = false) {
+async function doFullSync(force = false, opts?: { bypassWriteLock?: boolean }) {
   if (syncInFlight) return;
   const now = Date.now();
   // Avoid spamming full network sync if completed recently unless explicitly forced
   if (!force && (now - lastFullSyncTime < 15_000)) {
     return;
   }
-  // If a local write operation is currently in-flight or occurred in the last 2.5s, skip full refresh
-  if (isWriteInProgress() || (now - getLastWriteAt() < 2500)) {
+  // If a local write operation is currently in-flight or occurred in the last 2.5s, skip background full refresh
+  // (but never block initial/recovery sync when cache is incomplete).
+  if (!opts?.bypassWriteLock && (isWriteInProgress() || (now - getLastWriteAt() < 2500))) {
     return;
   }
   syncInFlight = true;
@@ -324,14 +326,24 @@ async function doFullSync(force = false) {
       salespersonContacts: data?.salespersonContacts || currentLocalSales,
       settings: data?.settings,
     });
+    readLocal(true);
+
+    // Wait for IndexedDB persistence BEFORE marking full cache complete in localStorage.
+    // Prevents saving 'complete' while IDB only holds an old 256-bill partial snapshot.
+    const idbSaved = await persistFullCacheToIdbNow();
     fullCacheVerified = true;
     deltaCursor = fullSyncStartedAt;
     try {
-      localStorage.setItem(FULL_CACHE_KEY, 'complete');
+      localStorage.removeItem('vitratrack_complete_cache_v3');
       localStorage.setItem('vitratrack_last_sync_ts', deltaCursor);
+      if (idbSaved) {
+        localStorage.setItem(FULL_CACHE_KEY, 'complete');
+        localStorage.setItem(FULL_CACHE_COUNT_KEY, String(finalBills.length));
+      } else {
+        localStorage.removeItem(FULL_CACHE_KEY);
+      }
     } catch {}
     window.dispatchEvent(new CustomEvent('sync-status', { detail: 'ok' }));
-    readLocal();
   } catch {
     window.dispatchEvent(new CustomEvent('sync-status', { detail: 'error' }));
   } finally {
@@ -649,7 +661,8 @@ function initGlobalSync() {
     void flushPendingWrites();
   }, 15000);
 
-  // Initial load: Hydrate immediately from cache with 0ms delay, then flush pending browser-memory queue and sync in background
+  // Initial load: Hydrate immediately from cache with 0ms delay, verify completeness against server HEAD count,
+  // and immediately run fast parallel full sync if cache is empty or partial (e.g. only 256/500 bills cached).
   void (async () => {
     try {
       await whenStoreHydrated();
@@ -657,16 +670,37 @@ function initGlobalSync() {
     readLocal();
     void flushDirtyQueue();
     void flushPendingWrites();
+
+    try {
+      localStorage.removeItem('vitratrack_complete_cache_v3');
+    } catch {}
+
     const localBills = getBills();
-    if (localBills && localBills.length > 0) {
+    const savedTs = typeof window !== 'undefined' ? localStorage.getItem('vitratrack_last_sync_ts') : null;
+    deltaCursor = savedTs || new Date(Date.now() - 24 * 3600 * 1000).toISOString();
+
+    const cachedComplete = typeof window !== 'undefined' && localStorage.getItem(FULL_CACHE_KEY) === 'complete';
+    const expectedCount = typeof window !== 'undefined' ? Number(localStorage.getItem(FULL_CACHE_COUNT_KEY) || '0') : 0;
+
+    if (localBills.length > 0) {
       patch({ loading: false });
-      const savedTs = typeof window !== 'undefined' ? localStorage.getItem('vitratrack_last_sync_ts') : null;
-      deltaCursor = savedTs || new Date(Date.now() - 24 * 3600 * 1000).toISOString();
-      fullCacheVerified = localStorage.getItem(FULL_CACHE_KEY) === 'complete';
-      // Local-first load: render instantly, sync delta in background every 2 minutes
+    }
+
+    // Fast ~120ms HEAD count check guarantees an incomplete cache (like 256 bills) NEVER masquerades as full.
+    const serverCount = await apiGetBillsCount();
+    const looksPartialByExpected = expectedCount > 500 && localBills.length < Math.floor(expectedCount * 0.9);
+    const looksPartialByServer = serverCount !== null && serverCount > 500 && localBills.length < Math.floor(serverCount * 0.95);
+    const cacheLooksComplete = cachedComplete && localBills.length > 0 && !looksPartialByExpected && !looksPartialByServer && (serverCount !== null || localBills.length >= 1000);
+
+    if (cacheLooksComplete) {
+      fullCacheVerified = true;
       void doDeltaSync();
     } else {
-      void doFullSync(true);
+      fullCacheVerified = false;
+      try {
+        localStorage.removeItem(FULL_CACHE_KEY);
+      } catch {}
+      void doFullSync(true, { bypassWriteLock: true });
     }
   })();
 
@@ -678,8 +712,8 @@ function initGlobalSync() {
     const wait = isIdle ? POLL_IDLE_MS : (realtimeLive ? POLL_SAFETY_MS : POLL_FAST_MS);
     if (Date.now() - lastPollAt < wait) return;
     lastPollAt = Date.now();
-    if (fullCacheVerified) void doDeltaSync();
-    else void doFullSync();
+    if (fullCacheVerified && getBills().length >= 1000) void doDeltaSync();
+    else void doFullSync(true);
   }, POLL_TICK_MS);
 
   // We intentionally do NOT run a 3-minute full sync timer here anymore!
@@ -721,12 +755,17 @@ export function useBillStore() {
     loading: snapshot.loading,
     syncing: snapshot.syncing,
     refresh: readLocal,
-    syncFromApi: (forceFull = false) => {
+    syncFromApi: async (forceFull = false) => {
       serverVersion = 0;
-      if (fullCacheVerified && !forceFull) {
-        return doDeltaSync(true, true);
+      if (forceFull || !fullCacheVerified || getBills().length < 1000) {
+        return doFullSync(true, { bypassWriteLock: true });
       }
-      return doFullSync(true);
+      const serverCount = await apiGetBillsCount();
+      if (serverCount !== null && serverCount > 500 && getBills().length < Math.floor(serverCount * 0.95)) {
+        fullCacheVerified = false;
+        return doFullSync(true, { bypassWriteLock: true });
+      }
+      return doDeltaSync(true, true);
     },
   };
 }
