@@ -17,6 +17,7 @@ import type { Bill } from './billStore';
 import { cleanSalespersonName, cleanPartyName, findCanonicalName } from './nameStandardizer';
 import { mergeBillsInMemoryOnly, addBillsToMemoryOnly, getSalespersonContacts, getBills, excelSerialToDate } from './billStore';
 import { safeReadWorkbook } from './xlsxHelper';
+import { isGhostUuidBill, apiFetchBillsByKeys } from './apiSync';
 
 export type BillsReportStatus = {
   status: 'loading' | 'success' | 'error';
@@ -235,6 +236,7 @@ function buildUpdates(groups: Map<string, BillGroup>, existingBills: Bill[]): {
   const digitsMap = new Map<string, Bill>();
 
   for (const bill of existingBills) {
+    if (isGhostUuidBill(bill)) continue;
     const bn = text(bill.billNo);
     if (!bn) continue;
     const lower = bn.toLowerCase().trim();
@@ -341,7 +343,8 @@ function buildUpdates(groups: Map<string, BillGroup>, existingBills: Bill[]): {
     } else {
       // Diff > 1
       patch.outstandingAmount = Math.max(0, diff);
-      if (curMode === 'fbr' || curMode === 'cancel') {
+      const isExplicitFbr = Boolean(existing.discrepancyReason || existing.paymentDate);
+      if ((curMode === 'fbr' || curMode === 'cancel') && !isExplicitFbr && (Number(existing.lineCutAmt) || 0) > 0 && group.negativeBillValue === 0) {
         patch.paymentMode = 'Unpaid';
         patch.paymentMethod = undefined;
       }
@@ -460,7 +463,7 @@ export async function processBillsReportBuffer(
     onStatus({ status: 'loading', message: 'Checking existing bills...' });
     await new Promise(r => setTimeout(r, 10));
 
-    const { apiBulkUpsertWithProgress, apiBulkInsertWithProgress, BILL_SELECT_COLUMNS, mapBillFromSupabase } = await import('@/lib/apiSync');
+    const { apiBulkUpsertWithProgress, apiBulkInsertWithProgress } = await import('@/lib/apiSync');
     const { whenStoreHydrated } = await import('@/lib/billStore');
     const { supabase } = await import('@/lib/supabase');
     
@@ -476,22 +479,35 @@ export async function processBillsReportBuffer(
 
     const parsed = parseRegister(buffer, XLSX);
 
-    // P1 Optimization: If local store is empty on a fresh session, fetch ONLY
-    // the bills present in this uploaded register (near-zero egress), NEVER download the whole table!
-    if ((!localBills || localBills.length === 0) && supabase) {
-      const fileBillNos = Array.from(parsed.groups.keys()).filter(Boolean);
-      if (fileBillNos.length > 0) {
-        onStatus({ status: 'loading', message: `Checking ${fileBillNos.length} register bills in Supabase...` });
-        const CHUNK = 200;
-        const matchingBills: Bill[] = [];
-        for (let i = 0; i < fileBillNos.length; i += CHUNK) {
-          const chunk = fileBillNos.slice(i, i + CHUNK);
-          const { data } = await supabase.from('bills').select(BILL_SELECT_COLUMNS).in('bill_no', chunk);
-          if (data && Array.isArray(data)) {
-            matchingBills.push(...data.map(mapBillFromSupabase));
-          }
+    // Always query Supabase for the bills present in this register (even when localBills
+    // is already populated) so stale local cache never overwrites recent paymentMode,
+    // lineCutAmt, or deliveryDate saved by other sessions/devices.
+    if (supabase) {
+      const lookupKeys: string[] = [];
+      for (const rawBn of parsed.groups.keys()) {
+        const clean = rawBn.trim();
+        if (!clean) continue;
+        lookupKeys.push(clean, clean.toUpperCase());
+        const stripped = clean.replace(/^GST[-/]?/i, '');
+        if (/^\d{3,6}$/.test(stripped)) {
+          lookupKeys.push(stripped, 'GST' + stripped, 'gst' + stripped);
         }
-        localBills = matchingBills;
+      }
+      if (lookupKeys.length > 0) {
+        onStatus({ status: 'loading', message: `Checking ${parsed.groups.size} register bills in Supabase...` });
+        const remoteMatches = await apiFetchBillsByKeys(lookupKeys).catch(() => [] as Bill[]);
+        const mergedMap = new Map<string, Bill>();
+        for (const b of localBills) {
+          if (isGhostUuidBill(b)) continue;
+          const k = text(b.billNo).toUpperCase();
+          if (k) mergedMap.set(k, b);
+        }
+        for (const b of remoteMatches) {
+          if (isGhostUuidBill(b)) continue;
+          const k = text(b.billNo).toUpperCase();
+          if (k) mergedMap.set(k, b);
+        }
+        localBills = Array.from(mergedMap.values());
       }
     }
 
@@ -536,14 +552,14 @@ export async function processBillsReportBuffer(
     await new Promise(r => setTimeout(r, 10));
 
     // ── Bulk Upsert existing updated bills ────────────────────────────────────
-    const byBillNo = new Map(localBills.map((bill: Bill) => [text(bill.billNo), bill]));
+    const byBillNo = new Map(localBills.map((bill: Bill) => [text(bill.billNo).toLowerCase(), bill]));
     let savedUpdates = 0;
 
     if (updates.length > 0) {
       const mergedBills: Bill[] = [];
       for (const update of updates) {
-        const existing = byBillNo.get(update.billNo);
-        if (existing) {
+        const existing = byBillNo.get(text(update.billNo).toLowerCase());
+        if (existing && !isGhostUuidBill(existing)) {
           mergedBills.push({ ...existing, ...update.patch });
         }
       }

@@ -1,9 +1,9 @@
 import { useState, useMemo, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { CalendarDays, Lock, Loader2, X, Plus, CheckCircle2, Upload, Trash2, FileText, MessageCircle, FileBarChart2, Image as ImageIcon } from 'lucide-react';
+import { CalendarDays, Lock, Loader2, X, Plus, CheckCircle2, Upload, Trash2, FileText, MessageCircle, FileBarChart2, Image as ImageIcon, RefreshCw } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { useBillStore } from '@/hooks/use-bill-store';
-import { saveSummaries, DriverDailySummary, type Bill, getSystemPassword, getBills, saveBills, addBillsToStore, getDrivers, saveDrivers, excelSerialToDate, patchBillInMemory, patchBillsInMemory, getWhatsAppTemplates, getWABulkSendEnabled, getDailyUnlocked, setDailyUnlocked, getTodayDMY, getUserPerm } from '@/lib/billStore';
+import { saveSummaries, DriverDailySummary, type Bill, getSystemPassword, getBills, saveBills, addBillsToStore, getDrivers, saveDrivers, excelSerialToDate, patchBillInMemory, patchBillsInMemory, findBillFast, getWhatsAppTemplates, getWABulkSendEnabled, getDailyUnlocked, setDailyUnlocked, getTodayDMY, getUserPerm } from '@/lib/billStore';
 import { getRole, getLoggedInName } from '@/lib/auth';
 import { processBillsReportFile, BillsReportStatus } from '@/lib/billsReport';
 import { safeReadWorkbook } from '@/lib/xlsxHelper';
@@ -13,6 +13,8 @@ import { recordDriverDownload } from '@/lib/driverDownloadStatus';
 import TopNav from '@/components/TopNav';
 import { cn } from '@/lib/utils';
 import { openWhatsApp } from '@/lib/whatsapp';
+import { isGhostUuidBill, apiFetchBillsByKeys } from '@/lib/apiSync';
+import { normDateStr } from '@/lib/dateUtils';
 
 function getTodayISO() {
   const now = new Date();
@@ -34,7 +36,7 @@ export function isBillPaidOrFbrOrDelPending(b: any) {
 }
 
 export default function DriverPage() {
-  const { bills, drivers, summaries, loading, refresh } = useBillStore();
+  const { bills, drivers, summaries, loading, syncing, refresh, syncFromApi } = useBillStore();
   const navigate = useNavigate();
   const [unlocked] = useState(true);
   const [pwInput] = useState('');
@@ -134,30 +136,68 @@ export default function DriverPage() {
     return toDDMMYYYY(clean1) === toDDMMYYYY(clean2);
   }
 
-  function billsForDriver(driverName: string): typeof bills {
-    const nameLower = driverName.toLowerCase().trim();
-    return bills.filter(b => {
+  // Single O(N) pass over all bills to index both assigned driver bills for displayDate
+  // and carry-forward Del Pending bills per driver. Avoids O(drivers * 57k) scans per render.
+  const { driverBillsMapForDate, driverDelPendingMap } = useMemo(() => {
+    const mapByDriver = new Map<string, Map<string, Bill>>();
+    const delPendingByDriver = new Map<string, Bill[]>();
+
+    const putDriverBill = (driverLower: string, b: Bill) => {
+      if (!driverLower) return;
+      let byKey = mapByDriver.get(driverLower);
+      if (!byKey) {
+        byKey = new Map<string, Bill>();
+        mapByDriver.set(driverLower, byKey);
+      }
+      const bn = (b.billNo || '').trim().toUpperCase();
+      const isMoc = bn.startsWith('MOC') || b.collectionCode === 'MOC' || b.salespersonName === 'MOC' || (b.id && b.id.startsWith('moc_'));
+      const key = isMoc ? (b.id || bn) : (bn || b.id);
+      const existing = byKey.get(key);
+      if (!existing || (!normDateStr(existing.deliveryDate) && normDateStr(b.deliveryDate))) {
+        byKey.set(key, b);
+      }
+    };
+
+    for (let i = 0; i < bills.length; i++) {
+      const b = bills[i];
+      if (isGhostUuidBill(b)) continue;
+
       const curDriverLower = (b.driverName || '').toLowerCase().trim();
-      const hasDeliveryDateMatch = isDateMatching(b.deliveryDate, displayDate) || (!b.deliveryDate && isDateMatching(b.date, displayDate));
+      const bDel = normDateStr(b.deliveryDate);
+      const hasDeliveryDateMatch =
+        isDateMatching(bDel, displayDate) ||
+        (!bDel && isDateMatching(b.date, displayDate)) ||
+        (!bDel && isDateMatching(b.paymentDate, displayDate));
 
-      // If currently assigned to a driver for this date
-      if (curDriverLower && hasDeliveryDateMatch) {
-        return curDriverLower === nameLower;
+      if (curDriverLower) {
+        if (hasDeliveryDateMatch) {
+          putDriverBill(curDriverLower, b);
+        } else if (b.paymentMode === 'Del Pending' && !(b.collectedAmount > 0)) {
+          let arr = delPendingByDriver.get(curDriverLower);
+          if (!arr) {
+            arr = [];
+            delPendingByDriver.set(curDriverLower, arr);
+          }
+          arr.push(b);
+        }
+      } else if (Array.isArray(b.delPendingHistory) && b.delPendingHistory.length > 0) {
+        for (const h of b.delPendingHistory) {
+          if (h.driverName && isDateMatching(h.deliveryDate, displayDate)) {
+            putDriverBill(h.driverName.toLowerCase().trim(), b);
+          }
+        }
       }
+    }
 
-      // If currently assigned to someone else for this date, do NOT show under this driver
-      if (curDriverLower && curDriverLower !== nameLower && hasDeliveryDateMatch) {
-        return false;
-      }
+    const driverBillsMap = new Map<string, Bill[]>();
+    for (const [k, m] of mapByDriver.entries()) {
+      driverBillsMap.set(k, Array.from(m.values()));
+    }
+    return { driverBillsMapForDate: driverBillsMap, driverDelPendingMap: delPendingByDriver };
+  }, [bills, displayDate]);
 
-      // If unassigned currently, check historical Del Pending snapshot
-      if (!curDriverLower && Array.isArray(b.delPendingHistory)) {
-        return b.delPendingHistory.some(h =>
-          h.driverName && h.driverName.toLowerCase().trim() === nameLower && isDateMatching(h.deliveryDate, displayDate)
-        );
-      }
-      return false;
-    });
+  function billsForDriver(driverName: string): typeof bills {
+    return driverBillsMapForDate.get(driverName.toLowerCase().trim()) || [];
   }
 
   async function handleXlsUpload(e: React.ChangeEvent<HTMLInputElement>) {
@@ -415,7 +455,40 @@ export default function DriverPage() {
         }
       }
 
-      const currentBills = [...getBills()];
+      // Pull authoritative latest bills from Supabase for all uploaded bill numbers
+      // so a stale browser tab never overwrites recent Paid/FBR/Credit/deliveryDate updates.
+      const lookupKeySet = new Set<string>();
+      for (const g of billGroups.values()) {
+        if (g.formattedBn) {
+          lookupKeySet.add(g.formattedBn);
+          lookupKeySet.add(g.formattedBn.toUpperCase());
+        }
+        if (g.rawBn && g.rawBn !== g.formattedBn) {
+          lookupKeySet.add(g.rawBn);
+          lookupKeySet.add(g.rawBn.toUpperCase());
+          if (/^\d{3,6}$/.test(g.rawBn.trim())) {
+            lookupKeySet.add('GST' + g.rawBn.trim());
+            lookupKeySet.add('gst' + g.rawBn.trim());
+          }
+        }
+      }
+      const lookupKeys = Array.from(lookupKeySet);
+      const freshRemoteBills = lookupKeys.length > 0
+        ? await apiFetchBillsByKeys(lookupKeys).catch(() => [] as Bill[])
+        : ([] as Bill[]);
+
+      const mergedLocalMap = new Map<string, Bill>();
+      const putInMap = (b: Bill) => {
+        if (isGhostUuidBill(b)) return;
+        const bn = (b.billNo || '').trim().toUpperCase();
+        const isMoc = bn.startsWith('MOC') || b.collectionCode === 'MOC' || b.salespersonName === 'MOC' || (b.id && b.id.startsWith('moc_'));
+        const key = isMoc ? (b.id || bn) : (bn || b.id);
+        if (key) mergedLocalMap.set(key, b);
+      };
+      getBills().forEach(putInMap);
+      freshRemoteBills.forEach(putInMap);
+
+      const currentBills = Array.from(mergedLocalMap.values());
       const existingDrivers = getDrivers();
       const canonicalDriverMap = new Map<string, string>();
       existingDrivers.forEach(d => canonicalDriverMap.set(d.name.toLowerCase().trim(), d.name));
@@ -446,10 +519,10 @@ export default function DriverPage() {
         if (idx === -1 && bnWithGst !== bnLower) idx = exactMap.get(bnWithGst) ?? -1;
         if (idx === -1 && bnStrip) idx = strippedMap.get(bnStrip) ?? -1;
         if (idx === -1 && bnDigits) idx = digitsMap.get(bnDigits) ?? -1;
-        if (idx === -1) {
+        if (idx === -1 && bnLower.length >= 4) {
           idx = currentBills.findIndex(b => {
             const bLower = b.billNo.toLowerCase();
-            return bLower.endsWith(bnLower) || bnLower.endsWith(bLower);
+            return bLower.length >= 4 && (bLower.endsWith(bnLower) || bnLower.endsWith(bLower));
           });
         }
 
@@ -459,29 +532,40 @@ export default function DriverPage() {
         if (idx !== -1) {
           const curBill = currentBills[idx];
           const curMode = (curBill.paymentMode || '').trim().toLowerCase();
-          const hasPaymentRec = (Number(curBill.collectedAmount) || 0) > 0 || (Number(curBill.cashAmount) || 0) > 0 || (Number(curBill.upiAmount) || 0) > 0 || (Number(curBill.chequeAmount) || 0) > 0 || !!curBill.paymentDate;
+          const hasPaymentRec =
+            (Number(curBill.collectedAmount) || 0) > 0 ||
+            (Number(curBill.cashAmount) || 0) > 0 ||
+            (Number(curBill.upiAmount) || 0) > 0 ||
+            (Number(curBill.chequeAmount) || 0) > 0 ||
+            !!curBill.paymentDate ||
+            curMode === 'paid' ||
+            curMode === 'cash' ||
+            curMode === 'upi' ||
+            curMode === 'cheque' ||
+            curMode === 'split';
           const isCredit = curMode === 'credit';
           const isFBR = curMode === 'fbr' || curMode === 'cancel';
 
           const patch: any = {};
-          if (!hasPaymentRec && !isCredit && !isFBR) {
+          if (!curBill.deliveryDate && group.tripDate) {
+            patch.deliveryDate = group.tripDate;
+          } else if (!hasPaymentRec && !isCredit && !isFBR) {
             if (group.tripDate && group.tripDate !== todayFmt) {
               patch.deliveryDate = group.tripDate;
-            } else if (!curBill.deliveryDate) {
-              patch.deliveryDate = todayFmt;
             }
-            if (canonicalDr) {
-              patch.driverName = canonicalDr;
-              if (curMode === '' || curMode === 'pending' || curMode === 'assigned' || curMode === 'del pending' || curMode === 'unpaid') {
-                patch.paymentMode = 'Assigned';
-              }
+          }
+
+          if (!hasPaymentRec && !isCredit && !isFBR && canonicalDr) {
+            patch.driverName = canonicalDr;
+            if (curMode === '' || curMode === 'pending' || curMode === 'assigned' || curMode === 'del pending' || curMode === 'unpaid') {
+              patch.paymentMode = 'Assigned';
             }
           }
 
           if (group.partyName && (!curBill.partyName || curBill.partyName.startsWith('Party '))) {
             patch.partyName = group.partyName;
           }
-          if (group.positiveVal > 0) {
+          if (group.positiveVal > 0 && group.positiveVal !== (Number(curBill.billNetAmt) || 0)) {
             patch.billNetAmt = group.positiveVal;
           }
 
@@ -550,13 +634,6 @@ export default function DriverPage() {
         }
       }
 
-      if (xlsPatches.length > 0) {
-        await patchBillsInMemory(xlsPatches);
-      }
-      if (newBillsCreated.length > 0) {
-        await addBillsToStore(newBillsCreated);
-      }
-
       if (dateCounts.size > 0) {
         const topDate = [...dateCounts.entries()].sort((a, b) => b[1] - a[1])[0][0];
         const safeISO = toYYYYMMDD(topDate);
@@ -567,9 +644,18 @@ export default function DriverPage() {
       const newDrivers = [...allDriverNames]
         .filter(n => !existingLower.has(n.toLowerCase().trim()))
         .map(n => ({ id: Math.random().toString(36).substr(2, 9), name: n }));
-      if (newDrivers.length > 0) await saveDrivers([...existingDrivers, ...newDrivers]);
 
+      // Fire patch + insert + driver save in parallel; skip duplicate remote fetch
+      // since freshRemoteBills was just merged above. Memory mutates synchronously before awaiting.
+      const saveAllPromise = Promise.all([
+        xlsPatches.length > 0 ? patchBillsInMemory(xlsPatches, { skipRemoteFetch: true }) : Promise.resolve(true),
+        newBillsCreated.length > 0 ? addBillsToStore(newBillsCreated) : Promise.resolve(true),
+        newDrivers.length > 0 ? saveDrivers([...existingDrivers, ...newDrivers]) : Promise.resolve(),
+      ]);
+
+      // Refresh Driver Cards immediately with optimistic in-memory bills
       refresh(true);
+      await saveAllPromise;
       setXlsStats({ updated: totalUpdated, created: totalCreated, missing: 0 });
       setXlsStatus('ok');
       setTimeout(() => setXlsStatus('idle'), 5000);
@@ -629,9 +715,10 @@ export default function DriverPage() {
     // Show Del Pending bills that haven't been collected yet AND not yet assigned for today.
     // Once assigned to a driver for today (deliveryDate === displayDate), they move to the driver's table.
     const filtered = bills.filter(b => {
+      if (isGhostUuidBill(b)) return false;
       if (b.paymentMode !== 'Del Pending') return false;
       if ((b.collectedAmount || 0) > 0) return false; // actually collected → done
-      if (b.driverName && b.deliveryDate === displayDate) return false; // already assigned for today → show in driver table
+      if (b.driverName && isDateMatching(b.deliveryDate, displayDate)) return false; // already assigned for today → show in driver table
       return true;
     });
     // Deduplicate by billNo — keep only the first occurrence
@@ -652,7 +739,7 @@ export default function DriverPage() {
     });
   }, [bills, dpSortCol, dpSortDir, displayDate]);
 
-  async function handleDeleteBillAssignment(billNo: string, targetDate?: string, e?: React.SyntheticEvent) {
+  async function handleDeleteBillAssignment(billNo: string, targetDate?: string, e?: React.SyntheticEvent, billId?: string) {
     if (e) e.stopPropagation();
     const role = getRole();
     // Only owner may remove driver assignments from the Driver page
@@ -662,7 +749,7 @@ export default function DriverPage() {
     }
 
     const norm = billNo.trim().toLowerCase();
-    const orig = getBills().find(b => b.billNo.trim().toLowerCase() === norm) || bills.find(b => b.billNo.trim().toLowerCase() === norm);
+    const orig = findBillFast(billNo, billId) || getBills().find(b => b.billNo.trim().toLowerCase() === norm) || bills.find(b => b.billNo.trim().toLowerCase() === norm);
     if (!orig) return;
 
     const matchDate = targetDate || orig.deliveryDate || displayDate;
@@ -671,13 +758,19 @@ export default function DriverPage() {
       : [];
     const newMode = orig.paymentMode === 'Assigned' ? 'Unpaid' : (orig.paymentMode || 'Unpaid');
 
-    const ok = await patchBillInMemory(orig.billNo, {
-      driverName: '',
-      deliveryDate: '',
-      paymentMode: newMode,
-      delPendingHistory: newHistory
-    });
-    refresh();
+    // Optimistic instant removal from Driver Card; Supabase patch completes in background
+    const savePromise = patchBillInMemory(
+      orig.billNo,
+      {
+        driverName: '',
+        deliveryDate: '',
+        paymentMode: newMode,
+        delPendingHistory: newHistory
+      },
+      orig.id
+    );
+    refresh(true);
+    const ok = await savePromise;
     if (!ok) alert(`Bill ${billNo} database me update nahi hua. Internet check karein.`);
   }
 
@@ -794,22 +887,16 @@ export default function DriverPage() {
     });
 
     return uniqueDrivers.map(d => {
-      // Del Pending bills assigned to this driver from ANY previous date — carry-forward
+      // O(1) lookup from pre-indexed maps instead of scanning 57k+ bills per driver
       const nameLower = d.name.toLowerCase().trim();
-      // Del Pending carry-forward for this driver — do NOT filter on paymentDate,
-      // old entries may have had it set before the fix.
-      const driverDelPending = bills.filter(b =>
-        b.paymentMode === 'Del Pending' &&
-        !(b.collectedAmount > 0) &&
-        !!b.driverName &&
-        b.driverName.toLowerCase().trim() === nameLower &&
-        b.deliveryDate !== displayDate
-      );
-
-      // Dynamic calculation from Master Ledger based on Sync Assignments (includes carry-forward)
-      const allDbills = billsForDriver(d.name);
+      const driverDelPending = driverDelPendingMap.get(nameLower) || [];
+      const allDbills = driverBillsMapForDate.get(nameLower) || [];
       const dbills = showPendingOnly
-        ? allDbills.filter(b => !!b.deliveryDate && !b.paymentDate)
+        ? allDbills.filter(b => {
+            const m = (b.paymentMode || '').trim().toUpperCase();
+            if (m === 'FBR' || m === 'CANCEL' || m === 'CREDIT') return false;
+            return !b.paymentDate && (Number(b.collectedAmount) || 0) === 0;
+          })
         : allDbills;
       
       const getEff = (b: typeof bills[0]) => {
@@ -895,7 +982,7 @@ export default function DriverPage() {
         driverDelPending,
       };
     });
-  }, [drivers, bills, displayDate, summaries, showPendingOnly]);
+  }, [drivers, driverBillsMapForDate, driverDelPendingMap, displayDate, summaries, showPendingOnly]);
 
   async function handleWABulkSend(d: typeof driverStats[number], e: React.MouseEvent) {
     e.stopPropagation();
@@ -949,20 +1036,42 @@ export default function DriverPage() {
 
       const driverBills = billsForDriver(d.name);
 
+      const getEff = (b: typeof bills[0]) => {
+        const ca = Number(b.cashAmount) || 0;
+        const up = Number(b.upiAmount) || 0;
+        const ch = Number(b.chequeAmount) || 0;
+        const col = Number(b.collectedAmount) || 0;
+        if (ca === 0 && up === 0 && ch === 0 && col > 0) {
+          const m = (b.paymentMode || '').toLowerCase();
+          if (m.includes('upi') || m.includes('gpay')) return { cash: 0, upi: col, chq: 0 };
+          if (m.includes('cheque') || m.includes('chq')) return { cash: 0, upi: 0, chq: col };
+          return { cash: col, upi: 0, chq: 0 };
+        }
+        return { cash: ca, upi: up, chq: ch };
+      };
+
+      const checkFBR = (b: typeof bills[0]) => {
+        const mode = (b.paymentMode || '').trim().toUpperCase();
+        if (mode === 'FBR' || mode === 'CANCEL') return true;
+        const { cash, upi, chq } = getEff(b);
+        const hasMoney = (cash + upi + chq) > 0;
+        const net = Number(b.billNetAmt) || 0;
+        const lc = (Number(b.lineCutAmt) || 0) || (Number(b.cancelLine) || 0);
+        return !hasMoney && net > 0 && lc > 0 && (net - lc) <= 1;
+      };
+
       // ── Compute summary stats ──────────────────────────────────────────
       let cashCount = 0, cashAmt = 0, gpayCount = 0, gpayAmt = 0;
       let chqCount = 0, chqAmt = 0, fbrCount = 0, fbrAmt = 0;
       let delPendCount = 0, delPendAmt = 0, totalLineCut = 0, totalAmt = 0;
       driverBills.forEach(b => {
-        const isFBR    = b.paymentMode === 'FBR' || b.paymentMode === 'Cancel';
+        const isFBR    = checkFBR(b);
         const isDelPend= b.paymentMode === 'Del Pending';
-        const cash = Number(b.cashAmount) || 0;
-        const gpay = Number(b.upiAmount)  || 0;
-        const chq  = Number(b.chequeAmount) || 0;
+        const { cash, upi: gpay, chq } = getEff(b);
         const lc   = (Number(b.lineCutAmt) || 0) || (Number(b.cancelLine) || 0);
-        if (isFBR)    { fbrCount++;    fbrAmt    += b.billNetAmt; return; }
-        if (isDelPend){ delPendCount++; delPendAmt += b.billNetAmt; return; }
-        totalAmt    += b.billNetAmt;
+        if (isFBR)    { fbrCount++;    fbrAmt    += (Number(b.billNetAmt) || 0); return; }
+        if (isDelPend){ delPendCount++; delPendAmt += (Number(b.billNetAmt) || 0); return; }
+        totalAmt    += (Number(b.billNetAmt) || 0);
         if (cash > 0) { cashCount++; cashAmt += cash; }
         if (gpay > 0) { gpayCount++; gpayAmt += gpay; }
         if (chq  > 0) { chqCount++;  chqAmt  += chq;  }
@@ -973,7 +1082,7 @@ export default function DriverPage() {
       doc.setFontSize(13); doc.setFont('helvetica', 'bold'); doc.setTextColor(0, 0, 0);
       doc.text(`DRIVER: ${d.name.toUpperCase()}`, ML, 11);
       doc.setFontSize(9); doc.setTextColor(50, 50, 50);
-      doc.text(`DEL DATE: ${displayDate}   |   LOAD: ${driverBills.length} BILLS   |   AMT: RS.${(totalAmt + fbrAmt).toLocaleString('en-IN')}`, ML, 17);
+      doc.text(`DEL DATE: ${displayDate}   |   LOAD: ${driverBills.length} BILLS   |   AMT: RS.${(totalAmt + fbrAmt + delPendAmt).toLocaleString('en-IN')}`, ML, 17);
 
       // ── Coloured Summary Stats Row ──────────────────────────────────────
       autoTable(doc, {
@@ -1012,13 +1121,9 @@ export default function DriverPage() {
 
       // ── Bills Table ──────────────────────────────────────────────────────
       const tableBody = driverBills.map((b) => {
-        const isFBR = b.paymentMode === 'FBR' || b.paymentMode === 'Cancel';
-        const cash  = Number(b.cashAmount)   || 0;
-        const gpay  = Number(b.upiAmount)    || 0;
-        const chq   = Number(b.chequeAmount) || 0;
+        const isFBR = checkFBR(b);
+        const { cash, upi: gpay, chq } = getEff(b);
         const lc    = (Number(b.lineCutAmt) || 0) || (Number(b.cancelLine) || 0);
-
-        const isMatched = String(b.discrepancyReason || (b as any).discrepancy_reason || (b as any).discrepancy || '').toUpperCase().includes('MATCHED');
 
         const gpayCell = gpay > 0 ? gpay.toLocaleString('en-IN') : '-';
         const chqCell  = chq > 0 ? chq.toLocaleString('en-IN') : '-';
@@ -1035,16 +1140,16 @@ export default function DriverPage() {
         ];
       });
 
-      const totalCash = driverBills.reduce((s, b) => s + (Number(b.cashAmount)   || 0), 0);
-      const totalGpay = driverBills.reduce((s, b) => s + (Number(b.upiAmount)    || 0), 0);
-      const totalChq  = driverBills.reduce((s, b) => s + (Number(b.chequeAmount) || 0), 0);
+      const totalCash = cashAmt;
+      const totalGpay = gpayAmt;
+      const totalChq  = chqAmt;
       const grandAmt  = driverBills.reduce((s, b) => s + (Number(b.billNetAmt)   || 0), 0);
 
       autoTable(doc, {
         startY: tableStartY,
         head: [['BILL NO', 'PARTY NAME', 'BILL AMT', 'LINE CUT', 'CASH', 'GPAY', 'CHEQ', 'FBR']],
         body: tableBody,
-        foot: [['', 'TOTAL', grandAmt.toLocaleString('en-IN'), totalLineCut > 0 ? totalLineCut.toLocaleString('en-IN') : '-', totalCash.toLocaleString('en-IN'), totalGpay.toLocaleString('en-IN'), totalChq.toLocaleString('en-IN'), fbrAmt > 0 ? fbrAmt.toLocaleString('en-IN') : '-']],
+        foot: [['', `TOTAL (${driverBills.length})`, grandAmt.toLocaleString('en-IN'), totalLineCut > 0 ? totalLineCut.toLocaleString('en-IN') : '-', totalCash.toLocaleString('en-IN'), totalGpay.toLocaleString('en-IN'), totalChq.toLocaleString('en-IN'), fbrAmt > 0 ? fbrAmt.toLocaleString('en-IN') : '-']],
         showFoot: 'lastPage',
         theme: 'grid',
         styles: { fontSize: fSize, font: 'helvetica', fontStyle: 'bold', cellPadding: cellPad, minCellHeight: 2.65, overflow: 'ellipsize', lineWidth: 0.15, textColor: [0, 0, 0] },
@@ -1136,14 +1241,24 @@ export default function DriverPage() {
         doc.setTextColor(30, 30, 30);
         doc.text(`DEL DATE: ${displayDate}   |   BILLS: ${driverBills.length}   |   AMT: RS.${totalAmt.toLocaleString('en-IN')}`, ML, 17);
 
+        const getEff = (b: typeof bills[0]) => {
+          const ca = Number(b.cashAmount) || 0;
+          const up = Number(b.upiAmount) || 0;
+          const ch = Number(b.chequeAmount) || 0;
+          const col = Number(b.collectedAmount) || 0;
+          if (ca === 0 && up === 0 && ch === 0 && col > 0) {
+            const m = (b.paymentMode || '').toLowerCase();
+            if (m.includes('upi') || m.includes('gpay')) return { cash: 0, upi: col, chq: 0 };
+            if (m.includes('cheque') || m.includes('chq')) return { cash: 0, upi: 0, chq: col };
+            return { cash: col, upi: 0, chq: 0 };
+          }
+          return { cash: ca, upi: up, chq: ch };
+        };
+
         const tableBody = driverBills.map(b => {
-          const cash = Number(b.cashAmount) || 0;
-          const gpay = Number(b.upiAmount) || 0;
-          const chq = Number(b.chequeAmount) || 0;
+          const { cash, upi: gpay, chq } = getEff(b);
           const lc = (Number(b.lineCutAmt) || 0) || (Number(b.cancelLine) || 0);
           const isFBR = b.paymentMode === 'FBR' || b.paymentMode === 'Cancel';
-
-          const isMatched = String(b.discrepancyReason || (b as any).discrepancy_reason || (b as any).discrepancy || '').toUpperCase().includes('MATCHED');
 
           const gpayCell = gpay > 0 ? gpay.toLocaleString('en-IN') : '-';
           const chqCell  = chq > 0 ? chq.toLocaleString('en-IN') : '-';
@@ -1160,6 +1275,11 @@ export default function DriverPage() {
           ];
         });
 
+        const totCash = driverBills.reduce((s, b) => s + getEff(b).cash, 0);
+        const totGpay = driverBills.reduce((s, b) => s + getEff(b).upi, 0);
+        const totChq  = driverBills.reduce((s, b) => s + getEff(b).chq, 0);
+        const totLc   = driverBills.reduce((s, b) => s + ((Number(b.lineCutAmt) || 0) || (Number(b.cancelLine) || 0)), 0);
+
         autoTable(doc, {
           startY: 20,
           margin: { left: ML, right: MR, top: MT, bottom: MB },
@@ -1167,7 +1287,7 @@ export default function DriverPage() {
           head: [['BILL NO', 'PARTY NAME', 'BILL AMT', 'CASH', 'GPAY', 'CHEQ', 'LINE CUT', 'STATUS']],
           body: tableBody,
           showFoot: 'lastPage',
-          foot: [['', 'TOTAL', totalAmt.toLocaleString('en-IN'), '', '', '', '', '']],
+          foot: [['', `TOTAL (${driverBills.length})`, totalAmt.toLocaleString('en-IN'), totCash.toLocaleString('en-IN'), totGpay.toLocaleString('en-IN'), totChq.toLocaleString('en-IN'), totLc > 0 ? totLc.toLocaleString('en-IN') : '-', '']],
           pageBreak: 'auto',
           theme: 'grid',
           styles: {
@@ -1265,6 +1385,16 @@ export default function DriverPage() {
             <h1 className="text-xs font-black text-primary-foreground uppercase tracking-widest">Driver Center</h1>
             <p className="text-[9px] font-bold text-primary-foreground/60 uppercase tracking-tighter">Daily Reconciliation</p>
           </div>
+
+          <button
+            onClick={() => void syncFromApi()}
+            disabled={syncing}
+            title="Fast Sync Latest Changes"
+            className="flex items-center gap-1 px-2 py-1.5 rounded-lg border font-black text-[9px] uppercase tracking-wider shrink-0 bg-white/10 border-white/20 text-primary-foreground hover:bg-white/20 disabled:opacity-60"
+          >
+            <RefreshCw className={cn("w-3 h-3", syncing && "animate-spin")} />
+            SYNC
+          </button>
 
           {/* Template / Assignment Image & XLS Download */}
           <div className="relative shrink-0">
@@ -1967,7 +2097,7 @@ export default function DriverPage() {
                     {(() => {
                       const grouped: Record<string, typeof bills> = {};
                       billsForDriver(d.name).forEach(b => {
-                        const key = b.deliveryDate || '—';
+                        const key = b.deliveryDate || b.paymentDate || b.date || '—';
                         if (!grouped[key]) grouped[key] = [];
                         grouped[key].push(b);
                       });
@@ -1997,12 +2127,12 @@ export default function DriverPage() {
                               <div className="space-y-0.5 pl-1">
                                 {dBills.map(b => {
                                   const bn = ((Number(b.ushopAmount) || 0) > 0 ? '*' : '') + b.billNo.replace(/^GST/i, '');
-                                  const paid = !!b.paymentDate;
+                                  const paid = !!b.paymentDate || (Number(b.collectedAmount) || 0) > 0 || ((Number(b.cashAmount) || 0) + (Number(b.upiAmount) || 0) + (Number(b.chequeAmount) || 0)) > 0;
                                   const isFBRBill = b.paymentMode === 'FBR' || b.paymentMode === 'Cancel';
                                   const isCreditBill = b.paymentMode === 'Credit';
                                   const isPendingBill = b.paymentMode === 'Pending' || b.paymentMode === 'Del Pending';
                                   return (
-                                    <div key={b.billNo} className={cn("flex items-center gap-1 rounded px-0.5",
+                                    <div key={b.id || b.billNo} className={cn("flex items-center gap-1 rounded px-0.5",
                                       isFBRBill ? "bg-red-300" :
                                       isCreditBill ? "bg-green-300" :
                                       isPendingBill ? "bg-yellow-200" : ""
@@ -2020,7 +2150,7 @@ export default function DriverPage() {
                                       )}
                                       {getRole() === 'owner' && (
                                         <button
-                                          onClick={e => { e.stopPropagation(); handleDeleteBillAssignment(b.billNo, date, e); }}
+                                          onClick={e => { e.stopPropagation(); handleDeleteBillAssignment(b.billNo, date, e, b.id); }}
                                           className="shrink-0 w-4 h-4 flex items-center justify-center rounded-full bg-destructive/10 text-destructive hover:bg-destructive hover:text-white transition-colors cursor-pointer"
                                           title="Remove assignment"
                                         >

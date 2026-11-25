@@ -442,14 +442,20 @@ export function syncDriverDateBills(driverName: string, dateDisplay: string, ser
   const targetDate = normDateStr(dateDisplay);
   if (!targetDate) return;
 
+  const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  const isGhost = (b: Partial<Bill>) =>
+    UUID_RE.test((b.billNo || '').trim()) && !(b.partyName || '').trim() && (Number(b.billNetAmt) || 0) === 0;
+
   const serverBillMap = new Map<string, Bill>();
   for (const sb of serverBills) {
+    if (isGhost(sb)) continue;
     const k = getBillDedupeKey(sb);
     if (k) serverBillMap.set(k, sb);
   }
 
   let changed = false;
-  const updatedBills = [..._bills];
+  const updatedBills = _bills.filter(b => !isGhost(b));
+  if (updatedBills.length !== _bills.length) changed = true;
   const existingKeys = new Set<string>();
 
   for (let i = 0; i < updatedBills.length; i++) {
@@ -468,11 +474,17 @@ export function syncDriverDateBills(driverName: string, dateDisplay: string, ser
       if (
         bDriver !== sbDriver ||
         bDate !== sbDate ||
+        normDateStr(b.deliveryDate) !== normDateStr(sb.deliveryDate) ||
+        normDateStr(b.paymentDate) !== normDateStr(sb.paymentDate) ||
         b.collectedAmount !== sb.collectedAmount ||
         b.paymentMode !== sb.paymentMode ||
         b.cashAmount !== sb.cashAmount ||
         b.upiAmount !== sb.upiAmount ||
-        b.chequeAmount !== sb.chequeAmount
+        b.chequeAmount !== sb.chequeAmount ||
+        (Number(b.lineCutAmt) || 0) !== (Number(sb.lineCutAmt) || 0) ||
+        (b.partyName || '') !== (sb.partyName || '') ||
+        (Number(b.billNetAmt) || 0) !== (Number(sb.billNetAmt) || 0) ||
+        (b.discrepancyReason || '') !== (sb.discrepancyReason || '')
       ) {
         updatedBills[i] = { ...b, ...sb };
         changed = true;
@@ -489,6 +501,7 @@ export function syncDriverDateBills(driverName: string, dateDisplay: string, ser
 
   if (changed) {
     _bills = updatedBills;
+    rebuildBillIndexMaps();
     persistLocalState();
     if (typeof window !== 'undefined') {
       window.dispatchEvent(new Event('bill-store-update'));
@@ -1769,19 +1782,30 @@ export function bulkMergeBillsInStore(mergedBills: Bill[]) {
 // ─── Add new bills (from XLS import — no delete) ─────────────────────────────
 export async function addBillsToStore(newBills: Bill[]): Promise<boolean> {
   if (newBills.length === 0) return true;
-  const existingKeys = new Set(_bills.map(b => getBillDedupeKey(b)));
   const toAdd: Bill[] = [];
+  const addedKeys = new Set<string>();
   for (const b of newBills) {
     const key = getBillDedupeKey(b);
-    if (key && !existingKeys.has(key)) {
-      existingKeys.add(key);
+    if (key && !_billIndexByKey.has(key) && !addedKeys.has(key)) {
+      addedKeys.add(key);
       toAdd.push(b);
     }
   }
   if (toAdd.length === 0) return true;
-  _bills = [..._bills, ...toAdd];
+  const next = [..._bills, ...toAdd];
+  const baseIdx = _bills.length;
+  for (let i = 0; i < toAdd.length; i++) {
+    const b = toAdd[i];
+    const idx = baseIdx + i;
+    if (b.id) _billIndexById.set(b.id, idx);
+    const bn = (b.billNo || '').trim().toUpperCase();
+    if (bn && !_billIndexByNo.has(bn)) _billIndexByNo.set(bn, idx);
+    const key = getBillDedupeKey(b);
+    if (key && !_billIndexByKey.has(key)) _billIndexByKey.set(key, idx);
+  }
+  _bills = next;
   dispatchUpdate();
-  persistLocalState(true);
+  persistLocalState();
   if (typeof window !== 'undefined') {
     window.dispatchEvent(new CustomEvent('broadcast-bills-update', { detail: toAdd }));
   }
@@ -2362,12 +2386,12 @@ function updateDelPendingHistoryOnPatch(
   return history.length > 0 ? history : undefined;
 }
 
-export async function patchBillInMemory(billNo: string, patch: Partial<Bill>): Promise<boolean> {
-  let idx = findBillIndexFast(billNo);
+export async function patchBillInMemory(billNo: string, patch: Partial<Bill>, billId?: string): Promise<boolean> {
+  let idx = findBillIndexFast(billNo, billId);
   if (idx === -1) {
-    const normKey = getBillDedupeKey({ billNo, id: billNo });
+    const normKey = getBillDedupeKey({ billNo, id: billId || billNo });
     const norm = (billNo || '').trim().toLowerCase();
-    idx = _bills.findIndex(b => (normKey && getBillDedupeKey(b) === normKey) || (b.billNo || '').trim().toLowerCase() === norm || b.id === billNo);
+    idx = _bills.findIndex(b => (normKey && getBillDedupeKey(b) === normKey) || (b.billNo || '').trim().toLowerCase() === norm || (billId && b.id === billId) || b.id === billNo);
   }
   if (idx === -1) return false;
   const delHist = updateDelPendingHistoryOnPatch(_bills[idx], patch);
@@ -2396,7 +2420,6 @@ export async function patchBillInMemory(billNo: string, patch: Partial<Bill>): P
   persistLocalState();
   if (typeof window !== 'undefined') {
     window.dispatchEvent(new CustomEvent('broadcast-bill-update', { detail: _bills[idx] }));
-    window.dispatchEvent(new CustomEvent('broadcast-sync-trigger', { detail: Date.now() }));
   }
   const bill = _bills[idx];
   markWriteStart();
@@ -2422,33 +2445,89 @@ export async function patchBillInMemory(billNo: string, patch: Partial<Bill>): P
   return confirmed;
 }
 
+// Cached multi-key lookup map tied to current _bills array reference
+let _cachedMultiLookupRef: Bill[] | null = null;
+let _cachedMultiLookupMap: Map<string, number> | null = null;
+
+function getMultiBillLookupMap(): Map<string, number> {
+  if (_cachedMultiLookupRef === _bills && _cachedMultiLookupMap) {
+    return _cachedMultiLookupMap;
+  }
+  const cleanBn = (s: string) => String(s || '').trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
+  const stripGst = (s: string) => cleanBn(s).replace(/^GST/i, '').replace(/^MOC/i, '');
+  const digitsOnly = (s: string) => String(s || '').replace(/\D/g, '').replace(/^0+/, '');
+  const map = new Map<string, number>();
+  for (let i = 0; i < _bills.length; i++) {
+    const b = _bills[i];
+    if (b.id) map.set(`id:${b.id}`, i);
+    const c = cleanBn(b.billNo);
+    if (c && !map.has(`bn:${c}`)) map.set(`bn:${c}`, i);
+    const st = stripGst(b.billNo);
+    if (st && !map.has(`st:${st}`)) map.set(`st:${st}`, i);
+    const dg = digitsOnly(b.billNo);
+    if (dg && !map.has(`dg:${dg}`)) map.set(`dg:${dg}`, i);
+  }
+  _cachedMultiLookupRef = _bills;
+  _cachedMultiLookupMap = map;
+  return map;
+}
+
 // ─── Batch patch — local update + chunked bulk Supabase sync ───────────
-export async function patchBillsInMemory(patches: Array<{ billNo: string; patch: Partial<Bill> }>): Promise<boolean> {
+export async function patchBillsInMemory(
+  patches: Array<{ billNo: string; patch: Partial<Bill> }>,
+  options?: { skipRemoteFetch?: boolean }
+): Promise<boolean> {
   if (!patches || patches.length === 0) return true;
+
+  // Refresh authoritative server rows for patched bills before merging unless caller already fetched them.
+  if (!options?.skipRemoteFetch) {
+    try {
+      const { apiFetchBillsByKeys } = await import('@/lib/apiSync');
+      const candidateNos = patches.map(p => p.billNo).filter(Boolean);
+      const serverRows = await apiFetchBillsByKeys(candidateNos);
+      if (serverRows.length > 0) {
+        const srvMap = new Map<string, Bill>();
+        for (const sr of serverRows) {
+          const k = getBillDedupeKey(sr);
+          if (k) srvMap.set(k, sr);
+        }
+        let mergedAny = false;
+        const refreshed = _bills.map(b => {
+          const k = getBillDedupeKey(b);
+          const sr = k ? srvMap.get(k) : undefined;
+          if (sr) {
+            srvMap.delete(k);
+            mergedAny = true;
+            return { ...b, ...sr };
+          }
+          return b;
+        });
+        for (const rem of srvMap.values()) {
+          refreshed.push(rem);
+          mergedAny = true;
+        }
+        if (mergedAny) {
+          _bills = refreshed;
+          rebuildBillIndexMaps();
+        }
+      }
+    } catch {}
+  }
 
   const cleanBn = (s: string) => String(s || '').trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
   const stripGst = (s: string) => cleanBn(s).replace(/^GST/i, '').replace(/^MOC/i, '');
   const digitsOnly = (s: string) => String(s || '').replace(/\D/g, '').replace(/^0+/, '');
 
-  const billIndexMap = new Map<string, number>();
-  for (let i = 0; i < _bills.length; i++) {
-    const b = _bills[i];
-    if (b.id) billIndexMap.set(`id:${b.id}`, i);
-    const c = cleanBn(b.billNo);
-    if (c && !billIndexMap.has(`bn:${c}`)) billIndexMap.set(`bn:${c}`, i);
-    const st = stripGst(b.billNo);
-    if (st && !billIndexMap.has(`st:${st}`)) billIndexMap.set(`st:${st}`, i);
-    const dg = digitsOnly(b.billNo);
-    if (dg && !billIndexMap.has(`dg:${dg}`)) billIndexMap.set(`dg:${dg}`, i);
-  }
+  const billIndexMap = getMultiBillLookupMap();
 
   const toSync: Array<{ id: string; patch: Partial<Bill>; billNo: string }> = [];
   const updatedBills: Bill[] = [];
   const nowStr = `${nowDMY()} ${nowHM()}`;
   const nowIso = new Date().toISOString();
+  const nextBills = [..._bills];
 
-  for (const { billNo, patch } of patches) {
-    if (!patch || Object.keys(patch).length === 0) continue;
+  for (const { billNo, patch: rawPatch } of patches) {
+    if (!rawPatch || Object.keys(rawPatch).length === 0) continue;
     let idx = -1;
     const c = cleanBn(billNo);
     const st = stripGst(billNo);
@@ -2460,31 +2539,54 @@ export async function patchBillsInMemory(patches: Array<{ billNo: string; patch:
 
     if (idx === -1) continue;
 
-    const delHist = updateDelPendingHistoryOnPatch(_bills[idx], patch);
+    const current = nextBills[idx];
+    const patch: Partial<Bill> = { ...rawPatch };
+
+    // Protect settled bills (Paid / FBR / Credit) from being downgraded back to Assigned
+    const curMode = (current.paymentMode || '').trim().toLowerCase();
+    const patchMode = (patch.paymentMode || '').trim().toLowerCase();
+    const curHasPayment = (Number(current.collectedAmount) || 0) > 0 || (Number(current.cashAmount) || 0) > 0 || (Number(current.upiAmount) || 0) > 0 || (Number(current.chequeAmount) || 0) > 0 || !!current.paymentDate;
+    const curSettled = curHasPayment || curMode === 'fbr' || curMode === 'cancel' || curMode === 'credit' || curMode === 'paid';
+    if (patchMode === 'assigned' && curSettled) {
+      delete patch.paymentMode;
+      delete patch.paymentMethod;
+      delete patch.deliveryDate;
+      delete patch.driverName;
+    }
+
+    // Never wipe deliveryDate unless patch explicitly intends to clear it (del pending)
+    if (patch.deliveryDate === undefined && current.deliveryDate) {
+      patch.deliveryDate = current.deliveryDate;
+    }
+
+    if (Object.keys(patch).length === 0) continue;
+
+    const delHist = updateDelPendingHistoryOnPatch(current, patch);
     if (delHist && !('delPendingHistory' in patch)) {
       patch.delPendingHistory = delHist;
     }
     const withHist: Partial<Bill> = ('editHistory' in patch) ? patch : {
       ...patch,
-      editHistory: appendEditHistory(_bills[idx].editHistory, {
+      editHistory: appendEditHistory(current.editHistory, {
         action: 'edit',
-        mode: (patch.paymentMode ?? _bills[idx].paymentMode) || undefined,
-        amount: patch.collectedAmount ?? _bills[idx].collectedAmount,
+        mode: (patch.paymentMode ?? current.paymentMode) || undefined,
+        amount: patch.collectedAmount ?? current.collectedAmount,
         changes: Object.keys(patch).map(k => `${k}=${String((patch as Record<string, unknown>)[k] ?? '')}`).join(' | '),
       }),
       editDate: nowStr,
       updatedAt: nowIso,
     };
-    _bills[idx] = { ..._bills[idx], ...withHist };
-    toSync.push({ id: _bills[idx].id, patch: withHist, billNo: _bills[idx].billNo });
-    updatedBills.push(_bills[idx]);
+    nextBills[idx] = { ...current, ...withHist };
+    toSync.push({ id: nextBills[idx].id, patch: withHist, billNo: nextBills[idx].billNo });
+    updatedBills.push(nextBills[idx]);
   }
 
   if (toSync.length === 0) return true;
 
-  _bills = [..._bills]; // New array reference for React reactivity
+  _bills = nextBills;
+  rebuildBillIndexMaps();
   dispatchUpdate();
-  persistLocalState(true);
+  persistLocalState();
 
   if (typeof window !== 'undefined') {
     window.dispatchEvent(new CustomEvent('broadcast-bills-update', {
@@ -2493,15 +2595,14 @@ export async function patchBillsInMemory(patches: Array<{ billNo: string; patch:
   }
 
   markWriteStart();
-  import('@/lib/apiSync').then(({ apiBulkUpsertWithProgress }) => {
-    apiBulkUpsertWithProgress(updatedBills).catch(err => {
-      console.warn('[patchBillsInMemory] Supabase background sync warning:', err);
-    }).finally(() => {
-      markWriteEnd();
-    });
-  }).catch(() => {
+  try {
+    const { apiBulkUpsertWithProgress } = await import('@/lib/apiSync');
+    await apiBulkUpsertWithProgress(updatedBills);
+  } catch (err) {
+    console.warn('[patchBillsInMemory] Supabase sync warning:', err);
+  } finally {
     markWriteEnd();
-  });
+  }
 
   return true;
 }
@@ -3002,11 +3103,32 @@ export async function savePayment(
     }
   }
 
-  // ── FALLBACK: bill not in memory → save directly to Supabase by billNo ────────
-  // This happens when the page loaded but Supabase sync hasn't completed yet,
-  // OR when memory was cleared, OR when creating a brand new MOC entry.
+  // ── FALLBACK: bill not in memory → try targeted Supabase fetch before giving up ─
+  if (index === -1 && !isMocBn) {
+    try {
+      const { apiFetchBillsByKeys } = await import('@/lib/apiSync');
+      const isUuidArg = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test((billNo || '').trim());
+      const found = await apiFetchBillsByKeys(
+        !isUuidArg && billNo ? [billNo.trim()] : [],
+        [...(billId ? [billId] : []), ...(isUuidArg ? [billNo.trim()] : [])]
+      );
+      if (found.length > 0) {
+        addBillsToMemoryOnly(found);
+        rebuildBillIndexMaps();
+        index = findBillIndexFast(found[0].billNo, found[0].id);
+        if (index === -1) {
+          index = _bills.findIndex(b => b.id === found[0].id || (b.billNo || '').trim().toUpperCase() === found[0].billNo.trim().toUpperCase());
+        }
+      }
+    } catch {}
+  }
+
   if (index === -1) {
-    console.warn(`[savePayment] Bill ${billNo} (id=${billId || ''}) not in memory (${_bills.length} bills loaded). Saving directly to Supabase.`);
+    if (!isMocBn) {
+      console.error(`[savePayment] Refusing to synthesize blank bill for ${billNo} (id=${billId || ''}) — bill not found in memory or Supabase.`);
+      return false;
+    }
+    console.warn(`[savePayment] MOC entry ${billNo} (id=${billId || ''}) not in memory (${_bills.length} bills loaded). Creating MOC entry.`);
     const isNoPaymentDateMode = (isCredit && !hasCollection) || (isDelPend && !hasCollection) || isUnpaid;
     const fallbackRawRecDate = (forceRecDate && forceRecDate.trim() !== '') ? forceRecDate : paymentDate;
     const fallbackPaymentDate = (!isNoPaymentDateMode && (hasCollection || isFBR || finalStatus === 'Paid'))
@@ -3033,25 +3155,25 @@ export async function savePayment(
     if (chequeDate) fallbackPatch.chequeDate = excelSerialToDate(chequeDate);
     if (discrepancyReason != null) fallbackPatch.discrepancyReason = discrepancyReason;
     
-    const mocNum = isMocBn ? (extractMocNumber(normBillNo) || '1') : '';
-    const autoSrNo = isMocBn ? String(getNextMocSrNo(mocNum, _bills)) : '';
-    const finalBillNo = isMocBn ? formatMocSerialBillNo(mocNum, autoSrNo) : billNo;
-    const stableId = billId || (isMocBn ? `moc_${mocNum}_${autoSrNo}_${Date.now()}_${Math.random().toString(36).slice(2, 6)}` : `bill_${Math.random().toString(36).slice(2, 9)}`);
+    const mocNum = extractMocNumber(normBillNo) || '1';
+    const autoSrNo = String(getNextMocSrNo(mocNum, _bills));
+    const finalBillNo = formatMocSerialBillNo(mocNum, autoSrNo);
+    const stableId = billId || `moc_${mocNum}_${autoSrNo}_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
 
     // Put in local memory immediately so table shows it
     const stubBill: Bill = {
       srNo: autoSrNo,
       date: fallbackPaymentDate || paymentDate,
       deliveryDate: fallbackPaymentDate || paymentDate,
-      partyCode: isMocBn ? `MOC${mocNum}` : '',
-      partyHulCode: isMocBn ? `MOC${mocNum}` : '',
+      partyCode: `MOC${mocNum}`,
+      partyHulCode: `MOC${mocNum}`,
       billAgeing: 0,
       id: stableId,
       billNo: finalBillNo,
-      partyName: isMocBn ? (formatMocPartyName('', `MOC ${mocNum}`) || `COMMISSION (MOC ${mocNum})`) : '',
-      salespersonName: isMocBn ? 'MOC' : '',
-      collectionCode: isMocBn ? 'MOC' : '',
-      beatName: isMocBn ? 'COMMISSION' : '',
+      partyName: formatMocPartyName('', `MOC ${mocNum}`) || `COMMISSION (MOC ${mocNum})`,
+      salespersonName: 'MOC',
+      collectionCode: 'MOC',
+      beatName: 'COMMISSION',
       billNetAmt: collected || 0,
       collectedAmount: collected || 0,
       outstandingAmount: 0,

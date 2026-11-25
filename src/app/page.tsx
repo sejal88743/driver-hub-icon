@@ -29,6 +29,16 @@ import { getTodayISO, getTodayDMY, isoToDisplay, displayToIso, calculateDaysBetw
 import { openWhatsApp } from '@/lib/whatsapp';
 import { useStatementMatch, STATEMENT_MATCHED_AMOUNT_CLS } from '@/lib/statementMatch';
 
+const DASH_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+function isGhostBill(b: Partial<Bill> | null | undefined): boolean {
+  if (!b) return true;
+  const bn = (b.billNo || '').trim();
+  const isMoc = bn.toUpperCase().startsWith('MOC') || b.collectionCode === 'MOC' || b.salespersonName === 'MOC';
+  if (isMoc) return false;
+  if (!bn) return true;
+  return DASH_UUID_RE.test(bn) && !(b.partyName || '').trim() && (Number(b.billNetAmt) || 0) === 0;
+}
+
 // Line-cut amounts are sometimes entered as a quick sum, e.g. "100+128+335".
 // Keep this deliberately limited to numbers and plus signs; never evaluate input
 // as JavaScript.
@@ -435,14 +445,14 @@ export default function Dashboard() {
     for (let i = 0; i < bills.length; i++) {
       const b = bills[i];
       const bn = b.billNo || '';
-      if (!bn) continue;
+      if (!bn || isGhostBill(b)) continue;
       const isMoc = isMocBill(b) || bn.toUpperCase().startsWith('MOC') || b.salespersonName === 'MOC' || b.collectionCode === 'MOC' || b.beatName === 'COMMISSION';
       const bl = bn.toLowerCase();
       const bs = bl.replace(/^gst[-/]?/i, '');
       const bNoZeros = bs.replace(/^0+/, '');
       const pl = (b.partyName || '').toLowerCase();
       const driverUpper = (b.driverName || '').trim().toUpperCase();
-      const rawDate = b.deliveryDate || b.date || '';
+      const rawDate = b.deliveryDate || (!b.deliveryDate && normDateStr(b.paymentDate) === normDateStr(displayDate) ? b.paymentDate : b.date) || '';
       const dateNorm = normDateStr(rawDate) || rawDate;
 
       list.push({
@@ -555,9 +565,10 @@ export default function Dashboard() {
   const driverBillNos = useMemo(() => {
     if (!selectedDriver) return new Set<string>();
     const selUpper = selectedDriver.trim().toUpperCase();
+    const normDisp = normDateStr(displayDate);
     return new Set(
       bills
-        .filter(b => b.driverName?.trim().toUpperCase() === selUpper && b.deliveryDate === displayDate)
+        .filter(b => !isGhostBill(b) && b.driverName?.trim().toUpperCase() === selUpper && (normDateStr(b.deliveryDate) === normDisp || (!b.deliveryDate && (normDateStr(b.date) === normDisp || normDateStr(b.paymentDate) === normDisp))))
         .map(b => b.billNo)
     );
   }, [bills, selectedDriver, displayDate]);
@@ -820,9 +831,10 @@ export default function Dashboard() {
 
     // If no driver selected, show overall database total count, done, and pending
     if (!selectedDriver) {
-      const totalCount = bills.length;
+      const validBills = bills.filter(b => !isGhostBill(b));
+      const totalCount = validBills.length;
       let doneCount = 0;
-      for (const b of bills) {
+      for (const b of validBills) {
         const mode = (b.paymentMode || '').toLowerCase();
         const hasMoneyReceived =
           (Number(b.collectedAmount) || 0) > 0 ||
@@ -838,15 +850,16 @@ export default function Dashboard() {
     }
 
     let dbills: typeof bills = [];
-    const snapshotBillNos = new Set<string>();
     if (isOwner || isUserStaff) {
       // Both OWNER and USER staff manage the full ledger — show ALL bills count!
-      dbills = bills;
+      dbills = bills.filter(b => !isGhostBill(b));
     } else {
       // Regular drivers: strictly bills assigned to driver on selected date
       const selUpper = selectedDriver.trim().toUpperCase();
       const normDisplay = normDateStr(displayDate);
+      const seenDriverBillNos = new Set<string>();
       dbills = bills.filter(b => {
+        if (isGhostBill(b)) return false;
         const isMoc = (b.billNo || '').toUpperCase().startsWith('MOC') || b.collectionCode === 'MOC' || b.salespersonName === 'MOC';
         const dName = (b.driverName || '').trim().toUpperCase();
         const pTime = (b.paymentTime || '').trim().toUpperCase();
@@ -855,8 +868,13 @@ export default function Dashboard() {
           const isDateMatch = normDateStr(b.paymentDate) === normDisplay || normDateStr(b.date) === normDisplay || normDateStr(b.deliveryDate) === normDisplay;
           return isUserMatch && isDateMatch;
         }
-        const bDate = normDateStr(b.deliveryDate || b.date);
-        return dName === selUpper && bDate === normDisplay;
+        const normNo = (b.billNo || '').trim().toUpperCase();
+        if (!normNo || seenDriverBillNos.has(normNo)) return false;
+        const bDel = normDateStr(b.deliveryDate);
+        const bDate = bDel || normDateStr(b.date);
+        const matched = dName === selUpper && (bDate === normDisplay || (!bDel && normDateStr(b.paymentDate) === normDisplay));
+        if (matched) seenDriverBillNos.add(normNo);
+        return matched;
       });
     }
 
@@ -938,7 +956,7 @@ export default function Dashboard() {
     };
 
     for (const b of bills) {
-      if (!b.billNo) continue;
+      if (!b.billNo || isGhostBill(b)) continue;
       const normBillNo = b.billNo.trim().toUpperCase();
       if (seenBillNos.has(normBillNo)) continue;
 
@@ -1073,7 +1091,7 @@ export default function Dashboard() {
     };
 
     for (const b of bills) {
-      if (!b.billNo) continue;
+      if (!b.billNo || isGhostBill(b)) continue;
       const normBillNo = b.billNo.trim().toUpperCase();
       if (seenBillNos.has(normBillNo)) continue;
 
@@ -1128,10 +1146,12 @@ export default function Dashboard() {
         }
       } else {
         // Driver view (e.g. DINESH PATIL, MANOHAR)
+        const dDel = normDateStr(dDate);
+        const normDisp = normDateStr(displayDate);
         const isDriverBill = (
           (dName === selUpper && (
-            dDate === displayDate ||
-            (!dDate && b.date === displayDate) ||
+            dDel === normDisp ||
+            (!dDel && (normDateStr(b.date) === normDisp || normDateStr(pDate) === normDisp)) ||
             (isMoc && (pDate === displayDate || b.date === displayDate || dDate === displayDate))
           )) ||
           (isMoc && (pTime === selUpper || pTime.startsWith(selUpper + ':')) && (pDate === displayDate || b.date === displayDate || dDate === displayDate))
@@ -1251,16 +1271,19 @@ export default function Dashboard() {
         toast({ title: 'Driver Mismatch', description: `Ye bill ${existingBill.driverName || 'dusre driver'} ka hai, ${selectedDriver} ka nahi!`, variant: 'destructive' });
         return;
       }
-      const bDate = normDateStr(existingBill.deliveryDate || existingBill.date);
+      const bDel = normDateStr(existingBill.deliveryDate);
+      const bDate = bDel || normDateStr(existingBill.date);
       const targetDate = normDateStr(displayDate);
-      if (bDate !== targetDate) {
+      const isDateOk = bDate === targetDate || (!bDel && normDateStr(existingBill.paymentDate) === targetDate);
+      if (!isDateOk) {
         toast({ title: 'Date Mismatch', description: `Ye bill ${bDate || 'dusri date'} ka hai, ${displayDate} ke liye ${selectedDriver} ko assign nahi hai!`, variant: 'destructive' });
         return;
       }
     }
 
     const bill = existingBill;
-    setSelectedBillNo(bill.id || bill.billNo);
+    const isMoc = isMocBill(bn, bill);
+    setSelectedBillNo(isMoc ? (bill.id || bill.billNo) : (bill.billNo || bill.id));
     setSearchQuery(getDisplayBillNo(bill));
     setShowDropdown(false);
 
@@ -1274,7 +1297,6 @@ export default function Dashboard() {
     const isPaid = hasPriorMoney || isSpecialLock || _bMode === 'paid' || _bMode === 'cash' || _bMode === 'upi' || _bMode === 'cheque' || _bMode === 'split';
 
     // Fresh uncollected bills (with 0 money collected, not FBR/Credit) NEVER require lock
-    const isMoc = isMocBill(bn, bill);
     const requiresLock = !isMoc && (hasPriorMoney || isSpecialLock);
 
     if (requiresLock) {
@@ -1966,6 +1988,8 @@ export default function Dashboard() {
     if (!selectedBill || !selectedDriver || saving) return;
     setSaving(true);
     setSaveError(null);
+    const targetBillNo = selectedBill.billNo || selectedBillNo;
+    const targetBillId = selectedBill.id || null;
     const effectiveDriver = selectedDriver || selectedBill?.driverName || '';
     const effectiveLineCut = Math.min(
       Number(selectedBill.billNetAmt) || 0,
@@ -1978,7 +2002,7 @@ export default function Dashboard() {
     const effectiveNote = (discrepancyReason !== undefined && discrepancyReason !== null) ? discrepancyReason : (billNote.trim() || null);
 
     const ok = await savePayment(
-      selectedBillNo, 'Credit', null, totalCollected,
+      targetBillNo, 'Credit', null, totalCollected,
       confirmInput || null, effectiveDriver, dashDate,
       chequeNo || null, bankName || null, null,
       { cash: Number(cashAmt) || 0, upi: Number(upiAmt) || 0, cheque: Number(chqAmt) || 0 },
@@ -1986,7 +2010,8 @@ export default function Dashboard() {
       recDateOverride || null,
       selectedDriver,
       chequeDate || null,
-      effectiveNote || null
+      effectiveNote || null,
+      targetBillId
     );
     if (!ok) {
       setSaving(false);
@@ -1994,12 +2019,12 @@ export default function Dashboard() {
       return;
     }
 
-    const savedBill = getBills().find(b => b.billNo === selectedBillNo);
+    const savedBill = getBills().find(b => b.billNo === targetBillNo || b.id === targetBillId);
     const finalPayDate = totalCollected > 0 ? (savedBill?.paymentDate || recDateOverride || isoToDisplay(dashDate) || dashDate) : '';
     const finalPayTime = totalCollected > 0 ? (savedBill?.paymentTime || getLoggedInName() || selectedDriver) : '';
-    if (savedBill?.id) {
+    if (savedBill?.id || targetBillId) {
       const { apiPatchBill } = await import('@/lib/apiSync');
-      await apiPatchBill(savedBill.id, {
+      await apiPatchBill(savedBill?.id || targetBillId!, {
         outstandingAmount: outstandingAmt,
         lineCutAmt:        effectiveLineCut,
         collectedAmount:   totalCollected,
@@ -2013,8 +2038,8 @@ export default function Dashboard() {
         paymentDate:       finalPayDate,
         paymentTime:       finalPayTime,
         discrepancyReason: effectiveNote || undefined,
-      }, selectedBillNo);
-      patchBillInMemory(selectedBillNo, {
+      }, targetBillNo);
+      patchBillInMemory(targetBillNo, {
         outstandingAmount: outstandingAmt,
         lineCutAmt:        effectiveLineCut,
         collectedAmount:   totalCollected,
@@ -2031,7 +2056,7 @@ export default function Dashboard() {
       });
     }
 
-    setOwnerSavedBillNos(prev => [...prev.filter(x => x !== selectedBillNo), selectedBillNo]);
+    setOwnerSavedBillNos(prev => [...prev.filter(x => x !== targetBillNo), targetBillNo]);
 
     // ── Auto WhatsApp to Salesperson on CREDIT Save: SEND FIRST ──
     const billToNotify: Bill = {
@@ -2045,7 +2070,7 @@ export default function Dashboard() {
 
     // ── FIR SAVE SHOW HOGA ──
     setLastSavedBill({
-      billNo: selectedBillNo,
+      billNo: targetBillNo,
       partyName: selectedBill.partyName,
       diff: 0,
     });
@@ -2064,6 +2089,8 @@ export default function Dashboard() {
     setSaving(true);
     setSaveError(null);
     setShowFbrReasonModal(false);
+    const targetBillNo = selectedBill.billNo || selectedBillNo;
+    const targetBillId = selectedBill.id || null;
     const effectiveDriver = (isOwnerOrUserSelected && selectedBill?.driverName)
       ? selectedBill.driverName
       : (selectedDriver || selectedBill?.driverName || '');
@@ -2076,22 +2103,25 @@ export default function Dashboard() {
       return;
     }
     const ok = await savePayment(
-      selectedBillNo, 'FBR', null, 0,
+      targetBillNo, 'FBR', null, 0,
       null, effectiveDriver, dashDate,
       null, null, null,
       { cash: 0, upi: 0, cheque: 0 },
       fullBillAmt,
       null,
-      selectedDriver   // enteredBy
+      selectedDriver,   // enteredBy
+      null,
+      reason || null,
+      targetBillId
     );
     if (!ok) {
       setSaving(false);
       setSaveError('FBR save nahi hua — dobara try karein.');
       return;
     }
-    if (reason) patchBillInMemory(selectedBillNo, { discrepancyReason: reason });
-    setLastSavedBill({ billNo: selectedBillNo, partyName: selectedBill.partyName, diff: 0 });
-    setOwnerSavedBillNos(prev => [...prev.filter(x => x !== selectedBillNo), selectedBillNo]);
+    if (reason) patchBillInMemory(targetBillNo, { discrepancyReason: reason });
+    setLastSavedBill({ billNo: targetBillNo, partyName: selectedBill.partyName, diff: 0 });
+    setOwnerSavedBillNos(prev => [...prev.filter(x => x !== targetBillNo), targetBillNo]);
     setShowPaidPopup(true);
     setSaving(false);
     setTimeout(() => { setShowPaidPopup(false); billInputRef.current?.focus(); }, 2000);
@@ -2269,6 +2299,7 @@ export default function Dashboard() {
     if (!selectedBill || !selectedBillNo || saving) return;
     setSaving(true);
     setSaveError(null);
+    const targetBillNo = selectedBill.billNo || selectedBillNo;
     const metaPatch: Record<string, unknown> = {};
     if (chequeNo)   metaPatch.chequeNo   = chequeNo.trim();
     if (chequeDate) metaPatch.chequeDate = chequeDate;
@@ -2276,15 +2307,15 @@ export default function Dashboard() {
     if (Object.keys(metaPatch).length === 0) { setSaving(false); return; }
 
     // patchBillDirect: memory + immediate Supabase save (cheque data must sync instantly)
-    const ok = await patchBillDirect(selectedBillNo, metaPatch as any);
+    const ok = await patchBillDirect(targetBillNo, metaPatch as any);
     if (!ok) {
       setSaving(false);
       setSaveError('Cheque details save nahi hua. Dobara try karein.');
       return;
     }
 
-    setLastSavedBill({ billNo: selectedBillNo, partyName: selectedBill.partyName, diff: 0 });
-    setOwnerSavedBillNos(prev => [...prev.filter(x => x !== selectedBillNo), selectedBillNo]);
+    setLastSavedBill({ billNo: targetBillNo, partyName: selectedBill.partyName, diff: 0 });
+    setOwnerSavedBillNos(prev => [...prev.filter(x => x !== targetBillNo), targetBillNo]);
     setShowPaidPopup(true);
     setSaving(false);
     setTimeout(() => { setShowPaidPopup(false); billInputRef.current?.focus(); }, 2000);
@@ -2295,9 +2326,10 @@ export default function Dashboard() {
   // ── Save Note Only: update note (discrepancyReason) directly in Supabase ─────
   async function handleSaveNoteOnly() {
     if (!selectedBillNo) return;
+    const targetBillNo = selectedBill?.billNo || selectedBillNo;
     setNoteSaving(true);
     const noteVal = billNote.trim();
-    const ok = await patchBillDirect(selectedBillNo, { discrepancyReason: noteVal || null } as any);
+    const ok = await patchBillDirect(targetBillNo, { discrepancyReason: noteVal || null } as any);
     setNoteSaving(false);
     if (ok) {
       toast({
@@ -2317,6 +2349,7 @@ export default function Dashboard() {
   // ── Overflow: open modal with first bill pending (nothing saved yet) ──────────
   function doSaveOverflow(recDateParam?: string | null) {
     if (saving || !selectedBillNo || !selectedBill) return;
+    const targetBillNo = selectedBill.billNo || selectedBillNo;
     const finalMode = deriveMode(paymentMode);
     const effectiveDriver = (isOwnerOrUserSelected && selectedBill?.driverName)
       ? selectedBill.driverName
@@ -2343,7 +2376,7 @@ export default function Dashboard() {
     setOverflowRecDateSaved(effectiveRecDate || '');
     const existingLc = (Number(selectedBill.lineCutAmt) || 0) || (Number(selectedBill.cancelLine) || 0);
     const initLineCut = existingLc > 0 ? String(existingLc) : '';
-    setOverflowPendingItems([{ billNo: selectedBillNo, partyName: selectedBill.partyName, billNetAmt: selectedBill.billNetAmt, lineCutInput: initLineCut }]);
+    setOverflowPendingItems([{ billNo: targetBillNo, partyName: selectedBill.partyName, billNetAmt: selectedBill.billNetAmt, lineCutInput: initLineCut }]);
     setOverflowNextBillInput('');
     setOverflowNextBillErr('');
     setShowOverflowModal(true);
@@ -2510,7 +2543,8 @@ export default function Dashboard() {
       partPayments:     allParts,
     };
 
-    const ok = await patchBillInMemory(selectedBillNo, patch);
+    const targetBillNo = selectedBill.billNo || selectedBillNo;
+    const ok = await patchBillInMemory(targetBillNo, patch);
     if (!ok) {
       // In-memory update succeeded; background dirty-queue ensures retry if network drops
     }
@@ -2518,14 +2552,14 @@ export default function Dashboard() {
     // ── Auto WhatsApp to Salesperson on Part/Credit Save: SEND FIRST ──
     const billToNotify: Bill | undefined = selectedBill
       ? { ...selectedBill, ...patch }
-      : getBills().find(b => b.billNo === selectedBillNo);
+      : getBills().find(b => b.billNo === targetBillNo);
     if (billToNotify) {
       handleSendWhatsAppToSalesperson(billToNotify);
     }
 
     // ── FIR SAVE SHOW HOGA ──
-    setLastSavedBill({ billNo: selectedBillNo, partyName: selectedBill.partyName, diff: outstanding });
-    setOwnerSavedBillNos(prev => [...prev.filter(x => x !== selectedBillNo), selectedBillNo]);
+    setLastSavedBill({ billNo: targetBillNo, partyName: selectedBill.partyName, diff: outstanding });
+    setOwnerSavedBillNos(prev => [...prev.filter(x => x !== targetBillNo), targetBillNo]);
     setShowPaidPopup(true);
     setSaving(false);
 
@@ -2762,7 +2796,8 @@ export default function Dashboard() {
     // If a bill is selected, wipe its payment data on the server too
     // but keep driverName + deliveryDate (driver assignment stays)
     if (selectedBillNo) {
-      patchBillInMemory(selectedBillNo, {
+      const targetBillNo = selectedBill?.billNo || selectedBillNo;
+      patchBillInMemory(targetBillNo, {
         cashAmount: 0,
         upiAmount: 0,
         chequeAmount: 0,

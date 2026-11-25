@@ -1,0 +1,611 @@
+
+/driver
+
+Types:
+Sources:
+1
+2
+143
+16:41:25.659
+System
+Build
+ Render Start 
+16:41:26.300
+Backend
+Log
+ > dev
+  > tsx server.ts --port 3000 --host 0.0.0.0
+  
+  [API] Server running on http://0.0.0.0:3000 
+16:41:26.301
+Backend
+Log
+ Pre-warming completed.
+  [WhatsApp Bot] Persistent session detected or bot enabled on server boot. Auto-starting...
+  [WhatsApp Bot] Using dynamic WhatsApp Web version: [ 2, 3000, 1056191857 ] 
+16:41:26.448
+Backend
+Log
+ CONNECTED 
+16:41:27.983
+System
+Build
+ Render End 
+16:41:29.195
+App
+Log
+ [Supabase Realtime] Connected and listening live across all devices. 
+16:41:33.730
+Backend
+Log
+ Starting build... 
+16:41:33.730
+Backend
+Log
+ $ vite build && esbuild server/index.ts --bundle --platform=node --format=cjs --packages=external --sourcemap --outfile=dist/server.cjs 
+16:41:34.363
+Backend
+Log
+ vite v7.3.8 building client environment for production... 
+16:41:34.513
+Backend
+Log
+ transforming... 
+16:41:44.418
+Backend
+Log
+ ✓ 2169 modules transformed. 
+16:41:45.116
+Backend
+Log
+ rendering chunks... 
+16:41:45.841
+Backend
+Log
+ [plugin vite:reporter] 
+16:41:45.841
+Backend
+Log
+ (!) /app/applet/src/lib/supabase.ts is dynamically imported by /app/applet/src/app/page.tsx, /app/applet/src/lib/billsReport.ts but also statically imported by /app/applet/src/app/cheque-return/page.tsx, /app/applet/src/app/diagnostics/page.tsx, /app/applet/src/app/login/page.tsx, /app/applet/src/hooks/use-bill-store.ts, /app/applet/src/lib/apiSync.ts, /app/applet/src/lib/driverDownloadStatus.ts, /app/applet/src/lib/salespersonSync.ts, /app/applet/src/lib/statementMatch.ts, /app/applet/src/lib/urgentMessageStore.ts, dynamic import will not move module into another chunk. 
+16:41:45.842
+Backend
+Log
+ [plugin vite:reporter] 
+16:41:45.842
+Backend
+Log
+ (!) /app/applet/src/lib/syncState.ts is dynamically imported by /app/applet/src/lib/localQueue.ts but also statically imported by /app/applet/src/hooks/use-bill-store.ts, /app/applet/src/lib/billStore.ts, dynamic import will not move module into another chunk. 
+16:41:45.842
+Backend
+Log
+ [plugin vite:reporter] 
+16:41:45.842
+Backend
+Log
+ (!) /app/applet/src/lib/nameStandardizer.ts is dynamically imported by /app/applet/src/lib/apiSync.ts, /app/applet/src/lib/apiSync.ts but also statically imported by /app/applet/src/lib/billStore.ts, /app/applet/src/lib/billsReport.ts, /app/applet/src/lib/salespersonDirectory.ts, /app/applet/src/lib/salespersonSync.ts, dynamic import will not move module into another chunk. 
+16:41:45.842
+Backend
+Log
+ [plugin vite:reporter] 
+16:41:45.842
+Backend
+Log
+ (!) /app/applet/src/lib/salespersonDirectory.ts is dynamically imported by /app/applet/src/lib/apiSync.ts, /app/applet/src/lib/apiSync.ts but also statically imported by /app/applet/src/lib/billStore.ts, /app/applet/src/lib/salespersonSync.ts, dynamic import will not move module into another chunk. 
+16:41:45.842
+Backend
+Log
+ [plugin vite:reporter] 
+16:41:45.842
+Backend
+Log
+ (!) /app/applet/src/lib/billStore.ts is dynamically imported by /app/applet/src/app/page.tsx, /app/applet/src/app/settings/page.tsx, /app/applet/src/app/settings/page.tsx, /app/applet/src/app/settings/page.tsx, /app/applet/src/app/settings/page.tsx, /app/applet/src/app/settings/page.tsx, /app/applet/src/app/settings/page.tsx, /app/applet/src/hooks/use-bill-store.ts, /app/applet/src/hooks/use-bill-store.ts, /app/applet/src/lib/apiSync.ts, /app/applet/src/lib/apiSync.ts, /app/applet/src/lib/apiSync.ts, /app/applet/src/lib/billsReport.ts, /app/applet/src/lib/localQueue.ts but also statically imported by /app/applet/src/app/bills/page.tsx, /app/applet/src/app/cheque-return/page.tsx, /app/applet/src/app/driver/page.tsx, /app/applet/src/app/history/page.tsx, /app/applet/src/app/login/page.tsx, /app/applet/src/app/outstanding/page.tsx, /app/applet/src/app/page.tsx, /app/applet/src/app/settings/page.tsx, /app/applet/src/components/AdminAiAgent.tsx, /app/applet/src/components/BillDetailModal.tsx, /app/applet/src/components/BillDetailsModal.tsx, /app/applet/src/components/BillEditModal.tsx, /app/applet/src/components/DriverDayTable.tsx, /app/applet/src/components/GreenPartyManagerModal.tsx, /app/applet/src/components/MultiBillEntryModal.tsx, /app/applet/src/components/OverflowModal.tsx, /app/applet/src/components/ResetPwModal.tsx, /app/applet/src/components/SalespersonAutoDispatchModal.tsx, /app/applet/src/components/SendUrgentMessageModal.tsx, /app/applet/src/components/WhatsAppPaymentPopup.tsx, /app/applet/src/components/WhatsAppSalesmanModal.tsx, /app/applet/src/hooks/use-bill-store.ts, /app/applet/src/lib/apiSync.ts, /app/applet/src/lib/billsReport.ts, /app/applet/src/lib/salespersonSync.ts, /app/applet/src/lib/statementMatch.ts, dynamic import will not move module into another chunk. 
+16:41:45.842
+Backend
+Log
+ [plugin vite:reporter] 
+16:41:45.842
+Backend
+Log
+ (!) /app/applet/src/lib/apiSync.ts is dynamically imported by /app/applet/src/app/page.tsx, /app/applet/src/app/page.tsx, /app/applet/src/app/page.tsx, /app/applet/src/app/page.tsx, /app/applet/src/app/page.tsx, /app/applet/src/app/settings/page.tsx, /app/applet/src/app/settings/page.tsx, /app/applet/src/app/settings/page.tsx, /app/applet/src/app/settings/page.tsx, /app/applet/src/app/settings/page.tsx, /app/applet/src/app/settings/page.tsx, /app/applet/src/app/settings/page.tsx, /app/applet/src/app/settings/page.tsx, /app/applet/src/app/settings/page.tsx, /app/applet/src/app/settings/page.tsx, /app/applet/src/components/ConnectionStatus.tsx, /app/applet/src/components/ConnectionStatus.tsx, /app/applet/src/lib/billStore.ts, /app/applet/src/lib/billStore.ts, /app/applet/src/lib/billStore.ts, /app/applet/src/lib/billStore.ts, /app/applet/src/lib/billStore.ts, /app/applet/src/lib/billStore.ts, /app/applet/src/lib/billStore.ts, /app/applet/src/lib/billStore.ts, /app/applet/src/lib/billStore.ts, /app/applet/src/lib/billStore.ts, /app/applet/src/lib/billStore.ts, /app/applet/src/lib/billStore.ts, /app/applet/src/lib/billStore.ts, /app/applet/src/lib/billStore.ts, /app/applet/src/lib/billStore.ts, /app/applet/src/lib/billStore.ts, /app/applet/src/lib/billStore.ts, /app/applet/src/lib/billStore.ts, /app/applet/src/lib/billStore.ts, /app/applet/src/lib/billStore.ts, /app/applet/src/lib/billStore.ts, /app/applet/src/lib/billStore.ts, /app/applet/src/lib/billStore.ts, /app/applet/src/lib/billStore.ts, /app/applet/src/lib/billStore.ts, /app/applet/src/lib/billStore.ts, /app/applet/src/lib/billStore.ts, /app/applet/src/lib/billStore.ts, /app/applet/src/lib/billStore.ts, /app/applet/src/lib/billStore.ts, /app/applet/src/lib/billStore.ts, /app/applet/src/lib/billStore.ts, /app/applet/src/lib/billStore.ts, /app/applet/src/lib/billStore.ts, /app/applet/src/lib/billsReport.ts, /app/applet/src/lib/commissionMoc.ts, /app/applet/src/lib/localQueue.ts but also statically imported by /app/applet/src/app/cheque-return/page.tsx, /app/applet/src/app/outstanding/page.tsx, /app/applet/src/components/ConnectionStatus.tsx, /app/applet/src/hooks/use-bill-store.ts, /app/applet/src/lib/statementMatch.ts, dynamic import will not move module into another chunk. 
+16:41:45.843
+Backend
+Log
+ [plugin vite:reporter] 
+16:41:45.843
+Backend
+Log
+ (!) /app/applet/src/lib/localQueue.ts is dynamically imported by /app/applet/src/lib/billStore.ts, /app/applet/src/lib/billStore.ts, /app/applet/src/lib/billStore.ts, /app/applet/src/lib/billStore.ts, /app/applet/src/lib/billStore.ts, /app/applet/src/lib/billStore.ts, /app/applet/src/lib/billStore.ts, /app/applet/src/lib/billStore.ts, /app/applet/src/lib/billStore.ts, /app/applet/src/lib/billStore.ts, /app/applet/src/lib/billStore.ts, /app/applet/src/lib/billStore.ts, /app/applet/src/lib/billStore.ts, /app/applet/src/lib/billStore.ts, /app/applet/src/lib/billStore.ts but also statically imported by /app/applet/src/components/ConnectionStatus.tsx, /app/applet/src/hooks/use-bill-store.ts, dynamic import will not move module into another chunk. 
+16:41:45.925
+Backend
+Log
+ computing gzip size... 
+16:41:45.925
+Backend
+Log
+ dist/index.html                                     1.76 kB │ gzip:   0.58 kB 
+16:41:45.925
+Backend
+Log
+ dist/assets/index-F_xS5pCG.css                    176.52 kB │ gzip:  24.34 kB 
+16:41:45.981
+Backend
+Log
+ dist/assets/upload-D_TacNF-.js                      0.23 kB │ gzip:   0.19 kB 
+16:41:45.981
+Backend
+Log
+ dist/assets/download-BIr8Eiwj.js                    0.23 kB │ gzip:   0.19 kB 
+16:41:45.981
+Backend
+Log
+ dist/assets/funnel-CEznJq6B.js                      0.26 kB │ gzip:   0.21 kB 
+16:41:45.981
+Backend
+Log
+ dist/assets/arrow-up-Jck8rQQ7.js                    0.28 kB │ gzip:   0.21 kB 
+16:41:45.981
+Backend
+Log
+ dist/assets/xlsxHelper-Dzn9x6mE.js                  1.22 kB │ gzip:   0.55 kB 
+16:41:45.981
+Backend
+Log
+ dist/assets/not-found-XCImHyTl.js                   1.49 kB │ gzip:   0.57 kB 
+16:41:45.981
+Backend
+Log
+ dist/assets/ConfirmModal-DfUOzcc_.js                3.00 kB │ gzip:   1.26 kB 
+16:41:45.981
+Backend
+Log
+ dist/assets/page-CPsOQ38g.js                        4.76 kB │ gzip:   1.87 kB 
+16:41:45.981
+Backend
+Log
+ dist/assets/billsReport-CfDKMUTA.js                11.62 kB │ gzip:   4.36 kB 
+16:41:45.981
+Backend
+Log
+ dist/assets/page-BzXipw11.js                       20.93 kB │ gzip:   6.21 kB 
+16:41:45.981
+Backend
+Log
+ dist/assets/table-CQLM0bQs.js                      25.88 kB │ gzip:   8.15 kB 
+16:41:45.981
+Backend
+Log
+ dist/assets/page-CoIZfXB7.js                       27.16 kB │ gzip:   7.34 kB 
+16:41:45.981
+Backend
+Log
+ dist/assets/purify.es-DxdA0B9h.js                  31.20 kB │ gzip:  12.02 kB 
+16:41:45.981
+Backend
+Log
+ dist/assets/jspdf.plugin.autotable-CwUr-dqL.js     31.45 kB │ gzip:  10.04 kB 
+16:41:45.981
+Backend
+Log
+ dist/assets/page-FGZt7ZCP.js                       33.58 kB │ gzip:   8.34 kB 
+16:41:45.981
+Backend
+Log
+ dist/assets/page--Is3UlVC.js                       37.90 kB │ gzip:   9.61 kB 
+16:41:45.981
+Backend
+Log
+ dist/assets/page-DECPJP0Z.js                       67.86 kB │ gzip:  19.59 kB 
+16:41:45.981
+Backend
+Log
+ dist/assets/page-DJJBTFfu.js                       96.38 kB │ gzip:  23.15 kB 
+16:41:45.981
+Backend
+Log
+ dist/assets/index.es-BTfYrHG6.js                  158.97 kB │ gzip:  53.06 kB 
+16:41:45.981
+Backend
+Log
+ dist/assets/page-D9aB_hSD.js                      191.58 kB │ gzip:  48.35 kB 
+16:41:45.981
+Backend
+Log
+ dist/assets/html2canvas.esm-DXEQVQnt.js           201.04 kB │ gzip:  47.43 kB 
+16:41:45.981
+Backend
+Log
+ dist/assets/jspdf.es.min-BVQ-3UvJ.js              386.22 kB │ gzip: 126.41 kB 
+16:41:45.981
+Backend
+Log
+ dist/assets/xlsx-B2PmUliy.js                      429.23 kB │ gzip: 143.00 kB 
+16:41:45.981
+Backend
+Log
+ dist/assets/index-pI3b4ym2.js                   1,110.10 kB │ gzip: 316.53 kB 
+16:41:45.981
+Backend
+Log
+ (!) Some chunks are larger than 500 kB after minification. Consider: 
+16:41:45.981
+Backend
+Log
+ - Using dynamic import() to code-split the application 
+16:41:45.981
+Backend
+Log
+ - Use build.rollupOptions.output.manualChunks to improve chunking: https://rollupjs.org/configuration-options/#output-manualchunks 
+16:41:45.981
+Backend
+Log
+ - Adjust chunk size limit for this warning via build.chunkSizeWarningLimit. 
+16:41:45.981
+Backend
+Log
+ ✓ built in 11.57s 
+16:41:46.064
+Backend
+Log
+ dist/server.cjs       72.8kb 
+16:41:46.064
+Backend
+Log
+ dist/server.cjs.map  136.2kb 
+16:41:46.064
+Backend
+Log
+ ⚡ Done in 20ms 
+16:41:46.064
+Backend
+Log
+ Build successful. 
+16:42:17.284
+Backend
+Log
+ Starting build... 
+16:42:17.284
+Backend
+Log
+ $ vite build && esbuild server/index.ts --bundle --platform=node --format=cjs --packages=external --sourcemap --outfile=dist/server.cjs 
+16:42:17.786
+Backend
+Log
+ vite v7.3.8 building client environment for production... 
+16:42:17.786
+Backend
+Log
+ transforming... 
+16:42:28.246
+Backend
+Log
+ ✓ 2169 modules transformed. 
+16:42:28.597
+Backend
+Log
+ rendering chunks... 
+16:42:29.251
+Backend
+Log
+ [plugin vite:reporter] 
+16:42:29.251
+Backend
+Log
+ (!) /app/applet/src/lib/supabase.ts is dynamically imported by /app/applet/src/app/page.tsx, /app/applet/src/lib/billsReport.ts but also statically imported by /app/applet/src/app/cheque-return/page.tsx, /app/applet/src/app/diagnostics/page.tsx, /app/applet/src/app/login/page.tsx, /app/applet/src/hooks/use-bill-store.ts, /app/applet/src/lib/apiSync.ts, /app/applet/src/lib/driverDownloadStatus.ts, /app/applet/src/lib/salespersonSync.ts, /app/applet/src/lib/statementMatch.ts, /app/applet/src/lib/urgentMessageStore.ts, dynamic import will not move module into another chunk. 
+16:42:29.251
+Backend
+Log
+ [plugin vite:reporter] 
+16:42:29.251
+Backend
+Log
+ (!) /app/applet/src/lib/syncState.ts is dynamically imported by /app/applet/src/lib/localQueue.ts but also statically imported by /app/applet/src/hooks/use-bill-store.ts, /app/applet/src/lib/billStore.ts, dynamic import will not move module into another chunk. 
+16:42:29.310
+Backend
+Log
+ [plugin vite:reporter] 
+16:42:29.310
+Backend
+Log
+ (!) /app/applet/src/lib/nameStandardizer.ts is dynamically imported by /app/applet/src/lib/apiSync.ts, /app/applet/src/lib/apiSync.ts but also statically imported by /app/applet/src/lib/billStore.ts, /app/applet/src/lib/billsReport.ts, /app/applet/src/lib/salespersonDirectory.ts, /app/applet/src/lib/salespersonSync.ts, dynamic import will not move module into another chunk. 
+16:42:29.310
+Backend
+Log
+ [plugin vite:reporter] 
+16:42:29.310
+Backend
+Log
+ (!) /app/applet/src/lib/salespersonDirectory.ts is dynamically imported by /app/applet/src/lib/apiSync.ts, /app/applet/src/lib/apiSync.ts but also statically imported by /app/applet/src/lib/billStore.ts, /app/applet/src/lib/salespersonSync.ts, dynamic import will not move module into another chunk. 
+16:42:29.310
+Backend
+Log
+ [plugin vite:reporter] 
+16:42:29.310
+Backend
+Log
+ (!) /app/applet/src/lib/billStore.ts is dynamically imported by /app/applet/src/app/page.tsx, /app/applet/src/app/settings/page.tsx, /app/applet/src/app/settings/page.tsx, /app/applet/src/app/settings/page.tsx, /app/applet/src/app/settings/page.tsx, /app/applet/src/app/settings/page.tsx, /app/applet/src/app/settings/page.tsx, /app/applet/src/hooks/use-bill-store.ts, /app/applet/src/hooks/use-bill-store.ts, /app/applet/src/lib/apiSync.ts, /app/applet/src/lib/apiSync.ts, /app/applet/src/lib/apiSync.ts, /app/applet/src/lib/billsReport.ts, /app/applet/src/lib/localQueue.ts but also statically imported by /app/applet/src/app/bills/page.tsx, /app/applet/src/app/cheque-return/page.tsx, /app/applet/src/app/driver/page.tsx, /app/applet/src/app/history/page.tsx, /app/applet/src/app/login/page.tsx, /app/applet/src/app/outstanding/page.tsx, /app/applet/src/app/page.tsx, /app/applet/src/app/settings/page.tsx, /app/applet/src/components/AdminAiAgent.tsx, /app/applet/src/components/BillDetailModal.tsx, /app/applet/src/components/BillDetailsModal.tsx, /app/applet/src/components/BillEditModal.tsx, /app/applet/src/components/DriverDayTable.tsx, /app/applet/src/components/GreenPartyManagerModal.tsx, /app/applet/src/components/MultiBillEntryModal.tsx, /app/applet/src/components/OverflowModal.tsx, /app/applet/src/components/ResetPwModal.tsx, /app/applet/src/components/SalespersonAutoDispatchModal.tsx, /app/applet/src/components/SendUrgentMessageModal.tsx, /app/applet/src/components/WhatsAppPaymentPopup.tsx, /app/applet/src/components/WhatsAppSalesmanModal.tsx, /app/applet/src/hooks/use-bill-store.ts, /app/applet/src/lib/apiSync.ts, /app/applet/src/lib/billsReport.ts, /app/applet/src/lib/salespersonSync.ts, /app/applet/src/lib/statementMatch.ts, dynamic import will not move module into another chunk. 
+16:42:29.310
+Backend
+Log
+ [plugin vite:reporter] 
+16:42:29.310
+Backend
+Log
+ (!) /app/applet/src/lib/apiSync.ts is dynamically imported by /app/applet/src/app/page.tsx, /app/applet/src/app/page.tsx, /app/applet/src/app/page.tsx, /app/applet/src/app/page.tsx, /app/applet/src/app/page.tsx, /app/applet/src/app/settings/page.tsx, /app/applet/src/app/settings/page.tsx, /app/applet/src/app/settings/page.tsx, /app/applet/src/app/settings/page.tsx, /app/applet/src/app/settings/page.tsx, /app/applet/src/app/settings/page.tsx, /app/applet/src/app/settings/page.tsx, /app/applet/src/app/settings/page.tsx, /app/applet/src/app/settings/page.tsx, /app/applet/src/app/settings/page.tsx, /app/applet/src/components/ConnectionStatus.tsx, /app/applet/src/components/ConnectionStatus.tsx, /app/applet/src/lib/billStore.ts, /app/applet/src/lib/billStore.ts, /app/applet/src/lib/billStore.ts, /app/applet/src/lib/billStore.ts, /app/applet/src/lib/billStore.ts, /app/applet/src/lib/billStore.ts, /app/applet/src/lib/billStore.ts, /app/applet/src/lib/billStore.ts, /app/applet/src/lib/billStore.ts, /app/applet/src/lib/billStore.ts, /app/applet/src/lib/billStore.ts, /app/applet/src/lib/billStore.ts, /app/applet/src/lib/billStore.ts, /app/applet/src/lib/billStore.ts, /app/applet/src/lib/billStore.ts, /app/applet/src/lib/billStore.ts, /app/applet/src/lib/billStore.ts, /app/applet/src/lib/billStore.ts, /app/applet/src/lib/billStore.ts, /app/applet/src/lib/billStore.ts, /app/applet/src/lib/billStore.ts, /app/applet/src/lib/billStore.ts, /app/applet/src/lib/billStore.ts, /app/applet/src/lib/billStore.ts, /app/applet/src/lib/billStore.ts, /app/applet/src/lib/billStore.ts, /app/applet/src/lib/billStore.ts, /app/applet/src/lib/billStore.ts, /app/applet/src/lib/billStore.ts, /app/applet/src/lib/billStore.ts, /app/applet/src/lib/billStore.ts, /app/applet/src/lib/billStore.ts, /app/applet/src/lib/billStore.ts, /app/applet/src/lib/billStore.ts, /app/applet/src/lib/billsReport.ts, /app/applet/src/lib/commissionMoc.ts, /app/applet/src/lib/localQueue.ts but also statically imported by /app/applet/src/app/cheque-return/page.tsx, /app/applet/src/app/outstanding/page.tsx, /app/applet/src/components/ConnectionStatus.tsx, /app/applet/src/hooks/use-bill-store.ts, /app/applet/src/lib/statementMatch.ts, dynamic import will not move module into another chunk. 
+16:42:29.310
+Backend
+Log
+ [plugin vite:reporter] 
+16:42:29.310
+Backend
+Log
+ (!) /app/applet/src/lib/localQueue.ts is dynamically imported by /app/applet/src/lib/billStore.ts, /app/applet/src/lib/billStore.ts, /app/applet/src/lib/billStore.ts, /app/applet/src/lib/billStore.ts, /app/applet/src/lib/billStore.ts, /app/applet/src/lib/billStore.ts, /app/applet/src/lib/billStore.ts, /app/applet/src/lib/billStore.ts, /app/applet/src/lib/billStore.ts, /app/applet/src/lib/billStore.ts, /app/applet/src/lib/billStore.ts, /app/applet/src/lib/billStore.ts, /app/applet/src/lib/billStore.ts, /app/applet/src/lib/billStore.ts, /app/applet/src/lib/billStore.ts but also statically imported by /app/applet/src/components/ConnectionStatus.tsx, /app/applet/src/hooks/use-bill-store.ts, dynamic import will not move module into another chunk. 
+16:42:29.368
+Backend
+Log
+ computing gzip size... 
+16:42:29.369
+Backend
+Log
+ dist/index.html                                     1.76 kB │ gzip:   0.58 kB 
+16:42:29.369
+Backend
+Log
+ dist/assets/index-F_xS5pCG.css                    176.52 kB │ gzip:  24.34 kB 
+16:42:29.369
+Backend
+Log
+ dist/assets/upload-D_TacNF-.js                      0.23 kB │ gzip:   0.19 kB 
+16:42:29.369
+Backend
+Log
+ dist/assets/download-BIr8Eiwj.js                    0.23 kB │ gzip:   0.19 kB 
+16:42:29.369
+Backend
+Log
+ dist/assets/funnel-CEznJq6B.js                      0.26 kB │ gzip:   0.21 kB 
+16:42:29.369
+Backend
+Log
+ dist/assets/arrow-up-Jck8rQQ7.js                    0.28 kB │ gzip:   0.21 kB 
+16:42:29.369
+Backend
+Log
+ dist/assets/xlsxHelper-Dzn9x6mE.js                  1.22 kB │ gzip:   0.55 kB 
+16:42:29.369
+Backend
+Log
+ dist/assets/not-found-XCImHyTl.js                   1.49 kB │ gzip:   0.57 kB 
+16:42:29.369
+Backend
+Log
+ dist/assets/ConfirmModal-DfUOzcc_.js                3.00 kB │ gzip:   1.26 kB 
+16:42:29.369
+Backend
+Log
+ dist/assets/page-CPsOQ38g.js                        4.76 kB │ gzip:   1.87 kB 
+16:42:29.369
+Backend
+Log
+ dist/assets/billsReport-CfDKMUTA.js                11.62 kB │ gzip:   4.36 kB 
+16:42:29.370
+Backend
+Log
+ dist/assets/page-BzXipw11.js                       20.93 kB │ gzip:   6.21 kB 
+16:42:29.370
+Backend
+Log
+ dist/assets/table-CQLM0bQs.js                      25.88 kB │ gzip:   8.15 kB 
+16:42:29.370
+Backend
+Log
+ dist/assets/page-CoIZfXB7.js                       27.16 kB │ gzip:   7.34 kB 
+16:42:29.370
+Backend
+Log
+ dist/assets/purify.es-DxdA0B9h.js                  31.20 kB │ gzip:  12.02 kB 
+16:42:29.370
+Backend
+Log
+ dist/assets/jspdf.plugin.autotable-CwUr-dqL.js     31.45 kB │ gzip:  10.04 kB 
+16:42:29.370
+Backend
+Log
+ dist/assets/page-FGZt7ZCP.js                       33.58 kB │ gzip:   8.34 kB 
+16:42:29.370
+Backend
+Log
+ dist/assets/page--Is3UlVC.js                       37.90 kB │ gzip:   9.61 kB 
+16:42:29.370
+Backend
+Log
+ dist/assets/page-DECPJP0Z.js                       67.86 kB │ gzip:  19.59 kB 
+16:42:29.370
+Backend
+Log
+ dist/assets/page-DJJBTFfu.js                       96.38 kB │ gzip:  23.15 kB 
+16:42:29.370
+Backend
+Log
+ dist/assets/index.es-BTfYrHG6.js                  158.97 kB │ gzip:  53.06 kB 
+16:42:29.370
+Backend
+Log
+ dist/assets/page-D9aB_hSD.js                      191.58 kB │ gzip:  48.35 kB 
+16:42:29.424
+Backend
+Log
+ dist/assets/html2canvas.esm-DXEQVQnt.js           201.04 kB │ gzip:  47.43 kB 
+16:42:29.426
+Backend
+Log
+ dist/assets/jspdf.es.min-BVQ-3UvJ.js              386.22 kB │ gzip: 126.41 kB 
+16:42:29.426
+Backend
+Log
+ dist/assets/xlsx-B2PmUliy.js                      429.23 kB │ gzip: 143.00 kB 
+16:42:29.426
+Backend
+Log
+ dist/assets/index-pI3b4ym2.js                   1,110.10 kB │ gzip: 316.53 kB 
+16:42:29.426
+Backend
+Log
+ (!) Some chunks are larger than 500 kB after minification. Consider: 
+16:42:29.426
+Backend
+Log
+ - Using dynamic import() to code-split the application 
+16:42:29.426
+Backend
+Log
+ - Use build.rollupOptions.output.manualChunks to improve chunking: https://rollupjs.org/configuration-options/#output-manualchunks 
+16:42:29.426
+Backend
+Log
+ - Adjust chunk size limit for this warning via build.chunkSizeWarningLimit. 
+16:42:29.426
+Backend
+Log
+ ✓ built in 11.59s 
+16:42:29.477
+Backend
+Log
+ dist/server.cjs       72.8kb 
+16:42:29.478
+Backend
+Log
+ dist/server.cjs.map  136.2kb 
+16:42:29.478
+Backend
+Log
+ ⚡ Done in 18ms 
+16:42:29.528
+Backend
+Log
+ Build successful. 
+16:43:05.510
+App
+Log
+ [doSave] Saving d0d1a9b2-5900-45fa-b309-cf46eb77b4db | mode=UPI | amount=3647 | isMoc=false | bills in memory=57252 | bill in memory=false 
+16:43:19.715
+App
+Warning
+ [apiSync] Marking column "part_payments" as unsupported in Supabase "bills" table schema. 
+16:43:19.724
+App
+Warning
+ [apiSync] Marking column "ushop_amount" as unsupported in Supabase "bills" table schema. 
+16:43:41.566
+App
+Error
+ [apiSync] apiFetchAllData error:
+  {
+  "code": "57014",
+  "details": null,
+  "hint": null,
+  "message": "canceling statement due to statement timeout"
+} 
+16:43:57.494
+App
+Log
+ [doSave] Saving cbc84091-2470-4da7-b0ab-ecb6447e9fa2 | mode=Cheque | amount=3793 | isMoc=false | bills in memory=57252 | bill in memory=false 
+16:43:57.602
+Backend
+Log
+ [WhatsApp Bot] Connection closed. StatusCode: 408 
+16:44:27.901
+Backend
+Log
+ [WhatsApp Bot] Using dynamic WhatsApp Web version: [ 2, 3000, 1056191857 ] 
+16:45:19.236
+App
+Log
+ [doSave] Saving 851e68a7-e140-43d4-85a8-56df860cbbfd | mode=Cash | amount=719 | isMoc=false | bills in memory=57252 | bill in memory=false 
+16:45:40.148
+App
+Log
+ [doSave] Saving 87eddcd5-0685-470f-b93e-3db11153d70d | mode=Cash | amount=895 | isMoc=false | bills in memory=57252 | bill in memory=false 
+16:46:06.520
+App
+Log
+ [doSave] Saving b27519ee-0deb-460e-acc6-0f3c9d3596b2 | mode=Cash | amount=886 | isMoc=false | bills in memory=57252 | bill in memory=false 
+16:46:27.507
+App
+Log
+ [doSave] Saving 9503d0b8-0039-4fd3-b085-61d9932b7747 | mode=Cash | amount=135 | isMoc=false | bills in memory=57252 | bill in memory=false 
+16:46:49.387
+App
+Log
+ [doSave] Saving 7b022fe3-6210-47bf-a8d5-3e9a963105ec | mode=Cash | amount=365 | isMoc=false | bills in memory=57252 | bill in memory=false 
+16:47:08.712
+Backend
+Log
+ [WhatsApp Bot] Connection closed. StatusCode: 408 
+16:47:13.953
+App
+Log
+ [doSave] Saving b06dc1ce-4f38-4c44-83be-2a38e0cb486d | mode=Cash | amount=280 | isMoc=false | bills in memory=57252 | bill in memory=false 
+16:47:33.153
+App
+Log
+ [doSave] Saving 5dbf5b9f-900a-403c-89cf-1175db5eed7e | mode=Cash | amount=3220 | isMoc=false | bills in memory=57252 | bill in memory=false 
+16:47:38.999
+Backend
+Log
+ [WhatsApp Bot] Using dynamic WhatsApp Web version: [ 2, 3000, 1056191857 ] 
+16:47:53.831
+App
+Log
+ [doSave] Saving 955c0584-8628-4ebe-a893-82a8b496b874 | mode=Cash | amount=181 | isMoc=false | bills in memory=57252 | bill in memory=false 
+16:48:11.740
+App
+Log
+ [doSave] Saving 766497f8-59c1-458a-8a4b-99c9c9a4c4b8 | mode=Cash | amount=118 | isMoc=false | bills in memory=57252 | bill in memory=false 
+16:48:33.691
+App
+Log
+ [doSave] Saving 766497f8-59c1-458a-8a4b-99c9c9a4c4b8 | mode=Cash | amount=181 | isMoc=false | bills in memory=57252 | bill in memory=false 
+16:49:18.111
+App
+Log
+ [doSave] Saving 98b7994f-a621-4d06-85aa-bf84ef5bf50d | mode=Cash | amount=118 | isMoc=false | bills in memory=57252 | bill in memory=false 
+16:49:38.623
+App
+Log
+ [doSave] Saving 35dec17a-0b5e-4e73-8ecb-0a7985b55f6a | mode=Cash | amount=435 | isMoc=false | bills in memory=57252 | bill in memory=false 
+16:49:56.431
+App
+Log
+ [doSave] Saving b69fa5f4-bd14-43fd-9164-35de41e1003c | mode=Cash | amount=843 | isMoc=false | bills in memory=57252 | bill in memory=false 
+16:50:18.555
+App
+Log
+ [doSave] Saving 6faf4014-95ec-49ce-82e3-53a8d74d7225 | mode=Cash | amount=284 | isMoc=false | bills in memory=57252 | bill in memory=false 
+16:50:19.868
+Backend
+Log
+ [WhatsApp Bot] Connection closed. StatusCode: 408 
+16:50:46.738
+App
+Log
+ [doSave] Saving c567ee77-caa9-4673-8eae-071575711e53 | mode=Cash | amount=487 | isMoc=false | bills in memory=57252 | bill in memory=false 
+16:50:50.169
+Backend
+Log
+ [WhatsApp Bot] Using dynamic WhatsApp Web version: [ 2, 3000, 1056191857 ] 
+16:51:27.244
+Backend
+Log
+ CONNECTED 
+16:53:31.058
+Backend
+Log
+ [WhatsApp Bot] Connection closed. StatusCode: 408 
+16:54:01.397
+Backend
+Log
+ [WhatsApp Bot] Using dynamic WhatsApp Web version: [ 2, 3000, 1056191857 ] 
+16:56:42.241
+Backend
+Log
+ [WhatsApp Bot] Connection closed. StatusCode: 408 

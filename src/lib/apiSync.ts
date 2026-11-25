@@ -1,5 +1,5 @@
 import { supabase } from './supabase';
-import { collectSyncPages } from './syncPagination';
+import { collectSyncPages, collectKeysetPages } from './syncPagination';
 import { normalizeEditHistory, type Bill, type Driver, type Bank, type DriverDailySummary, type Contact, type WhatsAppTemplates } from './billStore';
 import { getRole } from './auth';
 import { normDateStr, displayToIso } from './dateUtils';
@@ -442,14 +442,70 @@ if (typeof window !== 'undefined') {
   setTimeout(() => { void flushPendingWrites(); }, 3000);
 }
 
+const BILL_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+export function isGhostUuidBill(b: Partial<Bill> | null | undefined): boolean {
+  if (!b) return true;
+  const bn = (b.billNo || '').trim();
+  const isMoc = bn.toUpperCase().startsWith('MOC') || b.collectionCode === 'MOC' || b.salespersonName === 'MOC';
+  if (isMoc) return false;
+  if (!bn) return true;
+  return BILL_UUID_RE.test(bn) && !(b.partyName || '').trim() && (Number(b.billNetAmt) || 0) === 0;
+}
+
+export async function apiFetchBillsByKeys(billNos: string[], ids: string[] = []): Promise<Bill[]> {
+  if (!supabase) return [];
+  const results: Bill[] = [];
+  const cleanNos = Array.from(new Set(
+    billNos.map(s => (s || '').trim()).filter(s => s && !BILL_UUID_RE.test(s))
+  ));
+  const cleanIds = Array.from(new Set(ids.map(s => (s || '').trim()).filter(Boolean)));
+  const CHUNK = 200;
+
+  for (let i = 0; i < cleanNos.length; i += CHUNK) {
+    const chunk = cleanNos.slice(i, i + CHUNK);
+    try {
+      const { data } = await supabase.from('bills').select(BILL_SELECT_COLUMNS).in('bill_no', chunk);
+      if (Array.isArray(data)) {
+        for (const row of data) {
+          const mapped = mapBillFromSupabase(row);
+          if (!isGhostUuidBill(mapped)) results.push(mapped);
+        }
+      }
+    } catch {}
+  }
+
+  for (let i = 0; i < cleanIds.length; i += CHUNK) {
+    const chunk = cleanIds.slice(i, i + CHUNK);
+    try {
+      const { data } = await supabase.from('bills').select(BILL_SELECT_COLUMNS).in('id', chunk);
+      if (Array.isArray(data)) {
+        for (const row of data) {
+          const mapped = mapBillFromSupabase(row);
+          if (!isGhostUuidBill(mapped)) results.push(mapped);
+        }
+      }
+    } catch {}
+  }
+
+  return dedupeBillsByBillNo(results);
+}
+
 // ── Fetch all bills from Supabase ──────────────────────────────────────────
-// Downloads all bills using explicit BILL_SELECT_COLUMNS and primary key index scanning.
+// Uses keyset pagination (`id > lastId ORDER BY id ASC LIMIT 1000`) to drain all pages
+// via the primary key index without OFFSET scan or 57014 statement timeouts.
 export async function fetchAllBills(options?: { fullHistory?: boolean }): Promise<Bill[]> {
-  const rows = await collectSyncPages<Record<string, unknown>>(async (from, to) => {
-    const { data, error } = await supabase.from('bills')
-      .select(BILL_SELECT_COLUMNS).order('id', { ascending: true }).range(from, to);
+  const rows = await collectKeysetPages<Record<string, unknown>>(async (lastId, limit) => {
+    let query = supabase.from('bills')
+      .select(BILL_SELECT_COLUMNS)
+      .order('id', { ascending: true })
+      .limit(limit);
+    if (lastId !== null) {
+      query = query.gt('id', lastId);
+    }
+    const { data, error } = await query;
     return { data: data as Record<string, unknown>[] | null, error };
-  });
+  }, 1000);
   return dedupeBillsByBillNo(rows.map(mapBillFromSupabase));
 }
 
@@ -472,12 +528,16 @@ async function fetchAllRows(table: string, orderCol = 'id', selectCols = '*'): P
 }
 
 function dedupeBillsByBillNo(bills: Bill[]): Bill[] {
-  return Array.from(new Map(bills.map(b => {
-    const bn = (b.billNo || '').trim().toUpperCase();
-    const isMoc = bn.startsWith('MOC') || b.collectionCode === 'MOC' || b.salespersonName === 'MOC' || (b.id && b.id.startsWith('moc_'));
-    const key = isMoc ? (b.id ? b.id.trim() : bn) : (bn || (b.id ? b.id.trim() : ''));
-    return [key, b];
-  })).values());
+  return Array.from(new Map(
+    bills
+      .filter(b => !isGhostUuidBill(b))
+      .map(b => {
+        const bn = (b.billNo || '').trim().toUpperCase();
+        const isMoc = bn.startsWith('MOC') || b.collectionCode === 'MOC' || b.salespersonName === 'MOC' || (b.id && b.id.startsWith('moc_'));
+        const key = isMoc ? (b.id ? b.id.trim() : bn) : (bn || (b.id ? b.id.trim() : ''));
+        return [key, b] as [string, Bill];
+      })
+  ).values());
 }
 
 export async function apiFetchAllData(options?: { fullHistory?: boolean }) {
@@ -658,8 +718,13 @@ export async function apiPatchBill(id: string, patch: Partial<Bill>, _billNo?: s
     if (Object.keys(safe).length === 0) { dispatchSyncStatus('ok'); return { ok: true }; }
     const row = billToSupabase(safe);
 
-    const hasId = !!(id && id.trim());
-    const hasBillNo = !!(_billNo && _billNo.trim());
+    const cleanId = (id || '').trim();
+    const rawBillNo = (_billNo || '').trim();
+    const cleanBillNo = BILL_UUID_RE.test(rawBillNo) ? '' : rawBillNo;
+    const effectiveId = cleanId || (BILL_UUID_RE.test(rawBillNo) ? rawBillNo : '');
+
+    const hasId = !!effectiveId;
+    const hasBillNo = !!cleanBillNo;
 
     if (!hasId && !hasBillNo) {
       console.error('[apiSync] apiPatchBill: both id and billNo are empty — cannot update Supabase');
@@ -688,53 +753,81 @@ export async function apiPatchBill(id: string, patch: Partial<Bill>, _billNo?: s
     };
 
     let affected = 0;
-    // Fast path: if bill_no is available, bill_no is UNIQUE in Supabase schema.
-    // Try bill_no first for direct O(1) index hit
+    // Fast path: if bill_no is available and not a UUID, bill_no is UNIQUE in Supabase schema.
     if (hasBillNo) {
-      affected = await updateSingle('bill_no', _billNo!.trim());
+      affected = await updateSingle('bill_no', cleanBillNo);
     }
 
-    if (affected === 0 && hasId && id !== _billNo?.trim()) {
-      affected = await updateSingle('id', id);
+    if (affected === 0 && hasId) {
+      affected = await updateSingle('id', effectiveId);
     }
 
     if (affected === 0) {
-      console.warn(`[apiSync] apiPatchBill: 0 rows updated for id=${id} billNo=${_billNo || ''}. Attempting upsert fallback...`);
+      console.warn(`[apiSync] apiPatchBill: 0 rows updated for id=${effectiveId} billNo=${cleanBillNo}. Checking DB/memory before upsert...`);
       try {
         const { getBills } = await import('./billStore');
         const allB = getBills();
-        const existing = id ? allB.find(b => b.id === id) : (_billNo ? allB.find(b => (b.billNo || '').trim().toUpperCase() === _billNo.trim().toUpperCase()) : undefined);
-        const targetBill = existing ? { ...existing, ...patch } : {
-          id: id || `bill_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
-          srNo: '',
-          date: new Date().toLocaleDateString('en-GB'),
-          salespersonName: '',
-          collectionCode: '',
-          billNo: (_billNo || id || '').trim(),
-          partyCode: '',
-          partyHulCode: '',
-          partyName: '',
-          beatName: '',
-          billNetAmt: 0,
-          collectedAmount: 0,
-          outstandingAmount: 0,
-          billAgeing: 0,
-          ...patch,
-        };
-        const upsertRes = await apiBulkUpsertBills([targetBill as Bill]);
-        if (upsertRes.count > 0) {
-          dispatchSyncStatus('ok');
-          return { ok: true };
+        let existing = hasBillNo
+          ? allB.find(b => !isGhostUuidBill(b) && (b.billNo || '').trim().toUpperCase() === cleanBillNo.toUpperCase())
+          : undefined;
+        if (!existing && effectiveId) {
+          existing = allB.find(b => !isGhostUuidBill(b) && b.id === effectiveId);
+        }
+        if (!existing && (hasBillNo || hasId)) {
+          const fetched = await apiFetchBillsByKeys(
+            hasBillNo ? [cleanBillNo] : [],
+            hasId ? [effectiveId] : []
+          );
+          if (fetched.length > 0) existing = fetched[0];
+        }
+
+        const isMoc = (cleanBillNo || existing?.billNo || '').toUpperCase().startsWith('MOC')
+          || existing?.collectionCode === 'MOC'
+          || existing?.salespersonName === 'MOC'
+          || effectiveId.startsWith('moc_');
+
+        if (existing && !isGhostUuidBill(existing)) {
+          const targetBill = { ...existing, ...patch, id: existing.id, billNo: existing.billNo };
+          const upsertRes = await apiBulkUpsertBills([targetBill as Bill]);
+          if (upsertRes.count > 0) {
+            dispatchSyncStatus('ok');
+            return { ok: true };
+          }
+        } else if (isMoc && hasBillNo) {
+          const targetBill = {
+            id: effectiveId || `moc_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+            srNo: '',
+            date: new Date().toLocaleDateString('en-GB'),
+            salespersonName: 'MOC',
+            collectionCode: 'MOC',
+            billNo: cleanBillNo,
+            partyCode: '',
+            partyHulCode: '',
+            partyName: 'COMMISSION (MOC)',
+            beatName: 'COMMISSION',
+            billNetAmt: 0,
+            collectedAmount: 0,
+            outstandingAmount: 0,
+            billAgeing: 0,
+            ...patch,
+          };
+          const upsertRes = await apiBulkUpsertBills([targetBill as Bill]);
+          if (upsertRes.count > 0) {
+            dispatchSyncStatus('ok');
+            return { ok: true };
+          }
+        } else {
+          console.error(`[apiSync] apiPatchBill: Refusing to create ghost bill row for id=${effectiveId} billNo=${rawBillNo}`);
         }
       } catch (e) {
-        console.error('[apiSync] Fallback upsert failed:', e);
+        console.error('[apiSync] Fallback lookup/upsert failed:', e);
       }
       dispatchSyncStatus('error');
       return { ok: false };
     }
     dispatchSyncStatus('ok');
     if (typeof window !== 'undefined') {
-      window.dispatchEvent(new CustomEvent('broadcast-bill-update', { detail: { id, billNo: _billNo, ...patch } }));
+      window.dispatchEvent(new CustomEvent('broadcast-bill-update', { detail: { id: effectiveId, billNo: cleanBillNo || rawBillNo, ...patch } }));
     }
     return { ok: true };
   } catch (err) {
@@ -1503,7 +1596,7 @@ export async function apiFetchDriverDateBills(driverName: string, dateDisplay: s
       return [];
     }
     if (Array.isArray(data)) {
-      return data.map(mapBillFromSupabase);
+      return dedupeBillsByBillNo(data.map(mapBillFromSupabase));
     }
   } catch (err) {
     console.warn('[apiSync] apiFetchDriverDateBills exception:', err);

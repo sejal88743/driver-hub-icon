@@ -15,11 +15,11 @@ import { filterPendingLocalOnlyBills } from '@/lib/ghostPrune';
 // - Fast fallback when Realtime WebSocket is offline: 10s
 // - Idle backoff when user is away (> 2 min): 30s
 // - Hidden tab / background: 0s (Completely pauses polling)
-// 2-minute background sync intervals (local-first storage guarantees instant speed with 0 data loss)
-const POLL_SAFETY_MS = 120_000; // 2 minutes
-const POLL_FAST_MS = 120_000;   // 2 minutes
-const POLL_IDLE_MS = 300_000;   // 5 minutes
-const POLL_TICK_MS = 10_000;
+// 1-minute background incremental delta sync (plus instant Realtime WebSocket + BroadcastChannel)
+const POLL_SAFETY_MS = 60_000; // 1 minute when Realtime is live
+const POLL_FAST_MS   = 60_000; // 1 minute fallback when Realtime is offline
+const POLL_IDLE_MS   = 60_000; // 1 minute while tab stays visible
+const POLL_TICK_MS   = 5_000;
 
 
 
@@ -147,7 +147,8 @@ function scheduleDebouncedFullSync(delayMs = 1500) {
 }
 
 // ─── Light incremental sync: only pull bills changed since last sync ─────────
-export async function doDeltaSync(force = false) {
+let lastDeltaCompletedAt = 0;
+export async function doDeltaSync(force = false, showSyncIndicator = false) {
   const now = Date.now();
   if (!deltaCursor) {
     const savedTs = typeof window !== 'undefined' ? localStorage.getItem('vitratrack_last_sync_ts') : null;
@@ -161,6 +162,7 @@ export async function doDeltaSync(force = false) {
   if (deltaInFlight || syncInFlight) return;
   if (!force && (isWriteInProgress() || (now - getLastWriteAt() < 2500))) return;
   deltaInFlight = true;
+  if (showSyncIndicator) patch({ syncing: true });
 
   // Use a 3-minute rolling overlap to ensure mobile phone / laptop clock drift never skips entries made on other devices
   const rollingCursor = new Date(now - 180_000).toISOString();
@@ -195,6 +197,7 @@ export async function doDeltaSync(force = false) {
       deltaCursor = rollingCursor;
     }
 
+    lastDeltaCompletedAt = Date.now();
     try {
       if (typeof window !== 'undefined') localStorage.setItem('vitratrack_last_sync_ts', deltaCursor);
     } catch {}
@@ -202,11 +205,11 @@ export async function doDeltaSync(force = false) {
     window.dispatchEvent(new CustomEvent('sync-status', { detail: 'ok' }));
   } catch (err) {
     console.warn('[useBillStore] delta sync failed:', err);
-    // On transient failure, rewind cursor slightly so next poll retries recent modifications safely
     // Keep the previous cursor: an outage must not skip an older unsynced interval.
     window.dispatchEvent(new CustomEvent('sync-status', { detail: 'error' }));
   } finally {
     deltaInFlight = false;
+    if (showSyncIndicator) patch({ syncing: false });
   }
 }
 
@@ -604,20 +607,28 @@ function initGlobalSync() {
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'visible') {
       lastUserActivityAt = Date.now();
-      void doFullSync(true);
       void flushDirtyQueue();
       void flushPendingWrites();
+      if (fullCacheVerified) {
+        if (Date.now() - lastDeltaCompletedAt > 8_000) void doDeltaSync();
+      } else {
+        void doFullSync();
+      }
       initSupabaseRealtime();
     }
   });
   window.addEventListener('focus', () => {
     lastUserActivityAt = Date.now();
-    void doFullSync(true);
+    // Never trigger a 57k full-table download on window focus (e.g. closing an XLS file picker).
+    if (fullCacheVerified && Date.now() - lastDeltaCompletedAt > 10_000) {
+      void doDeltaSync();
+    }
   });
   window.addEventListener('online', () => {
     void flushDirtyQueue();
     void flushPendingWrites();
-    void doFullSync(true);
+    if (fullCacheVerified) void doDeltaSync(true);
+    else void doFullSync();
     initSupabaseRealtime();
   });
 
@@ -710,6 +721,12 @@ export function useBillStore() {
     loading: snapshot.loading,
     syncing: snapshot.syncing,
     refresh: readLocal,
-    syncFromApi: () => { serverVersion = 0; doFullSync(); },
+    syncFromApi: (forceFull = false) => {
+      serverVersion = 0;
+      if (fullCacheVerified && !forceFull) {
+        return doDeltaSync(true, true);
+      }
+      return doFullSync(true);
+    },
   };
 }

@@ -42,6 +42,17 @@ function updatedAtMs(b: Bill): number {
   return Number.isNaN(n) ? 0 : n;
 }
 
+const UUID_BILL_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function isGhostBill(b: Partial<Bill> | null | undefined): boolean {
+  if (!b) return true;
+  const bn = (b.billNo || '').trim();
+  const isMoc = bn.toUpperCase().startsWith('MOC') || b.collectionCode === 'MOC' || b.salespersonName === 'MOC';
+  if (isMoc) return false;
+  if (!bn) return true;
+  return UUID_BILL_RE.test(bn) && !(b.partyName || '').trim() && (Number(b.billNetAmt) || 0) === 0;
+}
+
 function getEffectiveAmounts(b: Bill) {
   const cash = Number(b.cashAmount) || 0;
   const upi  = Number(b.upiAmount)  || 0;
@@ -49,8 +60,8 @@ function getEffectiveAmounts(b: Bill) {
   const collected = Number(b.collectedAmount) || 0;
   if (cash === 0 && upi === 0 && chq === 0 && collected > 0) {
     const mode = (b.paymentMode || '').toLowerCase();
-    if (mode === 'upi') return { cash: 0, upi: collected, chq: 0 };
-    if (mode === 'cheque') return { cash: 0, upi: 0, chq: collected };
+    if (mode === 'upi' || mode === 'gpay') return { cash: 0, upi: collected, chq: 0 };
+    if (mode === 'cheque' || mode === 'chq') return { cash: 0, upi: 0, chq: collected };
     return { cash: collected, upi: 0, chq: 0 };
   }
   return { cash, upi, chq };
@@ -128,8 +139,8 @@ export default function DriverDayTable({ bills, selectedDriver, displayDate, onS
     if (selectedDriver === 'OWNER') return s;
     const nameLower = selectedDriver.toLowerCase().trim();
     for (const b of bills) {
-      if (!Array.isArray(b.delPendingHistory)) continue;
-      const hit = b.delPendingHistory.some(h => h.driverName?.toLowerCase().trim() === nameLower && h.deliveryDate === displayDate);
+      if (isGhostBill(b) || !Array.isArray(b.delPendingHistory)) continue;
+      const hit = b.delPendingHistory.some(h => h.driverName?.toLowerCase().trim() === nameLower && normDateStr(h.deliveryDate) === normDateStr(displayDate));
       if (hit) s.add(b.billNo);
     }
     return s;
@@ -137,8 +148,13 @@ export default function DriverDayTable({ bills, selectedDriver, displayDate, onS
 
   const driverBillsByName = useMemo(() => {
     const map = new Map<string, Bill[]>();
+    const normDisp = normDateStr(displayDate);
     for (const b of bills) {
-      if (b.deliveryDate !== displayDate || !b.driverName) continue;
+      if (isGhostBill(b) || !b.driverName) continue;
+      const bDel = normDateStr(b.deliveryDate);
+      const bDate = bDel || normDateStr(b.date);
+      const matchDate = bDel === normDisp || (!bDel && (bDate === normDisp || normDateStr(b.paymentDate) === normDisp));
+      if (!matchDate) continue;
       const name = (b.driverName || '').trim();
       if (!name) continue;
       if (!map.has(name)) map.set(name, []);
@@ -168,7 +184,7 @@ export default function DriverDayTable({ bills, selectedDriver, displayDate, onS
       const seenOwnerBills = new Set<string>();
       const normTargetDate = normDateStr(displayDate);
       result = bills.filter(b => {
-        if (!b.billNo) return false;
+        if (!b.billNo || isGhostBill(b)) return false;
         // Fast guard: Receipt date is authoritative — skip bills of other dates immediately
         if (!b.paymentDate || normDateStr(b.paymentDate) !== normTargetDate) return false;
 
@@ -229,7 +245,7 @@ export default function DriverDayTable({ bills, selectedDriver, displayDate, onS
 
       const seenUserBills = new Set<string>();
       result = bills.filter(b => {
-        if (!b.billNo) return false;
+        if (!b.billNo || isGhostBill(b)) return false;
         const isMoc = (b.billNo || '').toUpperCase().startsWith('MOC') || b.collectionCode === 'MOC' || b.salespersonName === 'MOC';
         const normNo = isMoc ? (b.id || b.billNo || '') : (b.billNo || '').trim().toUpperCase();
         if (seenUserBills.has(normNo)) return false;
@@ -283,7 +299,7 @@ export default function DriverDayTable({ bills, selectedDriver, displayDate, onS
       const seenDriverBills = new Set<string>();
       const normDisplay = normDateStr(displayDate);
       result = bills.filter(b => {
-        if (!b.billNo) return false;
+        if (!b.billNo || isGhostBill(b)) return false;
         const isMoc = (b.billNo || '').toUpperCase().startsWith('MOC') || b.collectionCode === 'MOC' || b.salespersonName === 'MOC';
         const normNo = isMoc ? (b.id || b.billNo || '') : (b.billNo || '').trim().toUpperCase();
         if (seenDriverBills.has(normNo)) return false;
@@ -303,8 +319,12 @@ export default function DriverDayTable({ bills, selectedDriver, displayDate, onS
           return false;
         }
 
-        const bDate = normDateStr(b.deliveryDate || b.date);
-        const isMatch = (dName === selUpper && bDate === normDisplay);
+        const bDelDate = normDateStr(b.deliveryDate);
+        const bDate = bDelDate || normDateStr(b.date);
+        const isMatch = dName === selUpper && (
+          bDate === normDisplay ||
+          (!bDelDate && normDateStr(b.paymentDate) === normDisplay)
+        );
 
         if (isMatch) {
           seenDriverBills.add(normNo);
@@ -456,7 +476,9 @@ export default function DriverDayTable({ bills, selectedDriver, displayDate, onS
     const eff = getEffectiveAmounts(b);
     const hasMoneyRec = eff.cash > 0 || eff.upi > 0 || eff.chq > 0 || (Number(b.collectedAmount) || 0) > 0;
     const isSnap = snapshotBillNos.has(b.billNo);
-    const isFBR = !isSnap && (_bm === 'fbr' || _bm === 'cancel') && !hasMoneyRec;
+    const _lc = (Number(b.lineCutAmt) || 0) || Number(b.cancelLine) || 0;
+    const _net = Number(b.billNetAmt) || 0;
+    const isFBR = !isSnap && !hasMoneyRec && _bm !== 'credit' && _bm !== 'del pending' && (_bm === 'fbr' || _bm === 'cancel' || (_lc > 0 && _net > 0 && Math.abs(_lc - _net) < 0.05));
     if (isFBR) { totals.fbr += b.billNetAmt; counts.fbr++; return; }
     if (isSnap || ((_bm === 'del pending' || _bm === 'pending') && !hasMoneyRec)) {
       counts.delPending++;
@@ -594,15 +616,19 @@ export default function DriverDayTable({ bills, selectedDriver, displayDate, onS
 
       // ── Bills Table ──────────────────────────────────────────────────────
       const tableBody = sortedPdfRows.map((b, i) => {
-        const cash = Number(b.cashAmount) || 0;
-        const gpay = Number(b.upiAmount)  || 0;
-        const chq  = Number(b.chequeAmount) || 0;
+        const eff = getEffectiveAmounts(b);
+        const cash = eff.cash;
+        const gpay = eff.upi;
+        const chq  = eff.chq;
         const collected = b.collectedAmount || 0;
         const isSnap = snapshotBillNos.has(b.billNo);
         const _bm = (b.paymentMode || '').toLowerCase();
-        const isFBR    = !isSnap && (_bm === 'fbr' || _bm === 'cancel');
+        const hasMoneyRec = cash > 0 || gpay > 0 || chq > 0 || collected > 0;
+        const _lc = (Number(b.lineCutAmt) || 0) || Number(b.cancelLine) || 0;
+        const _net = Number(b.billNetAmt) || 0;
+        const isFBR    = !isSnap && !hasMoneyRec && _bm !== 'credit' && _bm !== 'del pending' && (_bm === 'fbr' || _bm === 'cancel' || (_lc > 0 && _net > 0 && Math.abs(_lc - _net) < 0.05));
         const isCredit = !isSnap && _bm === 'credit';
-        const isDelPend= isSnap || _bm === 'del pending';
+        const isDelPend= isSnap || (_bm === 'del pending' && !hasMoneyRec);
         const isPaid   = !isSnap && !isFBR && !isDelPend && !isCredit && (collected > 0 || !!b.paymentDate);
         const isAssigned = !isSnap && !isFBR && !isDelPend && !isCredit && !isPaid && (!!b.driverName || _bm === 'assigned');
         const status   = isFBR ? 'FBR' : isDelPend ? 'DEL PND' : isCredit ? 'CREDIT' : isPaid ? 'PAID' : isAssigned ? 'ASSIGNED' : 'UNPAID';
@@ -1282,7 +1308,7 @@ export default function DriverDayTable({ bills, selectedDriver, displayDate, onS
               // Even if re-assigned on a later date, on this historical date it MUST show as DEL PEND!
               const _lc = (Number(b.lineCutAmt) || 0) || Number(b.cancelLine) || 0;
               const _net = Number(b.billNetAmt) || 0;
-              const isFBR = !isSnapshot && (_bm === 'fbr' || _bm === 'cancel' || (_lc > 0 && _net > 0 && Math.abs(_lc - _net) < 0.05) || Boolean(b.discrepancyReason && b.discrepancyReason.trim() && !hasMoneyRec));
+              const isFBR = !isSnapshot && !hasMoneyRec && _bm !== 'credit' && _bm !== 'del pending' && (_bm === 'fbr' || _bm === 'cancel' || (_lc > 0 && _net > 0 && Math.abs(_lc - _net) < 0.05));
               const isDelPend = isSnapshot || ((_bm === 'del pending' || _bm === 'pending') && !hasMoneyRec);
               const isCredit = !isSnapshot && _bm === 'credit';
               const collected = b.collectedAmount || 0;
@@ -1302,10 +1328,11 @@ export default function DriverDayTable({ bills, selectedDriver, displayDate, onS
               const statusLabel = isFBR ? 'FBR' : isDelPend ? 'DEL PEND' : isCredit ? 'CREDIT' : isPaidElsewhere ? 'REC' : isPaid ? 'PAID' : isAssignedToday ? 'ASSIGNED' : 'UNPAID';
               const statusCls = isFBR ? 'bg-red-500 text-white' : isDelPend ? 'bg-amber-400 text-black' : isCredit ? 'bg-green-500 text-white' : isPaidElsewhere ? 'bg-indigo-500 text-white' : isPaid ? 'bg-emerald-100 text-emerald-700' : isAssignedToday ? 'bg-blue-600 text-white' : 'bg-red-100 text-red-700';
               const isMatchedRow = String(b.discrepancyReason || (b as any).discrepancy_reason || (b as any).discrepancy || '').toUpperCase().includes('MATCHED');
+              const isMocRow = (b.billNo || '').toUpperCase().startsWith('MOC') || b.collectionCode === 'MOC' || b.salespersonName === 'MOC';
               return (
                 <tr 
                   key={b.id || b.billNo} 
-                  onClick={() => onSelectBill(b.id || b.billNo)} 
+                  onClick={() => onSelectBill(isMocRow ? (b.id || b.billNo) : (b.billNo || b.id))} 
                   className={cn(
                     "transition-colors cursor-pointer",
                     isChecked ? "bg-blue-100" :
