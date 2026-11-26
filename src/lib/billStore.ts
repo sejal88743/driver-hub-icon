@@ -675,11 +675,6 @@ let _salespersonContacts: Contact[] = [];
 
 // Hydrate state synchronously from localStorage on startup
 if (typeof window !== 'undefined') {
-  try {
-    // Free up space by removing obsolete legacy cache keys if present
-    localStorage.removeItem('vt_cached_bills');
-    localStorage.removeItem('vitratrack_cached_bills');
-  } catch {}
   (window as any).__VT_GET_BILLS__ = () => _bills;
 
   try {
@@ -1854,6 +1849,7 @@ export function addBillsToMemoryOnly(newBills: Bill[]): Bill[] {
   }
   if (toAdd.length === 0) return [];
   _bills = [..._bills, ...toAdd];
+  rebuildBillIndexMaps();
   dispatchUpdate();
   persistLocalState(true);
   return toAdd;
@@ -1868,6 +1864,7 @@ export function mergeBillsInMemoryOnly(mergedBills: Bill[]): void {
     if (k) billMap.set(k, b);
   }
   _bills = Array.from(billMap.values());
+  rebuildBillIndexMaps();
   dispatchUpdate();
   persistLocalState(true);
 }

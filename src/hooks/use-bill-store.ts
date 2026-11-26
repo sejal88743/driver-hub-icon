@@ -334,7 +334,6 @@ async function doFullSync(force = false, opts?: { bypassWriteLock?: boolean }) {
     fullCacheVerified = true;
     deltaCursor = fullSyncStartedAt;
     try {
-      localStorage.removeItem('vitratrack_complete_cache_v3');
       localStorage.setItem('vitratrack_last_sync_ts', deltaCursor);
       if (idbSaved) {
         localStorage.setItem(FULL_CACHE_KEY, 'complete');
@@ -670,10 +669,6 @@ function initGlobalSync() {
     readLocal();
     void flushDirtyQueue();
     void flushPendingWrites();
-
-    try {
-      localStorage.removeItem('vitratrack_complete_cache_v3');
-    } catch {}
 
     const localBills = getBills();
     const savedTs = typeof window !== 'undefined' ? localStorage.getItem('vitratrack_last_sync_ts') : null;

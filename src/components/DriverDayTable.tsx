@@ -1,5 +1,5 @@
 
-import { useState, useMemo, useEffect, useRef } from "react";
+import { useState, useMemo, useEffect, useRef, memo } from "react";
 import { Bill, CashBreakdown, saveSummaries, getSummaries, DriverDailySummary, getDrivers } from "@/lib/billStore";
 import { getRole } from "@/lib/auth";
 import { cn } from "@/lib/utils";
@@ -67,7 +67,7 @@ function getEffectiveAmounts(b: Bill) {
   return { cash, upi, chq };
 }
 
-export default function DriverDayTable({ bills, selectedDriver, displayDate, onSelectBill, ownerSavedBillNos, isDriverMode, selectedDriverIsOwnerOrUser, enteredByFilter }: Props) {
+const DriverDayTable = memo(function DriverDayTable({ bills, selectedDriver, displayDate, onSelectBill, ownerSavedBillNos, isDriverMode, selectedDriverIsOwnerOrUser, enteredByFilter }: Props) {
   const isOwnerRole = (() => { try { return getRole() === 'owner'; } catch { return false; } })();
   const [sort, setSort] = useState<SortConfig>({ key: 'updatedAt', direction: 'desc' });
 
@@ -177,6 +177,12 @@ export default function DriverDayTable({ bills, selectedDriver, displayDate, onS
       selUpper === 'SEJAL'
     );
 
+    const otherStaffPrefixes = allDrivers
+      .filter(d => d.role === 'user' && (d.name || '').trim().toUpperCase() !== 'OWNER')
+      .map(d => (d.name || '').trim().toUpperCase())
+      .filter(Boolean);
+    const ownerSavedSet = Array.isArray(ownerSavedBillNos) && ownerSavedBillNos.length > 0 ? new Set(ownerSavedBillNos) : null;
+
     let result: Bill[];
     if (isOwner) {
       // OWNER view: Show all bills where payment was received / entered by OWNER on displayDate
@@ -208,17 +214,14 @@ export default function DriverDayTable({ bills, selectedDriver, displayDate, onS
 
         if (!hasMoneyRec && !isFBR && !isCredit && !isPaid) return false;
 
-        const isSavedByOwnerList = Array.isArray(ownerSavedBillNos) && (ownerSavedBillNos.includes(b.billNo) || ownerSavedBillNos.includes(b.id));
+        const isSavedByOwnerList = ownerSavedSet !== null && (ownerSavedSet.has(b.billNo) || ownerSavedSet.has(b.id));
         const pTime = (b.paymentTime || '').trim().toUpperCase();
         const dName = (b.driverName || '').trim().toUpperCase();
 
         // Exclude payments made by other recognized staff users (e.g. Khushi, Tarachand, Pratixa)
-        const otherStaffUsers = allDrivers.filter(d => d.role === 'user' && (d.name || '').trim().toUpperCase() !== 'OWNER');
-        const isOtherUserPayment = otherStaffUsers.some(d => {
-          const uName = (d.name || '').trim().toUpperCase();
-          return uName && (pTime === uName || pTime.startsWith(uName + ':') || pTime.startsWith(uName + ' '));
-        });
-        if (isOtherUserPayment) return false;
+        if (pTime && otherStaffPrefixes.some(uName => pTime === uName || pTime.startsWith(uName + ':') || pTime.startsWith(uName + ' '))) {
+          return false;
+        }
 
         const isOwnerPayment = (
           pTime === 'OWNER' ||
@@ -365,9 +368,18 @@ export default function DriverDayTable({ bills, selectedDriver, displayDate, onS
       return String(b.paymentTime || '').localeCompare(String(a.paymentTime || ''));
     });
 
-    // ── Group bills sharing the same Cheque Number together contiguously ──
+    // ── Group bills sharing the same Cheque Number together contiguously (O(N)) ──
+    const chequeGroups = new Map<string, Bill[]>();
+    for (const bill of result) {
+      const chq = (bill.chequeNo || '').trim().toLowerCase();
+      if (chq) {
+        let arr = chequeGroups.get(chq);
+        if (!arr) { arr = []; chequeGroups.set(chq, arr); }
+        arr.push(bill);
+      }
+    }
+
     const groupedResult: Bill[] = [];
-    const processedCheques = new Set<string>();
     const placedBillKeys = new Set<string>();
 
     for (const bill of result) {
@@ -376,9 +388,8 @@ export default function DriverDayTable({ bills, selectedDriver, displayDate, onS
 
       const chq = (bill.chequeNo || '').trim().toLowerCase();
       if (chq) {
-        if (!processedCheques.has(chq)) {
-          processedCheques.add(chq);
-          const siblingBills = result.filter(b => (b.chequeNo || '').trim().toLowerCase() === chq);
+        const siblingBills = chequeGroups.get(chq);
+        if (siblingBills) {
           for (const sib of siblingBills) {
             const sibKey = sib.id || sib.billNo;
             if (!placedBillKeys.has(sibKey)) {
@@ -1540,4 +1551,6 @@ export default function DriverDayTable({ bills, selectedDriver, displayDate, onS
       />
     </div>
   );
-}
+});
+
+export default DriverDayTable;

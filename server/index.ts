@@ -73,63 +73,6 @@ app.use(cors({
 }));
 app.use(express.json({ limit: '50mb' }));
 
-// ─── Transparent Supabase Proxy ──────────────────────────────────────────────
-const LOCKED_SUPABASE_URL = 'https://dyeerksnenfyvgevqskp.supabase.co';
-const LOCKED_SUPABASE_PUBLISHABLE_KEY = 'sb_publishable_CmOpnx0qPWRyhczXGRb2gQ_xVbZwFaz';
-
-app.use('/api/supabase-proxy', async (req, res) => {
-  const targetPath = req.originalUrl.replace(/^\/api\/supabase-proxy/, '');
-  const targetUrl = LOCKED_SUPABASE_URL + targetPath;
-
-  const fwdHeaders = new Headers();
-  for (const [k, v] of Object.entries(req.headers)) {
-    const lk = k.toLowerCase();
-    if (lk !== 'host' && lk !== 'connection' && lk !== 'content-length' && lk !== 'accept-encoding' && typeof v === 'string') {
-      fwdHeaders.set(k, v);
-    }
-  }
-  // Guarantee the locked Supabase key is present
-  if (!fwdHeaders.has('apikey')) {
-    fwdHeaders.set('apikey', LOCKED_SUPABASE_PUBLISHABLE_KEY);
-  }
-  if (!fwdHeaders.has('authorization')) {
-    fwdHeaders.set('authorization', 'Bearer ' + LOCKED_SUPABASE_PUBLISHABLE_KEY);
-  }
-
-  let body: any = undefined;
-  if (['POST', 'PATCH', 'PUT', 'DELETE'].includes(req.method)) {
-    if (Buffer.isBuffer(req.body)) {
-      body = req.body;
-    } else if (typeof req.body === 'object' && req.body !== null) {
-      body = JSON.stringify(req.body);
-      fwdHeaders.set('content-type', 'application/json');
-    } else if (typeof req.body === 'string') {
-      body = req.body;
-    }
-  }
-
-  try {
-    const resp = await fetch(targetUrl, {
-      method: req.method,
-      headers: fwdHeaders,
-      body,
-    });
-
-    resp.headers.forEach((v, k) => {
-      const lower = k.toLowerCase();
-      if (lower !== 'content-encoding' && lower !== 'content-length' && lower !== 'transfer-encoding') {
-        res.setHeader(k, v);
-      }
-    });
-    res.status(resp.status);
-    const buf = Buffer.from(await resp.arrayBuffer());
-    res.send(buf);
-  } catch (err: any) {
-    console.error('[SupabaseProxy] Proxy error:', err?.message || err);
-    res.status(502).json({ error: String(err?.message || err) });
-  }
-});
-
 // ─── Health check ─────────────────────────────────────────────────────────────
 app.get('/api/health', (_req, res) => {
   res.json({ ok: true });

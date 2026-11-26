@@ -82,7 +82,6 @@ export default function Dashboard() {
   
   const [selectedBillNo, setSelectedBillNo] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
-  const [debouncedQuery, setDebouncedQuery] = useState('');
   const [showDropdown, setShowDropdown] = useState(false);
   const [dropdownIndex, setDropdownIndex] = useState(0);
   const [saving, setSaving] = useState(false);
@@ -308,7 +307,7 @@ export default function Dashboard() {
   // On fetch failure the ref is still set (with [] fallback) so subsequent owner saves
   // for the active date can still persist to Supabase.
   useEffect(() => {
-    ownerEntriesLoadedDateRef.current = targetDateForEffect(dashDate);
+    ownerEntriesLoadedDateRef.current = '';
     const targetDate = dashDate;
     // Check local session cache first for instant zero-flicker display
     try {
@@ -337,25 +336,7 @@ export default function Dashboard() {
         ownerEntriesLoadedDateRef.current = targetDate;
       });
     return () => { cancelled = true; };
-  }, [dashDate]);
-
-  function targetDateForEffect(d: string) { return d; }
-
-  // Persist owner-saved bill nos to Supabase whenever they change.
-  useEffect(() => {
-    if (ownerEntriesLoadedDateRef.current !== dashDate) return;
-    try { sessionStorage.setItem(`vt_owner_saved_${dashDate}`, JSON.stringify(ownerSavedBillNos)); } catch {}
-    import('@/lib/apiSync')
-      .then(m => m.apiPushSetting(`owner_entries_${dashDate}`, JSON.stringify(ownerSavedBillNos)))
-      .catch(() => {});
   }, [ownerSavedBillNos, dashDate]);
-
-  // Debounce search query so heavy filter doesn't fire on every keystroke (reduced to 20ms for super-fast typing response)
-  useEffect(() => {
-    if (!searchQuery) { setDebouncedQuery(''); return; }
-    const t = setTimeout(() => setDebouncedQuery(searchQuery), 20);
-    return () => clearTimeout(t);
-  }, [searchQuery]);
 
   // Auto-reset search input query after configured seconds (e.g. 2s, 4s, or 0 = disabled) so the field clears for next input
   const searchResetTimerRef = useRef<NodeJS.Timeout | null>(null);
@@ -380,21 +361,30 @@ export default function Dashboard() {
 
   const billMap = useMemo(() => {
     const m = new Map<string, typeof bills[0]>();
-    for (const b of bills) {
+    for (let i = 0; i < bills.length; i++) {
+      const b = bills[i];
       if (b.billNo) {
         m.set(b.billNo, b);
-        m.set(b.billNo.trim(), b);
-        m.set(b.billNo.trim().toUpperCase(), b);
-        const cleanNo = b.billNo.replace(/^gst[-/]?/i, '').trim();
+        const trimmed = b.billNo.trim();
+        if (trimmed !== b.billNo) m.set(trimmed, b);
+        const upper = trimmed.toUpperCase();
+        if (upper !== trimmed) m.set(upper, b);
+        const cleanNo = trimmed.replace(/^gst[-/]?/i, '').trim();
         if (cleanNo) {
           m.set(cleanNo, b);
-          m.set(cleanNo.toUpperCase(), b);
+          const cleanUpper = cleanNo.toUpperCase();
+          if (cleanUpper !== cleanNo) m.set(cleanUpper, b);
         }
       }
       if (b.id) m.set(b.id, b);
     }
+    return m;
+  }, [bills]);
+
+  const virtualMocMap = useMemo(() => {
+    const m = new Map<string, typeof bills[0]>();
     for (const moc of commissionMocs) {
-      if (!m.has(moc.code)) {
+      if (!billMap.has(moc.code)) {
         const mocNum = extractMocNumber(moc.code) || '1';
         m.set(moc.code, {
           id: `moc_virtual_${moc.code.replace(/\s+/g, '_')}`,
@@ -418,10 +408,10 @@ export default function Dashboard() {
       }
     }
     return m;
-  }, [bills, commissionMocs, displayDate, selectedDriver]);
+  }, [commissionMocs, displayDate, selectedDriver, billMap]);
 
-  // Fast pre-indexed bill lookup cache (recalculated ONLY when bills change, not on keystrokes)
-  const { searchableBills, exactBillMap } = useMemo(() => {
+  // Fast pre-indexed bill lookup cache (recalculated ONLY when bills change, never on keystrokes/date changes)
+  const { searchableBills, exactBillMap, voiceBillMap } = useMemo(() => {
     const list: Array<{
       bill: typeof bills[0];
       billNo: string;
@@ -430,16 +420,19 @@ export default function Dashboard() {
       bNoZeros: string;
       pl: string;
       driverUpper: string;
-      dateNorm: string;
+      delDateNorm: string;
+      docDateNorm: string;
+      payDateNorm: string;
       isMoc: boolean;
     }> = [];
-    const exactMap = new Map<string, string[]>();
+    const exactMap = new Map<string, number[]>();
+    const voiceMap = new Map<string, number[]>();
 
-    const addExact = (k: string, bn: string) => {
+    const addIdx = (map: Map<string, number[]>, k: string, idx: number) => {
       if (!k) return;
-      const arr = exactMap.get(k);
-      if (!arr) exactMap.set(k, [bn]);
-      else if (!arr.includes(bn)) arr.push(bn);
+      const arr = map.get(k);
+      if (!arr) map.set(k, [idx]);
+      else arr.push(idx);
     };
 
     for (let i = 0; i < bills.length; i++) {
@@ -448,13 +441,16 @@ export default function Dashboard() {
       if (!bn || isGhostBill(b)) continue;
       const isMoc = isMocBill(b) || bn.toUpperCase().startsWith('MOC') || b.salespersonName === 'MOC' || b.collectionCode === 'MOC' || b.beatName === 'COMMISSION';
       const bl = bn.toLowerCase();
+      const blTrim = bl.trim();
       const bs = bl.replace(/^gst[-/]?/i, '');
       const bNoZeros = bs.replace(/^0+/, '');
       const pl = (b.partyName || '').toLowerCase();
       const driverUpper = (b.driverName || '').trim().toUpperCase();
-      const rawDate = b.deliveryDate || (!b.deliveryDate && normDateStr(b.paymentDate) === normDateStr(displayDate) ? b.paymentDate : b.date) || '';
-      const dateNorm = normDateStr(rawDate) || rawDate;
+      const delDateNorm = normDateStr(b.deliveryDate) || '';
+      const docDateNorm = normDateStr(b.date) || '';
+      const payDateNorm = normDateStr(b.paymentDate) || '';
 
+      const entryIdx = list.length;
       list.push({
         bill: b,
         billNo: bn,
@@ -463,19 +459,40 @@ export default function Dashboard() {
         bNoZeros,
         pl,
         driverUpper,
-        dateNorm,
+        delDateNorm,
+        docDateNorm,
+        payDateNorm,
         isMoc,
       });
 
       if (!isMoc) {
-        addExact(bl, bn);
-        addExact(bs, bn);
-        if (bNoZeros) addExact(bNoZeros, bn);
+        addIdx(exactMap, bl, entryIdx);
+        if (bs !== bl) addIdx(exactMap, bs, entryIdx);
+        if (bNoZeros && bNoZeros !== bs) addIdx(exactMap, bNoZeros, entryIdx);
       }
+
+      // Voice exact lookup index (raw trimmed, normalized alphanumeric, pure digits)
+      addIdx(voiceMap, `r:${blTrim}`, entryIdx);
+      const normKey = blTrim.replace(/^gst[-/]?/i, '').replace(/^inv[-/]?/i, '').replace(/^bill[-/]?/i, '').replace(/[^0-9a-z]/g, '').replace(/^0+/, '');
+      if (normKey) addIdx(voiceMap, `n:${normKey}`, entryIdx);
+      const digitsKey = blTrim.replace(/\D/g, '').replace(/^0+/, '');
+      if (digitsKey) addIdx(voiceMap, `d:${digitsKey}`, entryIdx);
     }
 
-    return { searchableBills: list, exactBillMap: exactMap };
+    return { searchableBills: list, exactBillMap: exactMap, voiceBillMap: voiceMap };
   }, [bills]);
+
+  // Precompute next MOC serial numbers once per [bills, commissionMocs] (never inside dropdown .map)
+  const nextMocSrMap = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const moc of commissionMocs) {
+      const mocNum = extractMocNumber(moc.code) || '1';
+      if (!m.has(mocNum)) {
+        m.set(mocNum, getNextMocSrNo(mocNum, bills));
+      }
+    }
+    return m;
+  }, [bills, commissionMocs]);
 
   // ── Draft restore: once bills load, check for a saved draft and apply it ──────
   // Must be placed after billMap so the map is accessible in the effect body.
@@ -487,7 +504,8 @@ export default function Dashboard() {
       if (!raw) return;
       const d = JSON.parse(raw);
       if (!d.selectedBillNo || d.dashDate !== dashDate) return; // different date = stale
-      if (!billMap.has(d.selectedBillNo)) return;              // bill not in memory
+      const bill = billMap.get(d.selectedBillNo) || virtualMocMap.get(d.selectedBillNo);
+      if (!bill) return;              // bill not in memory
       // Restore form state directly (skip handleBillSelect to preserve draft amounts)
       setSelectedBillNo(d.selectedBillNo);
       setSearchQuery(d.selectedBillNo);
@@ -503,7 +521,6 @@ export default function Dashboard() {
       setConfirmInput(d.confirmInput || '');
       setRecDateOverride(d.recDateOverride || null);
       // Determine edit lock same way as handleBillSelect
-      const bill = billMap.get(d.selectedBillNo)!;
       const hasNoAmounts = !bill.cashAmount && !bill.upiAmount && !bill.chequeAmount;
       if (!bill.paymentDate || hasNoAmounts) {
         setEditLocked(false);
@@ -520,21 +537,22 @@ export default function Dashboard() {
   // Previous cheque numbers grouped by bank name (for datalist suggestions)
   const chqNosByBank = useMemo(() => {
     const map = new Map<string, string[]>();
-    bills.forEach(b => {
+    for (let i = 0; i < bills.length; i++) {
+      const b = bills[i];
       if (b.bankName && b.chequeNo) {
         const key = b.bankName.toLowerCase();
-        if (!map.has(key)) map.set(key, []);
-        const arr = map.get(key)!;
+        let arr = map.get(key);
+        if (!arr) { arr = []; map.set(key, arr); }
         if (!arr.includes(b.chequeNo)) arr.push(b.chequeNo);
       }
-    });
+    }
     return map;
   }, [bills]);
 
   const selectedBill = useMemo(() => {
     if (!selectedBillNo) return undefined;
-    return billMap.get(selectedBillNo);
-  }, [billMap, selectedBillNo]);
+    return billMap.get(selectedBillNo) ?? virtualMocMap.get(selectedBillNo);
+  }, [billMap, virtualMocMap, selectedBillNo]);
   const _selMode = (selectedBill?.paymentMode || '').toLowerCase();
   const hasSelMoneyRec = (Number(selectedBill?.cashAmount) || 0) > 0 || (Number(selectedBill?.upiAmount) || 0) > 0 || (Number(selectedBill?.chequeAmount) || 0) > 0 || (Number(selectedBill?.collectedAmount) || 0) > 0;
   const hasSelRecDate = !!selectedBill?.paymentDate && selectedBill.paymentDate.trim() !== '' && selectedBill.paymentDate !== '—';
@@ -573,14 +591,30 @@ export default function Dashboard() {
     );
   }, [bills, selectedDriver, displayDate]);
 
+  // Precomputed driver/staff role lookup map (O(1) instead of drivers.find inside 57k loops)
+  const { driverRoleMap, otherStaffUserNames } = useMemo(() => {
+    const roleMap = new Map<string, { role: 'owner' | 'user' | 'driver'; name: string }>();
+    const staffNames: string[] = [];
+    for (const d of drivers) {
+      const upper = (d.name || '').trim().toUpperCase();
+      if (!upper) continue;
+      const r: 'owner' | 'user' | 'driver' = d.role === 'owner' ? 'owner' : d.role === 'user' ? 'user' : 'driver';
+      roleMap.set(upper, { role: r, name: d.name || upper });
+      if (r === 'user' && upper !== 'OWNER') {
+        staffNames.push(upper);
+      }
+    }
+    return { driverRoleMap: roleMap, otherStaffUserNames: staffNames };
+  }, [drivers]);
+
   // Helper to check if currently selected driver (or logged-in role) is Owner or Staff User
   const { isOwnerSelected, isUserSelected, isOwnerOrUserSelected } = useMemo(() => {
     const selUpper = (selectedDriver || '').trim().toUpperCase();
     const curRole = getRole();
-    const matchedDriver = drivers.find(drv => (drv.name || '').trim().toUpperCase() === selUpper);
-    const isOwner = selUpper === 'OWNER' || selUpper === '👑 OWNER' || matchedDriver?.role === 'owner' || (curRole === 'owner' && !selUpper);
+    const matched = driverRoleMap.get(selUpper);
+    const isOwner = selUpper === 'OWNER' || selUpper === '👑 OWNER' || matched?.role === 'owner' || (curRole === 'owner' && !selUpper);
     const isUser = !isOwner && (
-      matchedDriver?.role === 'user' ||
+      matched?.role === 'user' ||
       selUpper === 'PRATIXA' ||
       selUpper === 'KHUSHI' ||
       selUpper === 'TARACHAND' ||
@@ -592,7 +626,7 @@ export default function Dashboard() {
       isUserSelected: isUser,
       isOwnerOrUserSelected: isOwner || isUser,
     };
-  }, [selectedDriver, drivers]);
+  }, [selectedDriver, driverRoleMap]);
 
   // ── Authoritative Driver + Date Bills Sync from Supabase ───────────────────
   // Whenever driver or date changes, immediately pull all bills assigned to this
@@ -616,8 +650,27 @@ export default function Dashboard() {
     return () => { cancelled = true; };
   }, [selectedDriver, displayDate, isOwnerOrUserSelected]);
 
+  // Pre-filter driver's date bills ONCE per driver/date change (just like MultiBillEntryModal)
+  // so typing in Driver Mode only scans ~10-60 bills instead of 57k!
+  const driverDateSearchPool = useMemo(() => {
+    if (isOwnerOrUserSelected || !selectedDriver) return null;
+    const selUpper = selectedDriver.trim().toUpperCase();
+    const normDisp = normDateStr(displayDate) || displayDate.trim();
+    const pool: typeof searchableBills = [];
+    for (let i = 0; i < searchableBills.length; i++) {
+      const sb = searchableBills[i];
+      if (sb.isMoc) continue;
+      if (sb.driverUpper !== selUpper) continue;
+      const bDate = sb.delDateNorm || sb.docDateNorm;
+      if (bDate === normDisp || (!sb.delDateNorm && sb.payDateNorm === normDisp)) {
+        pool.push(sb);
+      }
+    }
+    return pool;
+  }, [searchableBills, selectedDriver, displayDate, isOwnerOrUserSelected]);
+
   const filteredBillNos = useMemo(() => {
-    const q = debouncedQuery.toLowerCase().trim();
+    const q = searchQuery.toLowerCase().trim();
     if (!q) return [];
     const userRole = getRole();
     if (!selectedDriver && userRole !== 'owner' && userRole !== 'user') return [];
@@ -627,113 +680,8 @@ export default function Dashboard() {
 
     const qStripped = stripGst(q);
     const qNoZeros = stripGstAndZeros(q);
-    const selDriverUpper = selectedDriver.trim().toUpperCase();
-    const normDisplayDate = normDateStr(displayDate) || displayDate.trim();
-    const MAX_PER_TIER = 25;
+    const MAX_RESULTS = 15;
     const isDigitsOnly = /^\d+$/.test(qNoZeros || qStripped);
-
-    // Fast O(1) exact match check
-    const exactCandidates = [
-      ...(exactBillMap.get(q) || []),
-      ...(qStripped !== q ? (exactBillMap.get(qStripped) || []) : []),
-      ...(qNoZeros && qNoZeros !== qStripped ? (exactBillMap.get(qNoZeros) || []) : []),
-    ];
-
-    if (exactCandidates.length > 0) {
-      const validExact: string[] = [];
-      const seenExact = new Set<string>();
-      for (const bn of exactCandidates) {
-        if (seenExact.has(bn)) continue;
-        seenExact.add(bn);
-        if (!isOwnerOrUserSelected) {
-          const b = billMap.get(bn);
-          if (b) {
-            const bDriver = (b.driverName || '').trim().toUpperCase();
-            if (bDriver !== selDriverUpper) continue;
-            const bDate = normDateStr(b.deliveryDate || b.date) || (b.deliveryDate || b.date);
-            if (bDate !== normDisplayDate) continue;
-          }
-        }
-        validExact.push(bn);
-      }
-      if (validExact.length > 0) {
-        return validExact.sort((a, b) => a.length - b.length || a.localeCompare(b));
-      }
-    }
-
-    // Tiers:
-    // Tier 0: Exact string OR exact numeric match
-    // Tier 1: Bill ending with search query (e.g., "01426" ends with "426")
-    // Tier 2: Bill starting with search query
-    // Tier 3: Bill containing search query (e.g., "14426")
-    // Tier 4: Exact party match
-    // Tier 5: Party starts-with
-    // Tier 6: Party contains
-    const t: string[][] = [[], [], [], [], [], [], []];
-    const seen = new Set<string>(); // deduplicates bills with same billNo
-
-    for (let i = 0; i < searchableBills.length; i++) {
-      const sb = searchableBills[i];
-      if (sb.isMoc) continue;
-
-      if (!isOwnerOrUserSelected) {
-        if (sb.driverUpper !== selDriverUpper) continue;
-        if (sb.dateNorm !== normDisplayDate) continue;
-      }
-
-      const bn = sb.billNo;
-      if (seen.has(bn)) continue;
-
-      let tier = -1;
-      const isExactStr = sb.bl === q || sb.bs === qStripped;
-      const isExactNum = qNoZeros !== '' && sb.bNoZeros === qNoZeros;
-
-      if (isExactStr || isExactNum) {
-        tier = 0;
-      } else if (qStripped !== '' && (sb.bs.endsWith(qStripped) || (qNoZeros !== '' && sb.bNoZeros.endsWith(qNoZeros)))) {
-        tier = 1;
-      } else if (sb.bl.startsWith(q) || sb.bs.startsWith(qStripped) || (qNoZeros !== '' && sb.bNoZeros.startsWith(qNoZeros))) {
-        tier = 2;
-      } else if (sb.bl.includes(q) || sb.bs.includes(qStripped) || (qNoZeros !== '' && sb.bNoZeros.includes(qNoZeros))) {
-        tier = 3;
-      } else if (!isDigitsOnly) {
-        if (sb.pl === q) {
-          tier = 4;
-        } else if (sb.pl.startsWith(q)) {
-          tier = 5;
-        } else if (sb.pl.includes(q)) {
-          tier = 6;
-        }
-      }
-
-      if (tier >= 0 && t[tier].length < MAX_PER_TIER) {
-        t[tier].push(bn);
-        seen.add(bn);
-        if (tier === 0 && t[0].length >= 5) break;
-      }
-    }
-
-    // Include Commission MOC matches (e.g. MOC 8, MOC8, COMMISSION)
-    for (const moc of commissionMocs) {
-      const code = moc.code;
-      const codeNoSpace = code.replace(/\s+/g, '').toLowerCase();
-      const codeNum = code.replace(/\D/g, '');
-
-      const isExact = q === code.toLowerCase() || q === codeNoSpace || (qNoZeros !== '' && codeNum === qNoZeros && qStripped.startsWith('moc'));
-      const isPart = code.toLowerCase().includes(q) || codeNoSpace.includes(q) || (q === 'commission' || q === 'moc' || q === 'comison' || q === 'com');
-
-      if (isExact) {
-        if (!seen.has(code)) {
-          t[0].push(code);
-          seen.add(code);
-        }
-      } else if (isPart) {
-        if (!seen.has(code)) {
-          t[2].push(code);
-          seen.add(code);
-        }
-      }
-    }
 
     const sortTier0 = (a: string, b: string) => {
       const aNoZeros = stripGstAndZeros(a);
@@ -744,12 +692,124 @@ export default function Dashboard() {
       if (!aExactNum && bExactNum) return 1;
       return a.length - b.length || a.localeCompare(b);
     };
-
     const sortByLen = (a: string, b: string) => a.length - b.length || a.localeCompare(b);
 
-    // If an exact bill match exists (e.g. searching 102 matches bill 00102), show ONLY exact match card(s)
+    // ── FAST PATH A: Driver Mode (searches pre-filtered 10-60 driverDateSearchPool) ──
+    if (!isOwnerOrUserSelected) {
+      const pool = driverDateSearchPool || [];
+      const t: string[][] = [[], [], [], [], [], [], []];
+      const seen = new Set<string>();
+
+      for (let i = 0; i < pool.length; i++) {
+        const sb = pool[i];
+        const bn = sb.billNo;
+        if (seen.has(bn)) continue;
+
+        let tier = -1;
+        if (sb.bl === q || sb.bs === qStripped || (qNoZeros !== '' && sb.bNoZeros === qNoZeros)) {
+          tier = 0;
+        } else if (qStripped !== '' && (sb.bs.endsWith(qStripped) || (qNoZeros !== '' && sb.bNoZeros.endsWith(qNoZeros)))) {
+          tier = 1;
+        } else if (sb.bl.startsWith(q) || sb.bs.startsWith(qStripped) || (qNoZeros !== '' && sb.bNoZeros.startsWith(qNoZeros))) {
+          tier = 2;
+        } else if (sb.bl.includes(q) || sb.bs.includes(qStripped) || (qNoZeros !== '' && sb.bNoZeros.includes(qNoZeros))) {
+          tier = 3;
+        } else if (!isDigitsOnly) {
+          if (sb.pl === q) tier = 4;
+          else if (sb.pl.startsWith(q)) tier = 5;
+          else if (sb.pl.includes(q)) tier = 6;
+        }
+
+        if (tier >= 0 && t[tier].length < MAX_RESULTS) {
+          t[tier].push(bn);
+          seen.add(bn);
+        }
+      }
+
+      if (t[0].length > 0) return t[0].sort(sortTier0);
+      return [
+        ...t[1].sort(sortByLen),
+        ...t[2].sort(sortByLen),
+        ...t[3].sort(sortByLen),
+        ...t[4].sort(sortByLen),
+        ...t[5].sort(sortByLen),
+        ...t[6].sort(sortByLen),
+      ].slice(0, MAX_RESULTS);
+    }
+
+    // ── FAST PATH B: Owner / Staff User Mode ──
+    // 1. Instant O(1) exact match via exactBillMap
+    const exactIdxs = [
+      ...(exactBillMap.get(q) || []),
+      ...(qStripped !== q ? (exactBillMap.get(qStripped) || []) : []),
+      ...(qNoZeros && qNoZeros !== qStripped ? (exactBillMap.get(qNoZeros) || []) : []),
+    ];
+
+    if (exactIdxs.length > 0) {
+      const validExact: string[] = [];
+      const seenExact = new Set<string>();
+      for (let i = 0; i < exactIdxs.length; i++) {
+        const bn = searchableBills[exactIdxs[i]]?.billNo;
+        if (bn && !seenExact.has(bn)) {
+          seenExact.add(bn);
+          validExact.push(bn);
+        }
+      }
+      if (validExact.length > 0) {
+        return validExact.sort(sortTier0).slice(0, MAX_RESULTS);
+      }
+    }
+
+    // 2. Capped fast scan for partial bill numbers / party names (breaks early once Tier 1 fills)
+    const t: string[][] = [[], [], [], [], [], [], []];
+    const seen = new Set<string>();
+
+    for (let i = 0; i < searchableBills.length; i++) {
+      const sb = searchableBills[i];
+      if (sb.isMoc) continue;
+      const bn = sb.billNo;
+      if (seen.has(bn)) continue;
+
+      let tier = -1;
+      if (qStripped !== '' && (sb.bs.endsWith(qStripped) || (qNoZeros !== '' && sb.bNoZeros.endsWith(qNoZeros)))) {
+        tier = 1;
+      } else if (sb.bl.startsWith(q) || sb.bs.startsWith(qStripped) || (qNoZeros !== '' && sb.bNoZeros.startsWith(qNoZeros))) {
+        tier = 2;
+      } else if (sb.bl.includes(q) || sb.bs.includes(qStripped) || (qNoZeros !== '' && sb.bNoZeros.includes(qNoZeros))) {
+        tier = 3;
+      } else if (!isDigitsOnly) {
+        if (sb.pl === q) tier = 4;
+        else if (sb.pl.startsWith(q)) tier = 5;
+        else if (sb.pl.includes(q)) tier = 6;
+      }
+
+      if (tier >= 0 && t[tier].length < MAX_RESULTS) {
+        t[tier].push(bn);
+        seen.add(bn);
+        // Exact match was already checked via exactBillMap above; Tier 1 is the highest possible tier
+        if (tier === 1 && t[1].length >= MAX_RESULTS) break;
+      }
+    }
+
+    // Include Commission MOC matches (e.g. MOC 8, MOC8, COMMISSION)
+    for (const moc of commissionMocs) {
+      const code = moc.code;
+      const codeLower = code.toLowerCase();
+      const codeNoSpace = codeLower.replace(/\s+/g, '');
+      const codeNum = code.replace(/\D/g, '');
+
+      const isExact = q === codeLower || q === codeNoSpace || (qNoZeros !== '' && codeNum === qNoZeros && qStripped.startsWith('moc'));
+      const isPart = codeLower.includes(q) || codeNoSpace.includes(q) || (q === 'commission' || q === 'moc' || q === 'comison' || q === 'com');
+
+      if (isExact) {
+        if (!seen.has(code)) { t[0].push(code); seen.add(code); }
+      } else if (isPart) {
+        if (!seen.has(code)) { t[2].push(code); seen.add(code); }
+      }
+    }
+
     if (t[0].length > 0) {
-      return t[0].sort(sortTier0);
+      return t[0].sort(sortTier0).slice(0, MAX_RESULTS);
     }
 
     return [
@@ -759,12 +819,13 @@ export default function Dashboard() {
       ...t[4].sort(sortByLen),
       ...t[5].sort(sortByLen),
       ...t[6].sort(sortByLen),
-    ];
-  }, [searchableBills, exactBillMap, debouncedQuery, selectedDriver, displayDate, commissionMocs, isOwnerOrUserSelected, billMap]);
+    ].slice(0, MAX_RESULTS);
+  }, [searchableBills, exactBillMap, driverDateSearchPool, searchQuery, selectedDriver, commissionMocs, isOwnerOrUserSelected]);
 
-  // Live on-demand Supabase search fallback: if memory doesn't have the bill yet, query Supabase directly
+  // Live on-demand Supabase search fallback: ONLY when memory cache is still hydrating (< 1000 bills)
   useEffect(() => {
-    const q = debouncedQuery.trim();
+    if (bills.length >= 1000) return;
+    const q = searchQuery.trim();
     const userRole = getRole();
     if (!q || q.length < 2 || filteredBillNos.length > 0 || selectedBillNo || (!selectedDriver && userRole !== 'owner' && userRole !== 'user')) return;
 
@@ -807,21 +868,21 @@ export default function Dashboard() {
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [debouncedQuery, filteredBillNos.length, selectedBillNo, selectedDriver, isOwnerOrUserSelected]);
+  }, [bills.length, searchQuery, filteredBillNos.length, selectedBillNo, selectedDriver, displayDate, isOwnerOrUserSelected]);
 
   // Whether the typed search query matches no bill
   const billNotFound = useMemo(() => {
-    if (!debouncedQuery || filteredBillNos.length > 0 || selectedBillNo) return false;
+    if (!searchQuery || filteredBillNos.length > 0 || selectedBillNo) return false;
     return true;
-  }, [debouncedQuery, filteredBillNos, selectedBillNo]);
+  }, [searchQuery, filteredBillNos.length, selectedBillNo]);
 
   const driverStats = useMemo(() => {
     const selUpper = (selectedDriver || '').trim().toUpperCase();
-    const matchedDriver = drivers.find(drv => (drv.name || '').trim().toUpperCase() === selUpper);
+    const matched = driverRoleMap.get(selUpper);
     const curRole = getRole();
-    const isOwner = isOwnerSelected || selUpper === 'OWNER' || selUpper === '👑 OWNER' || matchedDriver?.role === 'owner' || (curRole === 'owner' && !selUpper);
+    const isOwner = isOwnerSelected || selUpper === 'OWNER' || selUpper === '👑 OWNER' || matched?.role === 'owner' || (curRole === 'owner' && !selUpper);
     const isUserStaff = isUserSelected || (!isOwner && (
-      matchedDriver?.role === 'user' ||
+      matched?.role === 'user' ||
       selUpper === 'PRATIXA' ||
       selUpper === 'KHUSHI' ||
       selUpper === 'TARACHAND' ||
@@ -917,7 +978,7 @@ export default function Dashboard() {
 
     const pendingCount = Math.max(0, totalCount - doneCount);
     return { total: totalCount, paid: doneCount, pending: pendingCount, isStaff: isOwner || isUserStaff };
-  }, [selectedDriver, displayDate, bills, drivers, ownerSavedBillNos, isOwnerSelected, isUserSelected]);
+  }, [selectedDriver, displayDate, bills, driverRoleMap, ownerSavedBillNos, isOwnerSelected, isUserSelected]);
 
   // ── Total Cash Count & Collection for Selected Date (Driver, User, Owner) ──
   // Deduplicates by billNo to ensure duplicate entries don't double count cash.
@@ -936,9 +997,11 @@ export default function Dashboard() {
 
     const getPersonRole = (name: string): { role: 'driver' | 'user' | 'owner'; cleanName: string } => {
       const u = (name || '').trim().toUpperCase();
-      const base = u.includes(':') ? u.split(':')[0].trim() : (u.includes(' ') ? u.split(' ')[0].trim() : u);
+      const colonIdx = u.indexOf(':');
+      const spaceIdx = colonIdx === -1 ? u.indexOf(' ') : -1;
+      const base = colonIdx !== -1 ? u.slice(0, colonIdx).trim() : (spaceIdx !== -1 ? u.slice(0, spaceIdx).trim() : u);
       if (!base || base === 'OWNER' || base === '👑 OWNER') return { role: 'owner', cleanName: 'OWNER' };
-      const d = drivers.find(drv => (drv.name || '').trim().toUpperCase() === base || (drv.name || '').trim().toUpperCase() === u);
+      const d = driverRoleMap.get(base) || driverRoleMap.get(u);
       if (d?.role === 'owner') return { role: 'owner', cleanName: d.name || base };
       if (d?.role === 'user' || base === 'PRATIXA' || base === 'KHUSHI' || base === 'TARACHAND' || base === 'SEJAL') {
         return { role: 'user', cleanName: d?.name || base };
@@ -1049,7 +1112,7 @@ export default function Dashboard() {
       ownerBillsCount,
       personList,
     };
-  }, [bills, displayDate, dashDate, drivers]);
+  }, [bills, displayDate, dashDate, driverRoleMap]);
 
   // Specific cash total & count for the currently selected driver / owner / user in the dropdown
   // Deduplicates billNo so duplicate items in state don't double count
@@ -1064,15 +1127,17 @@ export default function Dashboard() {
     }
 
     const selUpper = selectedDriver.trim().toUpperCase();
-    const matchedDriver = drivers.find(drv => (drv.name || '').trim().toUpperCase() === selUpper);
-    const isOwner = selUpper === 'OWNER' || selUpper === '👑 OWNER' || matchedDriver?.role === 'owner';
+    const matched = driverRoleMap.get(selUpper);
+    const isOwner = selUpper === 'OWNER' || selUpper === '👑 OWNER' || matched?.role === 'owner';
     const isUserStaff = !isOwner && (
-      matchedDriver?.role === 'user' ||
+      matched?.role === 'user' ||
       selUpper === 'PRATIXA' ||
       selUpper === 'KHUSHI' ||
       selUpper === 'TARACHAND' ||
       selUpper === 'SEJAL'
     );
+    const ownerSavedSet = isOwner && Array.isArray(ownerSavedBillNos) && ownerSavedBillNos.length > 0 ? new Set(ownerSavedBillNos) : null;
+    const normDisp = normDateStr(displayDate);
 
     let amount = 0;
     let count = 0;
@@ -1090,7 +1155,8 @@ export default function Dashboard() {
       return 0;
     };
 
-    for (const b of bills) {
+    for (let i = 0; i < bills.length; i++) {
+      const b = bills[i];
       if (!b.billNo || isGhostBill(b)) continue;
       const normBillNo = b.billNo.trim().toUpperCase();
       if (seenBillNos.has(normBillNo)) continue;
@@ -1103,18 +1169,17 @@ export default function Dashboard() {
       const isMoc = (b.billNo || '').toUpperCase().startsWith('MOC') || b.collectionCode === 'MOC' || b.salespersonName === 'MOC';
 
       if (isOwner) {
-        // Owner must be explicit payment date matching displayDate and entered by OWNER
+        if (!pDate || normDateStr(pDate) !== normDisp) continue;
         // Exclude bills that were assigned to a driver on deliveryDate
-        if (!isMoc && normDateStr(dDate) === normDateStr(displayDate) && dName && dName !== 'OWNER') continue;
-        const isOtherStaff = drivers.some(d => d.role === 'user' && (d.name || '').trim().toUpperCase() !== 'OWNER' && (pTime === (d.name || '').trim().toUpperCase() || pTime.startsWith((d.name || '').trim().toUpperCase() + ':')));
-        if (isOtherStaff) continue;
+        if (!isMoc && normDateStr(dDate) === normDisp && dName && dName !== 'OWNER') continue;
+        if (pTime && otherStaffUserNames.some(u => pTime === u || pTime.startsWith(u + ':'))) continue;
 
-        const isOwnerPaid = Boolean(pDate) && normDateStr(pDate) === normDateStr(displayDate) && (
+        const isOwnerPaid = (
           pTime === 'OWNER' ||
           pTime.startsWith('OWNER:') ||
           pTime.startsWith('OWNER ') ||
           dName === 'OWNER' ||
-          (Array.isArray(ownerSavedBillNos) && (ownerSavedBillNos.includes(b.billNo) || ownerSavedBillNos.includes(b.id)))
+          (ownerSavedSet !== null && (ownerSavedSet.has(b.billNo) || ownerSavedSet.has(b.id)))
         );
         if (isOwnerPaid) {
           const c = getEffCash(b);
@@ -1125,9 +1190,8 @@ export default function Dashboard() {
           }
         }
       } else if (isUserStaff) {
-        // Must be genuinely entered by this specific user and paymentDate === displayDate
         // Exclude any deliveryDate === displayDate entry from user table cash stats (except MOC)
-        if (!isMoc && normDateStr(dDate) === normDateStr(displayDate)) continue;
+        if (!isMoc && normDateStr(dDate) === normDisp) continue;
 
         const isThisUser = (
           pTime === selUpper ||
@@ -1135,8 +1199,9 @@ export default function Dashboard() {
           pTime.startsWith(selUpper + ' ') ||
           (isMoc && (dName === selUpper || pTime === selUpper))
         );
-        const matchesDate = normDateStr(pDate) === normDateStr(displayDate) || (isMoc && (normDateStr(b.date) === normDateStr(displayDate) || normDateStr(dDate) === normDateStr(displayDate)));
-        if (isThisUser && matchesDate) {
+        if (!isThisUser) continue;
+        const matchesDate = normDateStr(pDate) === normDisp || (isMoc && (normDateStr(b.date) === normDisp || normDateStr(dDate) === normDisp));
+        if (matchesDate) {
           const c = getEffCash(b);
           if (c > 0) {
             seenBillNos.add(normBillNo);
@@ -1146,8 +1211,8 @@ export default function Dashboard() {
         }
       } else {
         // Driver view (e.g. DINESH PATIL, MANOHAR)
+        if (dName !== selUpper && !(isMoc && (pTime === selUpper || pTime.startsWith(selUpper + ':')))) continue;
         const dDel = normDateStr(dDate);
-        const normDisp = normDateStr(displayDate);
         const isDriverBill = (
           (dName === selUpper && (
             dDel === normDisp ||
@@ -1173,7 +1238,7 @@ export default function Dashboard() {
       label: `${selectedDriver} CASH`,
       title: `${selectedDriver} Real Cash (${displayDate}): ₹${amount.toLocaleString('en-IN')} (${count} bills)\nClick for full breakdown`,
     };
-  }, [selectedDriver, bills, displayDate, drivers, cashStats, ownerSavedBillNos]);
+  }, [selectedDriver, bills, displayDate, driverRoleMap, otherStaffUserNames, cashStats, ownerSavedBillNos]);
 
   function handleDriverChange(name: string) {
     setSelectedDriver(name);
@@ -1256,7 +1321,7 @@ export default function Dashboard() {
     }
 
     // ── STANDARD REGULAR BILL SELECTION ───────────────────────────────────────
-    const existingBill = billMap.get(cleanBn) || billMap.get(bn) || findBillFast(cleanBn) || bills.find(b => b.id === cleanBn || b.billNo?.toUpperCase() === cleanBn.toUpperCase() || b.billNo === bn);
+    const existingBill = billMap.get(cleanBn) || billMap.get(bn) || billMap.get(cleanBn.toUpperCase()) || findBillFast(cleanBn);
     if (!existingBill) return;
 
     if (!selectedDriver && !isOwnerOrUserSelected) {
@@ -1370,6 +1435,12 @@ export default function Dashboard() {
     window.scrollTo({ top: 0, behavior: 'smooth' });
   }
 
+  const handleBillSelectRef = useRef(handleBillSelect);
+  handleBillSelectRef.current = handleBillSelect;
+  const onSelectBillStable = useCallback((bn: string) => {
+    handleBillSelectRef.current(bn);
+  }, []);
+
   useEffect(() => {
     if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
       window.speechSynthesis.getVoices();
@@ -1399,47 +1470,37 @@ export default function Dashboard() {
     }
   }, []);
 
-  // Flexible exact bill lookup — handles GST/ prefix, zero padded, or numeric digits
+  // Flexible O(1) exact bill lookup — handles GST/ prefix, zero padded, or numeric digits
   const findExactBill = useCallback((num: string) => {
     if (!num) return undefined;
-    if (!selectedDriver && !isOwnerOrUserSelected) return undefined; // Only find bills for selected driver (unless owner/user)
+    if (!selectedDriver && !isOwnerOrUserSelected) return undefined;
     const cleanNum = num.toString().toLowerCase().trim();
-
-    const norm = (s: string) => (s || '').toString().toLowerCase()
+    const qNorm = cleanNum
       .replace(/^gst[-/]?/i, '')
       .replace(/^inv[-/]?/i, '')
       .replace(/^bill[-/]?/i, '')
       .replace(/[^0-9a-z]/g, '')
       .replace(/^0+/, '');
-
-    const getDigits = (s: string) => (s || '').toString().replace(/\D/g, '').replace(/^0+/, '');
-
-    const qNorm = norm(cleanNum);
-    const qDigits = getDigits(cleanNum);
-
+    const qDigits = cleanNum.replace(/\D/g, '').replace(/^0+/, '');
     if (!qNorm && !qDigits) return undefined;
 
     const selUpper = selectedDriver.trim().toUpperCase();
+    const pickFirstAllowed = (idxs: number[] | undefined) => {
+      if (!idxs) return undefined;
+      for (let i = 0; i < idxs.length; i++) {
+        const sb = searchableBills[idxs[i]];
+        if (!sb) continue;
+        if (isOwnerOrUserSelected || sb.driverUpper === selUpper) return sb.bill;
+      }
+      return undefined;
+    };
 
-    const driverBills = bills.filter(b => {
-      if (isOwnerOrUserSelected) return true;
-      const bDriver = (b.driverName || '').trim().toUpperCase();
-      return bDriver === selUpper;
-    });
-
-    // 1. Exact raw match
-    let match = driverBills.find(b => b.billNo.toLowerCase().trim() === cleanNum);
-    // 2. Exact normalized match
-    if (!match && qNorm) {
-      match = driverBills.find(b => norm(b.billNo) === qNorm);
-    }
-    // 3. Pure digit match
-    if (!match && qDigits) {
-      match = driverBills.find(b => getDigits(b.billNo) === qDigits);
-    }
-    // NOTE: no suffix / partial matching — "613" must never open 12613 or 22613.
-    return match;
-  }, [bills, selectedDriver, isOwnerOrUserSelected]);
+    return (
+      pickFirstAllowed(voiceBillMap.get(`r:${cleanNum}`)) ||
+      (qNorm ? pickFirstAllowed(voiceBillMap.get(`n:${qNorm}`)) : undefined) ||
+      (qDigits ? pickFirstAllowed(voiceBillMap.get(`d:${qDigits}`)) : undefined)
+    );
+  }, [searchableBills, voiceBillMap, selectedDriver, isOwnerOrUserSelected]);
 
   // Among speech alternatives, prefer the one whose bill number actually exists.
   const pickBestTranscript = useCallback((result: any): string => {
@@ -3094,13 +3155,15 @@ export default function Dashboard() {
       // Instant direct fallback: check typed searchQuery directly without waiting
       const rawQ = searchQuery.trim();
       if (!rawQ) return;
-      const cleanQ = rawQ.replace(/^gst[-/]?/i, '').toLowerCase();
+      const rawLower = rawQ.toLowerCase();
+      const cleanQ = rawLower.replace(/^gst[-/]?/i, '');
       const digitsQ = cleanQ.replace(/\D/g, '').replace(/^0+/, '');
+      const idxHit = exactBillMap.get(rawLower)?.[0] ??
+        exactBillMap.get(cleanQ)?.[0] ??
+        (digitsQ ? exactBillMap.get(digitsQ)?.[0] : undefined);
       const directBn = billMap.get(rawQ)?.billNo ||
         billMap.get(cleanQ)?.billNo ||
-        exactBillMap.get(rawQ)?.[0] ||
-        exactBillMap.get(cleanQ)?.[0] ||
-        (digitsQ ? exactBillMap.get(digitsQ)?.[0] : undefined);
+        (idxHit !== undefined ? searchableBills[idxHit]?.billNo : undefined);
       if (directBn) {
         handleBillSelect(directBn);
       }
@@ -3539,7 +3602,7 @@ export default function Dashboard() {
                     setSearchQuery(val);
                     setShowDropdown(true);
                     setDropdownIndex(0);
-                    if (!val) { setSelectedBillNo(''); setDebouncedQuery(''); }
+                    if (!val) { setSelectedBillNo(''); }
                   }}
                   onFocus={() => setShowDropdown(true)}
                   onKeyDown={onKeyDownBillSearch}
@@ -3609,7 +3672,7 @@ export default function Dashboard() {
                   // ── Dedicated MOC Commission Row ──
                   if (!b && ((bn || '').toUpperCase().startsWith('MOC') || commissionMocs.some(m => (m?.code || '').toUpperCase() === (bn || '').toUpperCase()))) {
                     const mocNum = extractMocNumber(bn) || '1';
-                    const nextSrPreview = getNextMocSrNo(mocNum, getBills());
+                    const nextSrPreview = nextMocSrMap.get(mocNum) ?? 1;
                     return (
                       <button
                         key={bn}
@@ -4477,13 +4540,10 @@ export default function Dashboard() {
               bills={bills} 
               selectedDriver={selectedDriver} 
               displayDate={displayDate} 
-              onSelectBill={bn => handleBillSelect(bn)}
+              onSelectBill={onSelectBillStable}
               ownerSavedBillNos={ownerSavedBillNos}
               isDriverMode={isDriverMode}
-              selectedDriverIsOwnerOrUser={Boolean(
-                selectedDriver === 'OWNER' ||
-                drivers.some(d => (d.name || '').trim().toUpperCase() === selectedDriver.trim().toUpperCase() && (d.role === 'user' || d.role === 'owner'))
-              )}
+              selectedDriverIsOwnerOrUser={isOwnerOrUserSelected}
               enteredByFilter={selectedDriver || undefined}
             />
           )}
