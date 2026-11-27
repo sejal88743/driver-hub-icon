@@ -336,7 +336,7 @@ export default function Dashboard() {
         ownerEntriesLoadedDateRef.current = targetDate;
       });
     return () => { cancelled = true; };
-  }, [ownerSavedBillNos, dashDate]);
+  }, [dashDate]);
 
   // Auto-reset search input query after configured seconds (e.g. 2s, 4s, or 0 = disabled) so the field clears for next input
   const searchResetTimerRef = useRef<NodeJS.Timeout | null>(null);
